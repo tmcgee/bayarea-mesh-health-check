@@ -1,0 +1,94 @@
+/* ---------------------------------------------------------------------------
+ * Bay Area MeshCore theme
+ *
+ * Palette lifted from https://bayareameshcore.org/ (Astro + Bootstrap 5.3):
+ *   light  body #f3f6fb  text #1f2937  headings #0f172a  card #fff
+ *          border #dbe4f0  primary #0d6efd  link-strong #1d4ed8
+ *          accent-2 #198754  banner #dbeafe / #bfdbfe / #1e3a5f
+ *   dark   body #0b1220  text #d7e1ee  headings #f8fafc  card #111c2f
+ *          border #22314d  primary #58a6ff  accent-2 #2dd4bf  muted #9db0cd
+ *
+ * The health-check UI is dark-only (body[data-ui-theme="dark"]), so this file
+ * maps the site's DARK palette onto the app's custom properties and keeps the
+ * light values in comments above for reference.
+ *
+ * Load AFTER /styles.css so these :root values win.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  /* Surfaces — bayareameshcore.org dark: #0b1220 body, #111c2f panels */
+  --bg: #0b1220;
+  --bg-deep: #070d18;
+  --bg-alt: #111c2f;
+  --panel: rgba(17, 28, 47, 0.86);
+  --panel-strong: rgba(17, 28, 47, 0.96);
+  --panel-soft: rgba(88, 166, 255, 0.07);
+  --panel-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
+
+  /* Hairlines — site border #22314d */
+  --line: rgba(34, 49, 77, 0.85);
+  --line-strong: rgba(58, 79, 117, 0.95);
+
+  /* Type — site #d7e1ee body, #f8fafc headings, #9db0cd secondary */
+  --text: #d7e1ee;
+  --muted: #9db0cd;
+  --muted-strong: #f8fafc;
+
+  /* Accent — site dark-mode link blue #58a6ff (light mode: #0d6efd) */
+  --accent: #58a6ff;
+  --accent-strong: #dbeafe;
+
+  /* Status ramp: good = site blue, fair = amber, poor = red.
+     (The stock theme used blue/amber/magenta.) */
+  --good: #58a6ff;
+  --good-glow: rgba(88, 166, 255, 0.34);
+  --fair: #e2ab45;
+  --fair-glow: rgba(226, 171, 69, 0.3);
+  --poor: #f0708a;
+  --poor-glow: rgba(240, 112, 138, 0.3);
+
+  --shadow: 0 24px 90px rgba(2, 6, 23, 0.45);
+  --ring-color: var(--accent);
+}
+
+/* Body wash: mirrors the site hero's blue + teal radial gradients over #0b1220
+   (site: rgba(88,166,255,.22) top-right, rgba(45,212,191,.12) left). */
+body {
+  background:
+    radial-gradient(circle at 18% 0%, rgba(88, 166, 255, 0.18), transparent 28%),
+    radial-gradient(circle at 100% 12%, rgba(45, 212, 191, 0.1), transparent 22%),
+    linear-gradient(180deg, #0b1220 0%, #111c2f 52%, #0b1220 100%);
+}
+
+/* Light mode (the app's "Light Mode" toggle) mapped to the site's light palette:
+   body #f3f6fb, text #1f2937, headings #0f172a, cards #fff, border #dbe4f0,
+   Bootstrap primary #0d6efd, strong link #1d4ed8, success #198754. */
+body[data-ui-theme="light"] {
+  --bg: #f3f6fb;
+  --bg-deep: #ffffff;
+  --bg-alt: #edf4ff;
+  --panel: rgba(255, 255, 255, 0.88);
+  --panel-strong: #ffffff;
+  --panel-soft: rgba(13, 110, 253, 0.07);
+  --line: #dbe4f0;
+  --line-strong: #c3d3e8;
+  --text: #1f2937;
+  --muted: #5b6b82;
+  --muted-strong: #0f172a;
+  --accent: #0d6efd;
+  --accent-strong: #1d4ed8;
+  --good: #0d6efd;
+  --good-glow: rgba(13, 110, 253, 0.18);
+  --fair: #9b6c0d;
+  --fair-glow: rgba(155, 108, 13, 0.16);
+  --poor: #c02a45;
+  --poor-glow: rgba(192, 42, 69, 0.16);
+  --shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+  --ring-color: #0d6efd;
+  --hero-blue: #0d6efd;
+  background:
+    radial-gradient(circle at top right, rgba(13, 110, 253, 0.12), transparent 35%),
+    radial-gradient(circle at left center, rgba(25, 135, 84, 0.1), transparent 35%),
+    linear-gradient(180deg, #ffffff, #edf4ff);
+  color: var(--text);
+}

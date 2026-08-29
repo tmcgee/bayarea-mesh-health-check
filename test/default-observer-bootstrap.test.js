@@ -357,6 +357,7 @@ test('bootstrap falls back to the top recent observers when KNOWN_OBSERVERS is b
     OBSERVER_TOP_WINDOW_DAYS: process.env.OBSERVER_TOP_WINDOW_DAYS,
     OBSERVER_TOP_COUNT: process.env.OBSERVER_TOP_COUNT,
     OBSERVER_RETENTION_SECONDS: process.env.OBSERVER_RETENTION_SECONDS,
+    OBSERVER_TARGET_MODE: process.env.OBSERVER_TARGET_MODE,
   };
 
   process.env.MESH_HEALTH_DISABLE_RUNTIME = 'true';
@@ -371,6 +372,9 @@ test('bootstrap falls back to the top recent observers when KNOWN_OBSERVERS is b
   process.env.OBSERVER_TOP_WINDOW_DAYS = '7';
   process.env.OBSERVER_TOP_COUNT = '10';
   process.env.OBSERVER_RETENTION_SECONDS = '172800';
+  // This test pins the upstream ranking path explicitly. A deployment that opts
+  // into OBSERVER_TARGET_MODE=active must not silently change what this asserts.
+  process.env.OBSERVER_TARGET_MODE = 'top-window';
 
   const serverModule = await import(
     `${pathToFileURL(path.join(REPO_DIR, 'server.js')).href}?top-observers-test=${Date.now()}`
@@ -405,6 +409,143 @@ test('bootstrap falls back to the top recent observers when KNOWN_OBSERVERS is b
     assert.equal(payload.defaultObservers.some((entry) => entry.label === 'Tracked Observer 11'), false);
     assert.equal(payload.observerStats.topWindowDays, 7);
     assert.equal(payload.observerStats.topCount, 10);
+  } finally {
+    flushScheduledWrites();
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+    fs.rmSync(tempDir, { recursive: true, force: true });
+
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test('OBSERVER_TARGET_MODE=active scores against every active observer, not a top-N slice', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-health-active-target-test-'));
+  const observerFile = path.join(tempDir, 'observer.json');
+  const observerActivityFile = path.join(tempDir, 'observer-activity.json');
+  const resultsFile = path.join(tempDir, 'session-results.json');
+  const observerKeys = Array.from({ length: 12 }, (_, index) =>
+    `${(index + 1).toString(16).toUpperCase()}`.repeat(64).slice(0, 64)
+  );
+  const today = new Date();
+  const dayKey = (offsetDays) => new Date(today.getTime() - (offsetDays * 86400000))
+    .toISOString()
+    .slice(0, 10);
+  fs.writeFileSync(observerFile, JSON.stringify(Object.fromEntries(
+    observerKeys.map((key, index) => [key, { name: `Tracked Observer ${index + 1}` }]),
+  ), null, 2), 'utf8');
+  // Index 10 last spoke three days ago, so it is inside the 7-day ranking window
+  // but outside the 900s active window. Eleven observers remain active - one more
+  // than OBSERVER_TOP_COUNT, which is the whole point of the mode.
+  fs.writeFileSync(observerActivityFile, JSON.stringify({
+    version: 1,
+    observers: Object.fromEntries(observerKeys.map((key, index) => [key, {
+      days: {
+        [dayKey(0)]: 200 - (index * 10),
+        [dayKey(1)]: 2,
+      },
+      lastPacketAt: Date.now() - (index === 10 ? 259200000 : index * 1000),
+    }])),
+  }, null, 2), 'utf8');
+  fs.writeFileSync(resultsFile, '{\n  "version": 1,\n  "sessions": []\n}\n', 'utf8');
+
+  const previousEnv = {
+    MESH_HEALTH_DISABLE_RUNTIME: process.env.MESH_HEALTH_DISABLE_RUNTIME,
+    TURNSTILE_ENABLED: process.env.TURNSTILE_ENABLED,
+    LOG_LEVEL: process.env.LOG_LEVEL,
+    OBSERVERS_FILE: process.env.OBSERVERS_FILE,
+    OBSERVER_ACTIVITY_FILE: process.env.OBSERVER_ACTIVITY_FILE,
+    RESULTS_FILE: process.env.RESULTS_FILE,
+    TEST_CHANNEL_NAME: process.env.TEST_CHANNEL_NAME,
+    TEST_CHANNEL_SECRET: process.env.TEST_CHANNEL_SECRET,
+    KNOWN_OBSERVERS: process.env.KNOWN_OBSERVERS,
+    OBSERVER_TOP_WINDOW_DAYS: process.env.OBSERVER_TOP_WINDOW_DAYS,
+    OBSERVER_TOP_COUNT: process.env.OBSERVER_TOP_COUNT,
+    OBSERVER_ACTIVE_WINDOW_SECONDS: process.env.OBSERVER_ACTIVE_WINDOW_SECONDS,
+    OBSERVER_RETENTION_SECONDS: process.env.OBSERVER_RETENTION_SECONDS,
+    OBSERVER_TARGET_MODE: process.env.OBSERVER_TARGET_MODE,
+    REGIONS_FILE: process.env.REGIONS_FILE,
+    REQUIRE_REGION_MATCH: process.env.REQUIRE_REGION_MATCH,
+    UPLINK_CODES_FILE: process.env.UPLINK_CODES_FILE,
+    REGION_FALLBACK: process.env.REGION_FALLBACK,
+  };
+
+  process.env.MESH_HEALTH_DISABLE_RUNTIME = 'true';
+  process.env.TURNSTILE_ENABLED = 'false';
+  process.env.LOG_LEVEL = 'info';
+  process.env.OBSERVERS_FILE = observerFile;
+  process.env.OBSERVER_ACTIVITY_FILE = observerActivityFile;
+  process.env.RESULTS_FILE = resultsFile;
+  process.env.TEST_CHANNEL_NAME = 'health-check';
+  process.env.TEST_CHANNEL_SECRET = 'E6D973AAC5101145AD3A3F3A0B3D52EB';
+  process.env.KNOWN_OBSERVERS = '';
+  process.env.OBSERVER_TOP_WINDOW_DAYS = '7';
+  process.env.OBSERVER_TOP_COUNT = '10';
+  process.env.OBSERVER_ACTIVE_WINDOW_SECONDS = '900';
+  process.env.OBSERVER_RETENTION_SECONDS = '172800';
+  process.env.OBSERVER_TARGET_MODE = 'active';
+  process.env.REGIONS_FILE = '';
+  process.env.REQUIRE_REGION_MATCH = 'false';
+  process.env.UPLINK_CODES_FILE = '';
+  process.env.REGION_FALLBACK = '';
+
+  const serverModule = await import(
+    `${pathToFileURL(path.join(REPO_DIR, 'server.js')).href}?active-target-test=${Date.now()}`
+  );
+  const {
+    flushScheduledWrites,
+    resetTestState,
+    server,
+  } = serverModule;
+
+  let baseUrl = '';
+  try {
+    await new Promise((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = server.address();
+    baseUrl = `http://127.0.0.1:${address.port}`;
+
+    resetTestState();
+    const bootstrapResponse = await fetch(`${baseUrl}/api/bootstrap`);
+    assert.equal(bootstrapResponse.status, 200);
+    const payload = await bootstrapResponse.json();
+
+    assert.equal(payload.defaultObserverSource, 'active-window');
+    assert.equal(payload.observerStats.targetMode, 'active');
+    // Eleven active, not the ten highest-ranked. The stale observer is excluded
+    // even though it has the largest single-day packet count in the window.
+    assert.equal(payload.defaultObserverKeys.length, 11);
+    assert.equal(payload.defaultObserverKeys.includes(observerKeys[10]), false);
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(createResponse.status, 201);
+    const created = await createResponse.json();
+    const sessionResponse = await fetch(`${baseUrl}/api/sessions/${created.id}`);
+    const session = await sessionResponse.json();
+
+    // The denominator is the snapshotted active set, so a quiet network of 11 is
+    // scored out of 11 - never out of a hardcoded 10.
+    assert.equal(session.expectedCount, 11);
+    assert.equal(session.expectedObservers.length, 11);
+    assert.equal(session.expectedObserverSource, 'active-window');
   } finally {
     flushScheduledWrites();
     await new Promise((resolve, reject) => {

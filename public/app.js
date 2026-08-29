@@ -14,12 +14,16 @@ const ui = {
   shareSessionButton: document.querySelector('#share-session'),
   sessionCode: document.querySelector('#session-code'),
   sessionInstructions: document.querySelector('#session-instructions'),
+  sessionStepChannel: document.querySelector('#session-step-channel'),
+  channelQr: document.querySelector('#channel-qr'),
   sessionShareNote: document.querySelector('#session-share-note'),
   sessionStatus: document.querySelector('#session-status'),
   sessionHash: document.querySelector('#session-hash'),
   healthLabel: document.querySelector('#health-label'),
   healthPercent: document.querySelector('#health-percent'),
   observedCount: document.querySelector('#observed-count'),
+  regionCoverage: document.querySelector('#region-coverage'),
+  healthNote: document.querySelector('#health-note'),
   repeaterCount: document.querySelector('#repeater-count'),
   longestPacketDistance: document.querySelector('#longest-packet-distance'),
   senderName: document.querySelector('#sender-name'),
@@ -34,23 +38,17 @@ const ui = {
   repoNoteLink: document.querySelector('#repo-note-link'),
   siteVersionNote: document.querySelector('#site-version-note'),
   messagePreview: document.querySelector('#message-preview'),
-  expectedSource: document.querySelector('#expected-source'),
   expectedObservers: document.querySelector('#expected-observers'),
   observerAllowlistNote: document.querySelector('#observer-allowlist-note'),
   regionFilter: document.querySelector('#region-filter'),
-  observerAllowlist: document.querySelector('#observer-allowlist'),
-  observerAllowlistClear: document.querySelector('#observer-allowlist-clear'),
   uiThemeToggle: document.querySelector('#ui-theme-toggle'),
   mapObserverNote: document.querySelector('#map-observer-note'),
   mapEmpty: document.querySelector('#map-empty'),
+  additionalInfo: document.querySelector('#additional-info'),
+  additionalInfoLabel: document.querySelector('#additional-info-label'),
+  additionalInfoToggle: document.querySelector('#additional-info-toggle'),
   observerMap: document.querySelector('#observer-map'),
   activeObserverNote: document.querySelector('#active-observer-note'),
-  timelineSummary: document.querySelector('#timeline-summary'),
-  timelineScale: document.querySelector('#timeline-scale'),
-  timelineStartLabel: document.querySelector('#timeline-start-label'),
-  timelineEndLabel: document.querySelector('#timeline-end-label'),
-  receiptTimelineEmpty: document.querySelector('#receipt-timeline-empty'),
-  receiptTimeline: document.querySelector('#receipt-timeline'),
   receiptsEmpty: document.querySelector('#receipts-empty'),
   receipts: document.querySelector('#receipts'),
   sessionHistory: document.querySelector('#session-history'),
@@ -89,20 +87,19 @@ const state = {
   sharedSessionId: sharedSessionIdFromLocation(),
   sharedSessionMissing: false,
   trackedSessionIds: loadTrackedSessionIds(),
-  selectedObserverKeys: loadSelectedObserverKeys(),
   selectedRegionGroup: null,
   selectedRegion: null,
   uiTheme: loadUiTheme(),
   sessions: new Map(),
   socket: null,
   socketRetryTimer: 0,
-  sessionRetargetTimer: 0,
   refreshInFlight: false,
-  observerAllowlistSignature: '',
   map: {
     instance: null,
     layer: null,
     layerTheme: '',
+    tiles: null,
+    tileSignature: '',
     markers: new Map(),
     boundsKey: '',
   },
@@ -132,24 +129,15 @@ function saveTrackedSessionIds() {
   );
 }
 
-function loadSelectedObserverKeys() {
+// The observer checkbox picker was removed: every code now scores against the
+// active set. A selection persisted by an earlier build would otherwise sit in
+// sessionStorage forever with nothing to read it, so drop it on load.
+function clearStoredObserverSelection() {
   try {
-    const raw = sessionStorage.getItem(OBSERVER_ALLOWLIST_STORAGE_KEY);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    sessionStorage.removeItem(OBSERVER_ALLOWLIST_STORAGE_KEY);
   } catch {
-    return [];
+    // Private-mode sessionStorage can throw; nothing reads the key anyway.
   }
-}
-
-function saveSelectedObserverKeys() {
-  sessionStorage.setItem(
-    OBSERVER_ALLOWLIST_STORAGE_KEY,
-    JSON.stringify(state.selectedObserverKeys),
-  );
 }
 
 function loadUiTheme() {
@@ -238,10 +226,21 @@ function shortObserverKey(key) {
   return `${value.slice(0, 6)}...${value.slice(-6)}`;
 }
 
-function observerHashPrefix(key) {
+// The width is per observer: a node's `path.hash.mode` is its own firmware
+// setting, so an observer with a confirmed 2- or 3-byte advert gets that many
+// bytes shown. observerHashBytes falls back to the global display default when
+// the server has no confirmed width for the node.
+function observerHashBytes(observer) {
+  const declared = Number(observer?.hashBytes);
+  if (Number.isInteger(declared) && declared >= 1 && declared <= 3) {
+    return declared;
+  }
+  return Math.max(1, Math.min(3, Number(state.snapshot?.observerStats?.hashDisplayBytes || 1)));
+}
+
+function observerHashPrefix(key, observer = null) {
   const value = String(key || '').trim().toUpperCase();
-  const byteSize = Math.max(1, Math.min(3, Number(state.snapshot?.observerStats?.hashDisplayBytes || 1)));
-  const displayLength = byteSize * 2;
+  const displayLength = observerHashBytes(observer) * 2;
   return value.slice(0, displayLength) || '--';
 }
 
@@ -249,6 +248,8 @@ function fallbackObserverRecord(key) {
   return {
     key,
     hash: observerHashPrefix(key),
+    hashBytes: null,
+    hashBytesConfirmed: false,
     label: shortObserverKey(key),
     name: null,
     lat: null,
@@ -307,111 +308,79 @@ function selectableObservers() {
   }));
 }
 
-function customSelectedObserverKeys() {
-  const available = new Set(selectableObservers().map((observer) => observer.key));
-  return state.selectedObserverKeys.filter((key) => available.has(key));
-}
 
 function defaultObserverKeys() {
   return configuredDefaultObserverKeys();
 }
 
-function usingDefaultObserverSet() {
-  return customSelectedObserverKeys().length === 0;
-}
 
-function effectiveObserverKeysForCreate() {
-  return usingDefaultObserverSet()
-    ? defaultObserverKeys()
-    : customSelectedObserverKeys();
-}
-
-function defaultObserverTargetSummary() {
+// There is no longer a set to be the default of, so the word is gone.
+function observerTargetSummary() {
   const source = String(state.snapshot?.defaultObserverSource || '');
   const count = defaultObserverKeys().length;
   if (source === 'configured') {
-    return `Default: ${count} observer${count === 1 ? '' : 's'}.`;
+    return `${count} observer${count === 1 ? '' : 's'}.`;
   }
   if (source === 'top-window') {
     const days = Math.max(1, Number(state.snapshot?.observerStats?.topWindowDays || 7));
-    return `Default: top ${count} observer${count === 1 ? '' : 's'} over ${days} day${days === 1 ? '' : 's'}.`;
+    return `Top ${count} observer${count === 1 ? '' : 's'} over ${days} day${days === 1 ? '' : 's'}.`;
   }
-  return `Default: ${count} active observer${count === 1 ? '' : 's'}.`;
+  const windowSeconds = Math.max(1, Number(state.snapshot?.observerStats?.windowSeconds || 900));
+  const minutes = Math.max(1, Math.round(windowSeconds / 60));
+  return `${count} observer${count === 1 ? '' : 's'} active in the last ${minutes} min.`;
 }
 
-function targetPreviewLabel() {
-  return usingDefaultObserverSet() ? 'Default set (next code)' : 'Custom set (next code)';
+// Says out loud why a grade is missing. Silence would read as a rendering bug,
+// and the old behaviour - a confident 100% next to "1 / 1" - was worse than
+// either. Only shown when there is something to explain.
+function renderHealthNote(session, healthMeasured, healthRated) {
+  if (!ui.healthNote) {
+    return;
+  }
+  if (!healthMeasured || healthRated) {
+    ui.healthNote.textContent = '';
+    ui.healthNote.classList.add('hidden');
+    return;
+  }
+  const target = Number(session?.expectedCount) || 0;
+  const minimum = Number(session?.minScoringSet) || 3;
+  ui.healthNote.textContent = session?.healthUnratedReason === 'target-too-small'
+    ? `Not rated: this code targeted ${target} observer${target === 1 ? '' : 's'}, below the ${minimum} needed for a percentage to mean anything. The count above is still what was heard.`
+    : 'Not rated: this code cannot be scored.';
+  ui.healthNote.classList.remove('hidden');
 }
 
-function sessionTargetKeys(session) {
-  return dedupe(
-    Array.isArray(session?.expectedObservers)
-      ? session.expectedObservers.map((observer) => observer?.key)
-      : [],
-  );
-}
-
-function sameKeys(left, right) {
-  const leftKeys = dedupe(left).sort();
-  const rightKeys = dedupe(right).sort();
-  if (leftKeys.length !== rightKeys.length) {
-    return false;
+// Region coverage answers a different question from the observer percentage:
+// not "how many of the reachable radios heard me" but "how much of the map did
+// I light up". A group with no located observer in the scoring set is left out
+// of the total entirely - it cannot be reached, so counting it as a miss would
+// punish the sender for a hole in the observer network.
+function renderRegionCoverage(session, healthMeasured) {
+  if (!ui.regionCoverage) {
+    return;
   }
-  return leftKeys.every((key, index) => key === rightKeys[index]);
-}
-
-function selectionDiffersFromSession(session) {
-  return !sameKeys(sessionTargetKeys(session), effectiveObserverKeysForCreate());
-}
-
-function sessionCanRetarget(session) {
-  return Boolean(
-    session
-      && !isSharePage()
-      && session.status === 'waiting'
-      && Number(session.useCount || 0) === 0
-      && !session.messageHash
-      && !session.matchedAt,
-  );
-}
-
-function targetPreviewSession() {
-  const knownObservers = new Map(
-    selectableObservers().map((observer) => [observer.key, observer]),
-  );
-  return {
-    expectedObservers: effectiveObserverKeysForCreate().map((key) => {
-      const observer = knownObservers.get(key) || fallbackObserverRecord(key);
-      return {
-        key,
-        hash: observer.hash || '--',
-        label: observer.label,
-        seen: false,
-      };
-    }),
-  };
-}
-
-function sessionObserverSourceLabel(session) {
-  if (!session) {
-    return defaultObserverTargetSummary();
+  const coverage = session?.regionCoverage;
+  if (!healthMeasured || !coverage || !Number(coverage.total)) {
+    ui.regionCoverage.textContent = '--';
+    ui.regionCoverage.removeAttribute('title');
+    return;
   }
-  if (session.allowlistEnabled) {
-    return 'Custom set';
+  ui.regionCoverage.textContent = `${coverage.reached} / ${coverage.total}`;
+  const groups = Array.isArray(coverage.groups) ? coverage.groups : [];
+  const reached = groups.filter((entry) => Number(entry.seenCount) > 0);
+  const missed = groups.filter((entry) => !Number(entry.seenCount));
+  const lines = [];
+  if (reached.length > 0) {
+    lines.push(`Reached: ${reached.map((entry) => `${entry.group} (${entry.seenCount}/${entry.observerCount})`).join(', ')}`);
   }
-  if (session.expectedObserverSource === 'configured') {
-    return 'Default set';
+  if (missed.length > 0) {
+    lines.push(`No report: ${missed.map((entry) => `${entry.group} (0/${entry.observerCount})`).join(', ')}`);
   }
-  if (session.expectedObserverSource === 'top-window') {
-    return 'Top observers';
+  if (lines.length > 0) {
+    ui.regionCoverage.title = lines.join('\n');
+  } else {
+    ui.regionCoverage.removeAttribute('title');
   }
-  if (session.expectedObserverSource === 'active-window') {
-    return 'Active set';
-  }
-  if (session.expectedObserverSource === 'first-observer') {
-    return 'Matched observer';
-  }
-  return 'Observer target';
 }
 
 function upsertTrackedSession(session) {
@@ -766,13 +735,66 @@ function healthClass(label) {
   if (label === 'FAIR') {
     return 'status-fair';
   }
+  // Not yet measured is not a failing grade: leave it in the default text colour.
+  if (isHealthPending(label)) {
+    return '';
+  }
   return 'status-poor';
+}
+
+function isHealthPending(label) {
+  return !label
+    || label === 'WAITING'
+    || label === 'Waiting'
+    // Heard, but scored against too small a target set to grade. Neither a pass
+    // nor a failure, so it gets the same neutral treatment as WAITING.
+    || label === 'NOT RATED'
+    || label === 'Not rated';
+}
+
+function isHealthRated(entry) {
+  if (entry?.healthRated != null) {
+    return Boolean(entry.healthRated);
+  }
+  // Payloads from an older server have no healthRated; fall back to the label.
+  return !isHealthPending(entry?.healthLabel);
+}
+
+function historyHealthPending(entry) {
+  if (entry?.healthRated != null) {
+    return !entry.healthRated;
+  }
+  return entry?.healthMeasured != null
+    ? !entry.healthMeasured
+    : isHealthPending(entry?.healthLabel);
+}
+
+function historyHealthLabel(entry) {
+  if (!historyHealthPending(entry)) {
+    return entry.healthLabel;
+  }
+  const measured = entry?.healthMeasured != null
+    ? Boolean(entry.healthMeasured)
+    : false;
+  return measured ? 'Not rated' : 'Waiting';
+}
+
+function historyHealthScore(entry) {
+  return historyHealthPending(entry) ? '--' : `${entry.healthPercent}%`;
+}
+
+// Placeholder markup for an unmeasured score: '--' with no percent sign, matching
+// the other pending metrics.
+function healthScoreMarkup(percent, measured) {
+  return measured
+    ? `<span class="score-num">${percent}</span><span class="score-unit">%</span>`
+    : '<span class="score-num score-num--pending">--</span>';
 }
 
 function ringColor(label) {
   if (label === 'VERY HEALTHY' || label === 'GOOD') return 'var(--good)';
   if (label === 'FAIR') return 'var(--fair)';
-  if (!label || label === 'Waiting') return 'var(--accent-strong)';
+  if (isHealthPending(label)) return 'var(--accent-strong)';
   return 'var(--poor)';
 }
 
@@ -878,18 +900,15 @@ async function copySessionShareLink() {
 }
 
 async function createSession() {
-  if (state.sessionRetargetTimer) {
-    window.clearTimeout(state.sessionRetargetTimer);
-    state.sessionRetargetTimer = 0;
-  }
   ui.newSessionButton.disabled = true;
   try {
     const response = await apiFetch('/api/sessions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        expectedObserverKeys: usingDefaultObserverSet() ? [] : customSelectedObserverKeys(),
-      }),
+      // No expectedObserverKeys: the server picks the active set. The API still
+      // accepts an explicit allowlist for scripted probes, but the UI never
+      // sends one, so a code cannot be silently narrowed.
+      body: '{}',
     });
     const session = await response.json();
     if (response.status === 403 && session.error === 'turnstile_required') {
@@ -915,51 +934,12 @@ async function createSession() {
   }
 }
 
-function scheduleSessionRetarget() {
-  if (state.sessionRetargetTimer) {
-    window.clearTimeout(state.sessionRetargetTimer);
-  }
-  state.sessionRetargetTimer = window.setTimeout(() => {
-    state.sessionRetargetTimer = 0;
-    const session = currentSession();
-    if (!sessionCanRetarget(session) || !selectionDiffersFromSession(session)) {
-      render();
-      return;
-    }
-    createSession();
-  }, 200);
-}
-
 function currentSession() {
   const sessionId = state.sharedSessionId || state.currentSessionId;
   if (!sessionId) {
     return null;
   }
   return state.sessions.get(sessionId) || null;
-}
-
-function renderExpectedObservers(session) {
-  ui.expectedObservers.innerHTML = '';
-  const expected = Array.isArray(session?.expectedObservers)
-    ? session.expectedObservers
-    : [];
-  if (expected.length === 0) {
-    ui.expectedObservers.innerHTML =
-      '<div class="observer-pill waiting"><span>Waiting for first receipt</span><span class="status">--</span></div>';
-    return;
-  }
-  for (const observer of expected) {
-    const item = document.createElement('div');
-    item.className = `observer-pill ${observer.seen ? 'seen' : 'waiting'}`;
-    item.innerHTML = `
-      <div class="observer-main">
-        <strong class="observer-label">${escapeHtml(observer.label)}</strong>
-        <div class="small-note observer-hash">${escapeHtml(observer.hash || '')}</div>
-      </div>
-      <span class="status">${observer.seen ? 'Seen' : 'Not Seen'}</span>
-    `;
-    ui.expectedObservers.appendChild(item);
-  }
 }
 
 function renderRegionFilter() {
@@ -978,11 +958,13 @@ function renderRegionFilter() {
   groupRow.className = 'region-filter__row';
 
   const locatedObserverCount = regions.reduce((sum, entry) => sum + (entry.count || 0), 0);
+  const inferredObserverCount = regions.reduce((sum, entry) => sum + (entry.inferredCount || 0), 0);
   groupRow.appendChild(createRegionButton({
     className: 'region-btn--all',
     active: state.selectedRegionGroup === null && state.selectedRegion === null,
     label: hasGroups ? 'All regions' : 'All',
     count: locatedObserverCount,
+    inferredCount: inferredObserverCount,
     onClick: () => {
       state.selectedRegionGroup = null;
       state.selectedRegion = null;
@@ -997,6 +979,7 @@ function renderRegionFilter() {
         active: state.selectedRegionGroup === entry.group && state.selectedRegion === null,
         label: entry.group,
         count: entry.count,
+        inferredCount: entry.inferredCount || 0,
         onClick: () => {
           state.selectedRegionGroup = entry.group;
           state.selectedRegion = null;
@@ -1024,6 +1007,7 @@ function renderRegionFilter() {
         active: state.selectedRegion === null,
         label: `All ${selectedGroup.group}`,
         count: selectedGroup.count,
+        inferredCount: selectedGroup.inferredCount || 0,
         onClick: () => {
           state.selectedRegion = null;
           applyRegionSelection();
@@ -1053,7 +1037,8 @@ function renderRegionFilter() {
 
 function regionFilterOptions(snapshot = state.snapshot) {
   const hierarchy = Array.isArray(snapshot?.regionHierarchy)
-    ? snapshot.regionHierarchy.filter((entry) => Array.isArray(entry.regions) && entry.regions.length > 0)
+    ? snapshot.regionHierarchy.filter((entry) => (Array.isArray(entry.regions) && entry.regions.length > 0)
+      || (entry.group && (entry.inferredCount || 0) > 0))
     : [];
   const flatRegions = Array.isArray(snapshot?.availableRegions)
     ? snapshot.availableRegions.map((name) => ({ name, count: 0 }))
@@ -1067,7 +1052,7 @@ function regionFilterOptions(snapshot = state.snapshot) {
   return { hasGroups, regions };
 }
 
-function createRegionButton({ className, active, label, count, onClick }) {
+function createRegionButton({ className, active, label, count, inferredCount = 0, onClick }) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = `region-btn ${className}${active ? ' active' : ''}`;
@@ -1081,6 +1066,16 @@ function createRegionButton({ className, active, label, count, onClick }) {
     countEl.className = 'region-btn__count';
     countEl.textContent = String(count);
     btn.appendChild(countEl);
+  }
+
+  // Observers placed in this group by their uplink code rather than by
+  // coordinates. Shown as a separate +N so the mapped count stays honest.
+  if (Number.isFinite(inferredCount) && inferredCount > 0) {
+    const inferredEl = document.createElement('span');
+    inferredEl.className = 'region-btn__count region-btn__count--inferred';
+    inferredEl.textContent = `+${inferredCount}`;
+    inferredEl.title = `${inferredCount} observer${inferredCount === 1 ? '' : 's'} grouped by uplink code - scored like any other, but no coordinates so no map marker and no Regions Reached credit`;
+    btn.appendChild(inferredEl);
   }
 
   btn.addEventListener('click', onClick);
@@ -1097,15 +1092,11 @@ function reconcileRegionSelection(snapshot) {
     if (!group) {
       state.selectedRegionGroup = null;
       state.selectedRegion = null;
-      state.selectedObserverKeys = [];
-      saveSelectedObserverKeys();
       return;
     }
     if (state.selectedRegion !== null && !group.regions.some((region) => region.name === state.selectedRegion)) {
       state.selectedRegion = null;
     }
-    state.selectedObserverKeys = observerKeysForRegionSelection(snapshot);
-    saveSelectedObserverKeys();
     return;
   }
 
@@ -1113,119 +1104,160 @@ function reconcileRegionSelection(snapshot) {
     const regionExists = regions.some((entry) => entry.regions.some((region) => region.name === state.selectedRegion));
     if (!regionExists) {
       state.selectedRegion = null;
-      state.selectedObserverKeys = [];
-      saveSelectedObserverKeys();
       return;
     }
     if (hasGroups) {
       const parent = regions.find((entry) => entry.regions.some((region) => region.name === state.selectedRegion));
       state.selectedRegionGroup = parent?.group || null;
     }
-    state.selectedObserverKeys = observerKeysForRegionSelection(snapshot);
-    saveSelectedObserverKeys();
   }
 }
 
+// The region filter narrows what the observer list *shows*, and nothing else. It
+// used to set the scoring target, which meant clicking a region silently
+// redefined it: picking North Bay - one located observer - produced a
+// one-observer allowlist and a session reporting "1 / 1, 100% VERY HEALTHY" off a
+// single receipt. Nothing in the UI can narrow the target now.
 function applyRegionSelection() {
-  if (state.selectedRegionGroup === null && state.selectedRegion === null) {
-    state.selectedObserverKeys = [];
-  } else {
-    state.selectedObserverKeys = observerKeysForRegionSelection(state.snapshot);
-  }
-  saveSelectedObserverKeys();
   render();
-  scheduleSessionRetarget();
 }
 
-function observerKeysForRegionSelection(snapshot = state.snapshot) {
-  const directory = Array.isArray(snapshot?.observerDirectory) ? snapshot.observerDirectory : [];
-  return directory
-    .filter((observer) => {
-      if (state.selectedRegion) {
-        return observer.region === state.selectedRegion
-          && (!state.selectedRegionGroup || observer.regionGroup === state.selectedRegionGroup);
-      }
-      return observer.regionGroup === state.selectedRegionGroup;
-    })
-    .map((observer) => observer.key);
+// Visibility only. Uplink-inferred observers have a regionGroup but no county, so
+// they show under their group chip and disappear under a county chip - which is
+// exactly right: a group is all their uplink code can tell us.
+function observersMatchingRegionFilter(observers) {
+  if (state.selectedRegion === null && state.selectedRegionGroup === null) {
+    return observers;
+  }
+  return observers.filter((observer) => {
+    if (state.selectedRegion) {
+      return observer.region === state.selectedRegion
+        && (!state.selectedRegionGroup || observer.regionGroup === state.selectedRegionGroup);
+    }
+    return observer.regionGroup === state.selectedRegionGroup;
+  });
 }
 
-function renderObserverAllowlist() {
+// Everything that used to be split between the scrollable "Observers" list and
+// the "Score Against" grid, in one place. The two panels had become two views of
+// the same set that disagreed on both membership and detail, and reconciling them
+// was left to the reader. There is one list now: the observers this code is
+// scored against, each stating its own region, position status and receipt state.
+function observerDetailLine(observer) {
+  const parts = [];
+  if (observer.regionInferred) {
+    // The group is the metro of the uplink gateway, so name the code that
+    // supplied it rather than implying we know where the node is.
+    parts.push(`${observer.regionGroup} via ${observer.uplinkCode || 'uplink'}`);
+  } else if (observer.region) {
+    parts.push(observer.regionGroup ? `${observer.region}, ${observer.regionGroup}` : observer.region);
+  } else if (observer.regionGroup) {
+    parts.push(observer.regionGroup);
+  } else {
+    parts.push('no region');
+  }
+  parts.push(observer.hasLocation ? 'mapped' : 'no coordinates');
+  if (observer.isRetained === false) {
+    parts.push('not recently heard');
+  }
+  return parts.join(' \u00b7 ');
+}
+
+// Rendered as its own element rather than appended to the detail string, because
+// .observer-detail sets overflow-wrap: anywhere for long region names and that
+// happily split "2-BYTE PATH" after the hyphen. Only stated when the node's own
+// advert confirmed the width: a prefix seen inside somebody else's forwarded
+// path is not evidence of that node's setting.
+function observerHashModeNote(observer) {
+  if (!observer?.hashBytesConfirmed) {
+    return '';
+  }
+  return `${observerHashBytes(observer)}-byte path`;
+}
+
+function renderObservers(session) {
   renderRegionFilter();
-  const directory = selectableObservers();
-  const selected = new Set(effectiveObserverKeysForCreate());
-  ui.observerAllowlistClear.disabled = usingDefaultObserverSet();
 
-  if (directory.length === 0) {
-    ui.observerAllowlistNote.textContent = 'No observers available to select yet.';
-    state.observerAllowlistSignature = '__empty__';
-    ui.observerAllowlist.innerHTML =
-      '<div class="empty-state compact">Observer choices appear as metadata and packets arrive.</div>';
-    return;
-  }
-
-  const selectedCount = selected.size;
-  ui.observerAllowlistNote.textContent = usingDefaultObserverSet()
-    ? defaultObserverTargetSummary()
-    : `Custom: ${selectedCount} observer${selectedCount === 1 ? '' : 's'}.`;
-
-  const rows = directory.map((observer) => ({
-    key: observer.key,
-    label: observerDisplayLabel(observer),
-    hash: observer.hash || '--',
-    detail: [
-      observer.isDefaultTarget ? 'default target' : 'available',
-      observer.isRetained === false ? 'not recently heard' : 'known observer',
-      observer.hasLocation ? 'mapped' : 'no map',
-    ].join(' · '),
-    checked: selected.has(observer.key),
-    stale: observer.isRetained === false,
-  }));
-  const signature = JSON.stringify(
-    rows.map((row) => [row.key, row.label, row.hash, row.detail, row.checked, row.stale]),
+  const expected = Array.isArray(session?.expectedObservers)
+    ? session.expectedObservers.filter((observer) => observer?.key)
+    : [];
+  const seenByKey = new Map(expected.map((observer) => [observer.key, Boolean(observer.seen)]));
+  // With no session yet the panel previews what the next code will target, so a
+  // cold load shows the roster instead of an empty box.
+  const targeted = new Set(
+    expected.length > 0 ? expected.map((observer) => observer.key) : defaultObserverKeys(),
   );
-  if (state.observerAllowlistSignature === signature) {
+
+  const merged = new Map(selectableObservers().map((observer) => [observer.key, observer]));
+  for (const observer of expected) {
+    if (!merged.has(observer.key)) {
+      merged.set(observer.key, { ...fallbackObserverRecord(observer.key), ...observer });
+    }
+  }
+
+  // Scored observers first so the target reads as one block, then anything known
+  // but not currently being scored. Nothing is dropped for being quiet.
+  const all = [...merged.values()].sort((left, right) => {
+    const byTarget = Number(targeted.has(right.key)) - Number(targeted.has(left.key));
+    if (byTarget !== 0) {
+      return byTarget;
+    }
+    return observerDisplayLabel(left).localeCompare(observerDisplayLabel(right));
+  });
+
+  if (all.length === 0) {
+    ui.observerAllowlistNote.textContent = 'No observers yet.';
+    ui.expectedObservers.innerHTML =
+      '<div class="empty-state compact">Observers appear as metadata and packets arrive.</div>';
     return;
   }
 
-  const previousScrollTop = ui.observerAllowlist.scrollTop;
-  ui.observerAllowlist.innerHTML = '';
+  const rows = observersMatchingRegionFilter(all);
+  const baseNote = observerTargetSummary();
+  ui.observerAllowlistNote.textContent = rows.length === all.length
+    ? baseNote
+    // "of N listed" rather than a bare N, because the sentence above counts the
+    // scoring target and the list also carries observers that are not in it.
+    : `${baseNote} Region filter showing ${rows.length} of ${all.length} listed.`;
 
-  for (const row of rows) {
-    const item = document.createElement('label');
-    item.className = `observer-option ${row.stale ? 'stale' : 'ready'} ${row.checked ? 'selected' : ''}`;
-    item.innerHTML = `
-      <input type="checkbox" value="${row.key}" ${row.checked ? 'checked' : ''}>
-      <span class="observer-option-copy">
-        <strong>${escapeHtml(row.label)}</strong>
-        <span>${escapeHtml(row.hash)}</span>
-        <span>${escapeHtml(row.detail)}</span>
-      </span>
-    `;
-    const checkbox = item.querySelector('input');
-    checkbox.addEventListener('change', () => {
-      const next = new Set(effectiveObserverKeysForCreate());
-      if (checkbox.checked) {
-        next.add(row.key);
-      } else {
-        next.delete(row.key);
-      }
-      state.selectedRegionGroup = null;
-      state.selectedRegion = null;
-      state.selectedObserverKeys = [...next];
-      saveSelectedObserverKeys();
-      render();
-      scheduleSessionRetarget();
-    });
-    ui.observerAllowlist.appendChild(item);
+  if (rows.length === 0) {
+    ui.expectedObservers.innerHTML =
+      '<div class="empty-state compact">No observers in this region. The region chips change what is listed here; they do not change what this code is scored against.</div>';
+    return;
   }
 
-  ui.observerAllowlist.scrollTop = previousScrollTop;
-  state.observerAllowlistSignature = signature;
+  ui.expectedObservers.innerHTML = '';
+  for (const observer of rows) {
+    const inTarget = targeted.has(observer.key);
+    const seen = Boolean(seenByKey.get(observer.key));
+    const status = !inTarget ? 'Not Scored' : (seen ? 'Seen' : 'Not Seen');
+    const item = document.createElement('div');
+    item.className = `observer-pill ${inTarget ? (seen ? 'seen' : 'waiting') : 'untargeted'}`
+      + `${observer.regionInferred ? ' unlocated' : ''}`;
+    if (!inTarget) {
+      item.title = 'Not heard inside the active window, so this code is not scored against it.';
+    } else if (observer.regionInferred) {
+      item.title = 'Group inferred from the uplink gateway code because this observer publishes no position. It is scored like any other observer, but it cannot appear on the coverage map and does not count toward Regions Reached.';
+    }
+    item.innerHTML = `
+      <div class="observer-main">
+        <strong class="observer-label">${escapeHtml(observerDisplayLabel(observer))}</strong>
+        <div class="small-note observer-hash">${escapeHtml(observer.hash || '--')}</div>
+        <div class="small-note observer-detail">${escapeHtml(observerDetailLine(observer))}${
+          observerHashModeNote(observer)
+            ? ` \u00b7 <span class="observer-detail__mode">${escapeHtml(observerHashModeNote(observer))}</span>`
+            : ''
+        }</div>
+      </div>
+      <span class="status">${status}</span>
+    `;
+    ui.expectedObservers.appendChild(item);
+  }
 }
 
 function applySiteBranding(snapshot) {
   const site = snapshot?.site || {};
+  applyMapTileConfig(site.map);
   const title = site.title || 'Mesh Health Check';
   const version = String(site.version || '').trim() || '0.0.0';
   const eyebrow = site.eyebrow || 'MeshCore Observer Coverage';
@@ -1261,9 +1293,15 @@ function applySiteBranding(snapshot) {
   }
   ui.heroEyebrow.textContent = eyebrow;
   ui.heroTitle.textContent = headline;
+  // The channel chip only has a home when the description contains the literal
+  // phrase "configured channel" to split on. Without it the sentence stands
+  // alone, so hide the chip instead of trailing a bare channel name after it.
+  const hasChannelSlot = suffixParts.length > 0;
   ui.heroDescriptionPrefix.textContent = (prefix || '').trimEnd() || 'Generate a test code, send it to';
-  ui.heroDescriptionSuffix.textContent = (suffix || '').trimStart()
-    || 'and watch observer coverage build in real time.';
+  ui.heroDescriptionSuffix.textContent = (suffix || '').trimStart();
+  if (ui.heroChannel) {
+    ui.heroChannel.hidden = !hasChannelSlot;
+  }
 }
 
 function mapKnownObservers(session) {
@@ -1331,20 +1369,40 @@ function ensureObserverMap() {
   return state.map.instance;
 }
 
+// Tile URLs come from the server (site.map) so the CARTO API key stays in .env
+// instead of being hard-coded here. Falls back to the historical defaults.
+function applyMapTileConfig(tiles) {
+  if (!tiles || typeof tiles !== 'object') {
+    return;
+  }
+  const signature = `${tiles.darkTileUrl || ''}|${tiles.lightTileUrl || ''}`;
+  if (signature === state.map.tileSignature) {
+    return;
+  }
+  state.map.tiles = tiles;
+  state.map.tileSignature = signature;
+  // Force renderObserverMap() to swap in a layer built from the new URLs.
+  state.map.layerTheme = '';
+}
+
 function currentTileLayer() {
   if (!window.L) {
     return null;
   }
-  if (state.uiTheme === 'light') {
-    return window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap contributors',
-    });
-  }
-  return window.L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  const tiles = state.map.tiles || {};
+  const light = state.uiTheme === 'light';
+  const url = (light ? tiles.lightTileUrl : tiles.darkTileUrl)
+    || (light
+      ? 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
+      : 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png');
+  const attribution = (light ? tiles.lightAttribution : tiles.darkAttribution)
+    || (url.includes('cartocdn.com')
+      ? '&copy; OpenStreetMap contributors &copy; CARTO'
+      : '&copy; OpenStreetMap contributors');
+  return window.L.tileLayer(url, {
     maxZoom: 19,
     subdomains: 'abcd',
-    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+    attribution,
   });
 }
 
@@ -1422,15 +1480,101 @@ function renderObserverMap(session) {
   }, 0);
 }
 
+function ordinalLabel(n) {
+  const value = Number(n);
+  if (!Number.isInteger(value) || value < 1) {
+    return '';
+  }
+  const suffix = value % 100 >= 11 && value % 100 <= 13
+    ? 'th'
+    : ({ 1: 'st', 2: 'nd', 3: 'rd' })[value % 10] || 'th';
+  return `${value}${suffix}`;
+}
+
+// A receipt's prefix follows the same rule as the observer list: the node's own
+// confirmed advert width, falling back to the global display default. The server
+// recomputes observerHash at serialize time, so this is only the client-side
+// fallback for a payload that predates the field.
+function receiptHashPrefix(receipt) {
+  const explicit = String(receipt?.observerHash || '').trim().toUpperCase();
+  const wanted = Math.max(1, Math.min(3, Number(receipt?.observerHashBytes) || 0)) * 2;
+  if (Number.isInteger(wanted) && wanted > 0 && explicit.length >= wanted) {
+    return explicit.slice(0, wanted);
+  }
+  if (explicit) {
+    return explicit;
+  }
+  return observerHashPrefix(receipt?.observerKey, {
+    hashBytes: receipt?.observerHashBytes ?? null,
+  });
+}
+
+// The Timeline sub-panel used to repeat every observer as a chip, then the cards
+// repeated them again with detail. This folds the chip's ordering, offset, and
+// clock time into the card itself, above the Signal bar.
+function receiptArrivalIndex(receipts) {
+  const timed = receipts
+    .filter((receipt) => Number(receipt?.firstSeenAt) > 0)
+    .sort((left, right) => left.firstSeenAt - right.firstSeenAt);
+  const firstSeenAt = timed.length > 0 ? timed[0].firstSeenAt : 0;
+  const lastSeenAt = timed.length > 0 ? timed[timed.length - 1].firstSeenAt : 0;
+  const spread = Math.max(0, lastSeenAt - firstSeenAt);
+  const byKey = new Map();
+  timed.forEach((receipt, index) => {
+    const delta = Math.max(0, receipt.firstSeenAt - firstSeenAt);
+    byKey.set(receipt.observerKey, {
+      order: index + 1,
+      total: timed.length,
+      orderLabel: `${ordinalLabel(index + 1)} of ${timed.length}`,
+      delta,
+      offsetLabel: delta === 0 ? 'First receipt' : `+${formatElapsed(delta)} after first`,
+      timeLabel: formatTime(receipt.firstSeenAt),
+      position: spread > 0 ? (delta / spread) * 100 : 0,
+    });
+  });
+  return { byKey, firstSeenAt, spread, count: timed.length };
+}
+
+function receiptArrivalMarkup(arrival) {
+  if (!arrival) {
+    return '';
+  }
+  const showTrack = arrival.total > 1;
+  return `
+    <div class="receipt-arrival">
+      <div class="receipt-arrival__copy">
+        <strong>${escapeHtml(arrival.offsetLabel)}</strong>
+        <span>${escapeHtml(arrival.timeLabel)}</span>
+      </div>
+      ${showTrack
+        ? `<div class="receipt-arrival__track" role="presentation">
+             <span class="receipt-arrival__fill" style="width: ${arrival.position}%;"></span>
+             <span class="receipt-arrival__dot" style="left: ${Math.min(99, Math.max(1, arrival.position))}%;"></span>
+           </div>`
+        : ''}
+    </div>
+  `;
+}
+
 function renderReceipts(session) {
   const receipts = Array.isArray(session?.receipts) ? session.receipts : [];
   ui.receipts.innerHTML = '';
   ui.receiptsEmpty.classList.toggle('hidden', receipts.length > 0);
 
+  const arrivals = receiptArrivalIndex(receipts);
+
   for (const receipt of receipts) {
     const card = document.createElement('article');
     card.className = 'receipt-card';
     card.dataset.observerKey = receipt.observerKey;
+    const arrival = arrivals.byKey.get(receipt.observerKey) || {
+      orderLabel: '',
+      offsetLabel: 'Time not recorded',
+      timeLabel: '--',
+      position: 0,
+      total: 1,
+    };
+    const arrivalMarkup = receiptArrivalMarkup(arrival);
     const signal = receiptSignalScore(receipt);
     const signalTone = scoreTone(signal);
     const pathMarkup = receipt.path.length > 0
@@ -1442,21 +1586,28 @@ function renderReceipts(session) {
     const distanceSegments = Array.isArray(receipt.pathDistanceSegments)
       ? receipt.pathDistanceSegments
       : [];
+    // One leg per line. Joining them with a middle dot ran a four-hop estimate
+    // into a single wrapped paragraph that could not be read hop by hop.
+    const segmentLines = distanceSegments
+      .map((segment) => `
+        <span class="receipt-distance__leg">
+          <span class="receipt-distance__leg-route">${escapeHtml(`${segment.fromLabel} to ${segment.toLabel}`)}</span>
+          <span class="receipt-distance__leg-value">${escapeHtml(String(segment.distanceText || ''))}${
+            segment.estimated
+              ? escapeHtml(` estimated over ${segment.skippedHopCount} unknown hop${segment.skippedHopCount === 1 ? '' : 's'}`)
+              : ''
+          }</span>
+        </span>
+      `)
+      .join('');
     const distanceMarkup = distanceText
       ? `
         <div class="receipt-distance">
           <strong>${distanceSource === 'observer-span' ? 'Observer span' : 'Estimated path'} ${escapeHtml(distanceText)}</strong>
           ${distanceSource === 'observer-span'
             ? `<span>${escapeHtml(distanceLabel || 'Estimated from receipt observer coordinates.')}</span>`
-            : distanceSegments.length > 0
-            ? `<span>${escapeHtml(distanceSegments.map((segment) =>
-              `${segment.fromLabel} to ${segment.toLabel}: ${segment.distanceText}${
-                segment.estimated
-                  ? ` estimated over ${segment.skippedHopCount} unknown hop${segment.skippedHopCount === 1 ? '' : 's'}`
-                  : ''
-              }`
-            ).join(' · '))}</span>`
-            : '<span>Distance estimated from known observer coordinates.</span>'}
+            : segmentLines
+            || '<span>Distance estimated from known observer coordinates.</span>'}
         </div>
       `
       : '';
@@ -1473,13 +1624,14 @@ function renderReceipts(session) {
       <div class="receipt-head">
         <div>
           <h3 class="receipt-title">${escapeHtml(receipt.observerLabel)}</h3>
-          <div class="receipt-hash">${escapeHtml(receipt.observerHash || '')} · ${escapeHtml(receipt.observerShortKey)}</div>
+          <div class="receipt-hash">${escapeHtml(receiptHashPrefix(receipt))} · ${escapeHtml(receipt.observerShortKey)}</div>
         </div>
-        <div class="small-note">${formatTime(receipt.firstSeenAt)}</div>
+        <div class="small-note">${escapeHtml(arrival.orderLabel)}</div>
       </div>
       <p class="receipt-meta">
         Seen ${receipt.count} time${receipt.count === 1 ? '' : 's'}${metrics ? ` · ${metrics}` : ''}
       </p>
+      ${arrivalMarkup}
       <div class="receipt-meter-grid">
         <div class="receipt-meter">
           <span>Signal</span>
@@ -1503,54 +1655,6 @@ function renderReceipts(session) {
   }
 }
 
-function renderReceiptTimeline(session) {
-  const receipts = Array.isArray(session?.receipts)
-    ? [...session.receipts]
-        .filter((receipt) => receipt?.firstSeenAt)
-        .sort((left, right) => left.firstSeenAt - right.firstSeenAt)
-    : [];
-
-  ui.receiptTimeline.innerHTML = '';
-  ui.receiptTimelineEmpty.classList.toggle('hidden', receipts.length > 0);
-  ui.timelineScale.classList.toggle('hidden', receipts.length === 0);
-
-  if (receipts.length === 0) {
-    ui.timelineSummary.textContent = 'Waiting for observer reports';
-    ui.timelineStartLabel.textContent = 'First receipt';
-    ui.timelineEndLabel.textContent = 'Latest receipt';
-    return;
-  }
-
-  const firstSeenAt = receipts[0].firstSeenAt;
-  const lastSeenAt = receipts[receipts.length - 1].firstSeenAt;
-  const spread = Math.max(0, lastSeenAt - firstSeenAt);
-
-  ui.timelineSummary.textContent = spread > 0
-    ? `${receipts.length} observers across ${formatElapsed(spread)}`
-    : `${receipts.length} observer${receipts.length === 1 ? '' : 's'} at the same moment`;
-  ui.timelineStartLabel.textContent = formatTime(firstSeenAt);
-  ui.timelineEndLabel.textContent = spread > 0 ? `+${formatElapsed(spread)}` : 'same moment';
-
-  for (const receipt of receipts) {
-    const delta = Math.max(0, receipt.firstSeenAt - firstSeenAt);
-    const position = spread > 0 ? (delta / spread) * 100 : 0;
-    const clampedDotPosition = Math.min(99, Math.max(1, position));
-    const row = document.createElement('article');
-    row.className = 'timeline-row';
-    row.innerHTML = `
-      <div class="timeline-copy">
-        <strong>${escapeHtml(receipt.observerLabel)}</strong>
-        <span>${delta === 0 ? `First receipt · ${formatTime(receipt.firstSeenAt)}` : `+${formatElapsed(delta)} · ${formatTime(receipt.firstSeenAt)}`}</span>
-      </div>
-      <div class="timeline-track">
-        <span class="timeline-fill" style="width: ${position}%;"></span>
-        <span class="timeline-dot" style="left: ${clampedDotPosition}%;"></span>
-      </div>
-    `;
-    ui.receiptTimeline.appendChild(row);
-  }
-}
-
 function renderHistory(sessions) {
   ui.sessionHistory.innerHTML = '';
   if (sessions.length === 0) {
@@ -1565,10 +1669,10 @@ function renderHistory(sessions) {
     item.innerHTML = `
       <div>
         <div class="history-code">${escapeHtml(session.code)}</div>
-        <p>${session.observedCount}/${session.expectedCount} observers · ${escapeHtml(session.healthLabel)}</p>
+        <p>${session.observedCount}/${session.expectedCount} observers · ${escapeHtml(historyHealthLabel(session))}</p>
       </div>
       <div>
-        <strong class="${healthClass(session.healthLabel)}">${session.healthPercent}%</strong>
+        <strong class="${healthClass(session.healthLabel)}">${historyHealthScore(session)}</strong>
         <p>${formatTime(session.createdAt)}</p>
       </div>
     `;
@@ -1670,7 +1774,7 @@ function buildDrawerContent() {
               <div class="drawer-stat-grid">
                 ${drawerStat('Default Source', snapshot?.defaultObserverSource || 'Unknown')}
                 ${drawerStat('Directory Size', String(directory.length))}
-                ${drawerStat('Selected Mode', usingDefaultObserverSet() ? 'Default set' : 'Custom set')}
+                ${drawerStat('Scoring Target', String(defaultObserverKeys().length))}
                 ${drawerStat('Active Nodes', String(snapshot?.observerStats?.activeCount || 0))}
               </div>
             </section>
@@ -1773,8 +1877,8 @@ function buildDrawerContent() {
               <div class="drawer-list">
                 ${historySessions.map((entry) => drawerListItem(
                   entry.code,
-                  `${entry.observedCount}/${entry.expectedCount} observers · ${entry.healthPercent}%`,
-                  `${entry.healthLabel} · ${formatTime(entry.createdAt)}`,
+                  `${entry.observedCount}/${entry.expectedCount} observers · ${historyHealthScore(entry)}`,
+                  `${historyHealthLabel(entry)} · ${formatTime(entry.createdAt)}`,
                 )).join('')}
               </div>
             </section>
@@ -1880,6 +1984,19 @@ function render() {
     ui.mqttPill.classList.toggle('online', snapshot.mqtt.connected);
   }
   ui.heroChannel.textContent = channelLabel;
+  if (ui.sessionStepChannel) {
+    ui.sessionStepChannel.textContent = channelLabel;
+  }
+  // Tapping the code on a phone hands the channel straight to the app; the QR
+  // is for the common case of reading this page on a desktop.
+  if (ui.channelQr) {
+    const inviteUri = snapshot.testChannel?.inviteUri || '';
+    const showQr = Boolean(inviteUri) && snapshot.testChannel?.qrAvailable !== false;
+    ui.channelQr.hidden = !showQr;
+    if (showQr) {
+      ui.channelQr.href = inviteUri;
+    }
+  }
   ui.brokerName.textContent = snapshot.mqtt.broker;
   ui.activeObserverNote.textContent =
     `${snapshot.observerStats.activeCount} active observer${snapshot.observerStats.activeCount === 1 ? '' : 's'} in the last ${snapshot.observerStats.windowSeconds}s`;
@@ -1891,13 +2008,21 @@ function render() {
     ui.sessionShareNote.textContent = state.sharedSessionMissing
       ? 'Shared results are removed after their retention window.'
       : retentionNote();
-    ui.sessionStatus.textContent = 'Idle';
+    ui.sessionStatus.textContent = '--';
     setSessionHash('');
     ui.healthLabel.textContent = 'Waiting';
     ui.healthLabel.className = '';
-    ui.healthPercent.innerHTML = '<span class="score-num">0</span><span class="score-unit">%</span>';
-    ui.observedCount.textContent = '0 / 0';
-    ui.repeaterCount.textContent = '0';
+    ui.healthPercent.innerHTML = healthScoreMarkup(0, false);
+    ui.observedCount.textContent = '--';
+    if (ui.healthNote) {
+      ui.healthNote.textContent = '';
+      ui.healthNote.classList.add('hidden');
+    }
+    if (ui.regionCoverage) {
+      ui.regionCoverage.textContent = '--';
+      ui.regionCoverage.removeAttribute('title');
+    }
+    ui.repeaterCount.textContent = '--';
     if (ui.longestPacketDistance) {
       ui.longestPacketDistance.textContent = '--';
     }
@@ -1905,11 +2030,8 @@ function render() {
     ui.channelName.textContent = channelLabel;
     ui.messagePreview.textContent = `Waiting for your ${channelLabel} message.`;
     ui.messagePreview.title = '';
-    ui.expectedSource.textContent = defaultObserverTargetSummary();
-    renderObserverAllowlist();
-    renderExpectedObservers(null);
+    renderObservers(null);
     renderObserverMap(null);
-    renderReceiptTimeline(null);
     renderReceipts(null);
     renderHistory(historySessions);
     renderGlanceMetrics(null);
@@ -1924,15 +2046,44 @@ function render() {
   }
 
   ui.sessionCode.textContent = session.code;
-  ui.sessionInstructions.textContent = session.instructions;
+  ui.sessionInstructions.textContent = state.sharedSessionId
+    ? `This is a saved result for code ${session.code}.`
+    : session.instructions;
   ui.sessionShareNote.textContent = `Share link available until ${formatDateTime(session.resultExpiresAt)}.`;
-  ui.sessionStatus.textContent = session.status.toUpperCase();
+  // An expired code that was never used carries no information: it is the
+  // leftover of an earlier visit, and rendering EXPIRED on arrival reads as a
+  // fault report. Withhold it until there is a real status to show. An expired
+  // code that DID run keeps its status, because then it means something.
+  const sessionRan = Boolean(session.matchedAt) || Number(session.useCount) > 0;
+  ui.sessionStatus.textContent = session.status === 'expired' && !sessionRan
+    ? '--'
+    : session.status.toUpperCase();
   setSessionHash(session.messageHash);
-  ui.healthLabel.textContent = session.healthLabel;
-  ui.healthLabel.className = healthClass(session.healthLabel);
-  ui.healthPercent.innerHTML = `<span class="score-num">${session.healthPercent}</span><span class="score-unit">%</span>`;
-  ui.observedCount.textContent = `${session.observedCount} / ${session.expectedCount}`;
-  ui.repeaterCount.textContent = String(session.repeaterCount || 0);
+  // healthMeasured is absent on cached payloads from an older server; fall back to
+  // the label so the placeholder still shows instead of a red zero.
+  const healthMeasured = session.healthMeasured != null
+    ? Boolean(session.healthMeasured)
+    : !isHealthPending(session.healthLabel);
+  // Two separate gates. healthMeasured means a message actually landed, so the
+  // counters have something to report. healthRated means the target set was big
+  // enough for a percentage to mean anything - a one-observer target is heard or
+  // not heard, and dressing that up as 100% VERY HEALTHY is what this prevents.
+  const healthRated = healthMeasured && isHealthRated(session);
+  ui.healthLabel.textContent = healthRated
+    ? session.healthLabel
+    : (healthMeasured ? 'Not rated' : 'Waiting');
+  ui.healthLabel.className = healthRated ? healthClass(session.healthLabel) : '';
+  ui.healthPercent.innerHTML = healthScoreMarkup(session.healthPercent, healthRated);
+  renderHealthNote(session, healthMeasured, healthRated);
+  // Until the test message is heard, these counters have no result to report.
+  // A measured 0 is meaningful; an unmeasured 0 just looks like a failure. The
+  // raw count is still shown when the score is unrated - 1 / 1 is honest, it is
+  // only the percentage derived from it that is not.
+  ui.observedCount.textContent = healthMeasured
+    ? `${session.observedCount} / ${session.expectedCount}`
+    : '--';
+  renderRegionCoverage(session, healthRated);
+  ui.repeaterCount.textContent = healthMeasured ? String(session.repeaterCount || 0) : '--';
   if (ui.longestPacketDistance) {
     const distanceText = session.longestPacketDistanceText || '--';
     ui.longestPacketDistance.textContent = session.longestPacketDistanceSource === 'observer-span'
@@ -1949,16 +2100,10 @@ function render() {
   ui.channelName.textContent = session.channelName ? `#${session.channelName}` : channelLabel;
   ui.messagePreview.textContent = session.messageBody || `Waiting for your ${channelLabel} message.`;
   ui.messagePreview.title = session.messageBody || '';
-  const showTargetPreview = selectionDiffersFromSession(session);
-  ui.expectedSource.textContent = showTargetPreview
-    ? targetPreviewLabel()
-    : sessionObserverSourceLabel(session);
 
-  updateRing(session.healthPercent, session.healthLabel);
-  renderObserverAllowlist();
-  renderExpectedObservers(showTargetPreview ? targetPreviewSession() : session);
+  updateRing(healthRated ? session.healthPercent : 0, healthRated ? session.healthLabel : 'Waiting');
+  renderObservers(session);
   renderObserverMap(session);
-  renderReceiptTimeline(session);
   renderReceipts(session);
   renderHistory(historySessions);
   renderGlanceMetrics(session);
@@ -1966,19 +2111,9 @@ function render() {
 }
 
 function applySnapshot(snapshot) {
-  const previousRegionGroup = state.selectedRegionGroup;
-  const previousRegion = state.selectedRegion;
-  const previousObserverKeys = state.selectedObserverKeys;
   reconcileRegionSelection(snapshot);
   state.snapshot = snapshot;
   render();
-  if (
-    previousRegionGroup !== state.selectedRegionGroup
-    || previousRegion !== state.selectedRegion
-    || !sameKeys(previousObserverKeys, state.selectedObserverKeys)
-  ) {
-    scheduleSessionRetarget();
-  }
 }
 
 async function refreshTrackedSessions() {
@@ -2121,17 +2256,34 @@ ui.shareSessionButton.addEventListener('click', () => {
   copySessionShareLink();
 });
 
-ui.observerAllowlistClear.addEventListener('click', () => {
-  if (usingDefaultObserverSet()) {
+clearStoredObserverSelection();
+
+// The observer and reports panels live inside a <details> block that starts
+// collapsed. The coverage map was moved out of it and is always visible, so the
+// Leaflet invalidateSize()/refit dance on open is no longer needed here.
+function syncAdditionalInfo() {
+  if (!ui.additionalInfo || !ui.additionalInfoLabel) {
     return;
   }
-  state.selectedRegionGroup = null;
-  state.selectedRegion = null;
-  state.selectedObserverKeys = [];
-  saveSelectedObserverKeys();
-  render();
-  scheduleSessionRetarget();
-});
+  const isOpen = ui.additionalInfo.open;
+  ui.additionalInfoLabel.textContent = isOpen
+    ? 'Hide Additional Information'
+    : 'Show Additional Information';
+  if (ui.additionalInfoToggle) {
+    ui.additionalInfoToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  }
+  if (!isOpen) {
+    return;
+  }
+  // Panels revealed here were display:none until now, so give them a render pass
+  // with real dimensions. The coverage map no longer lives in this block.
+  window.setTimeout(render, 0);
+}
+
+if (ui.additionalInfo) {
+  ui.additionalInfo.addEventListener('toggle', syncAdditionalInfo);
+  syncAdditionalInfo();
+}
 
 if (ui.uiThemeToggle) {
   ui.uiThemeToggle.addEventListener('click', () => {

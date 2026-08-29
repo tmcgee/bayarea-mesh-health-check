@@ -193,6 +193,123 @@ test('POST /api/sessions creates a session and GET returns it', async () => {
   assert.equal(session.shareUrl, `${baseUrl}/share/${created.id}`);
 });
 
+test('a session with no receipts reports an unmeasured health score', async () => {
+  const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+
+  const sessionResponse = await fetch(`${baseUrl}/api/sessions/${created.id}`);
+  const session = await sessionResponse.json();
+  assert.equal(session.observedCount, 0);
+  // Nothing heard and nothing matched yet: the score is pending, not failing.
+  assert.equal(session.healthMeasured, false);
+  assert.equal(session.healthLabel, 'WAITING');
+});
+
+test('the scoring set is the denominator and extra hearers cannot inflate it', async () => {
+  const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+
+  const message = `denominator ${created.code}`;
+  const envelope = buildGroupTextEnvelope({
+    secretHex: process.env.TEST_CHANNEL_SECRET,
+    sender: 'Denominator Tester',
+    message,
+    messageHash: 'D0D0D0D0D0D0D0D0',
+    timestamp: 1761000100,
+  });
+  for (const observerKey of packetFixture.observerKeys) {
+    ingestMqttMessage(
+      `meshcore/BOS/${observerKey}/packets`,
+      Buffer.from(JSON.stringify(envelope)),
+    );
+  }
+
+  const sessionResponse = await fetch(`${baseUrl}/api/sessions/${created.id}`);
+  const session = await sessionResponse.json();
+
+  // expectedObservers now enumerates exactly the scoring set, so its length and
+  // the reported denominator can never disagree. Before this change the payload
+  // listed the top-N roster while expectedCount was Math.max(..., seen.length),
+  // which is how a well-heard message ended up pinned at exactly 100%.
+  assert.equal(session.expectedObservers.length, session.expectedCount);
+  // Every observer that reported is part of the denominator, so the score is
+  // bounded by 100 without needing a clamp.
+  assert.ok(session.observedCount <= session.expectedCount);
+  assert.ok(session.healthPercent <= 100);
+  const scoringKeys = new Set(session.expectedObservers.map((entry) => entry.key));
+  for (const receipt of session.receipts) {
+    assert.ok(scoringKeys.has(receipt.observerKey));
+  }
+});
+
+test('region coverage is reported and stays empty without located observers', async () => {
+  const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+
+  const sessionResponse = await fetch(`${baseUrl}/api/sessions/${created.id}`);
+  const session = await sessionResponse.json();
+  assert.ok(session.regionCoverage);
+  assert.equal(typeof session.regionCoverage.reached, 'number');
+  assert.equal(typeof session.regionCoverage.total, 'number');
+  assert.ok(Array.isArray(session.regionCoverage.groups));
+  // No regions file is configured in the test harness, so no observer has a
+  // coordinate-derived group and the metric has nothing to report. The frontend
+  // renders a placeholder rather than a misleading 0 / 0.
+  assert.equal(session.regionCoverage.total, 0);
+  assert.equal(session.regionCoverage.reached, 0);
+});
+
+test('a target set below the minimum reports the count but withholds the grade', async () => {
+  // A one-observer target used to score "1 / 1 = 100% VERY HEALTHY" off a single
+  // receipt. The count is honest; the percentage derived from it is not.
+  const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedObserverKeys: [packetFixture.observerKeys[0]] }),
+  });
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+
+  const envelope = buildGroupTextEnvelope({
+    secretHex: process.env.TEST_CHANNEL_SECRET,
+    sender: 'Single Target Tester',
+    message: `single ${created.code}`,
+    messageHash: 'C1C1C1C1C1C1C1C1',
+    timestamp: 1761000200,
+  });
+  ingestMqttMessage(
+    `meshcore/BOS/${packetFixture.observerKeys[0]}/packets`,
+    Buffer.from(JSON.stringify(envelope)),
+  );
+
+  const sessionResponse = await fetch(`${baseUrl}/api/sessions/${created.id}`);
+  const session = await sessionResponse.json();
+  assert.equal(session.expectedCount, 1);
+  assert.equal(session.observedCount, 1);
+  // The raw percentage is still computed and sent, so a client that wants it can
+  // have it; healthRated is what tells the UI not to present it as a grade.
+  assert.equal(session.healthMeasured, true);
+  assert.equal(session.healthRated, false);
+  assert.equal(session.healthUnratedReason, 'target-too-small');
+  assert.equal(session.healthLabel, 'NOT RATED');
+  assert.ok(session.minScoringSet >= 2);
+});
+
 test('created sessions are persisted in the results file', async () => {
   const createResponse = await fetch(`${baseUrl}/api/sessions`, {
     method: 'POST',
@@ -888,4 +1005,81 @@ test('session allow list limits scoring and receipts to selected observers', asy
   assert.equal(session.healthPercent, 100);
   assert.equal(session.receipts.length, 1);
   assert.equal(session.receipts[0].observerKey, selectedObserverKey);
+});
+
+test('uppercase string SNR/RSSI from GoMesh envelopes populate receipt telemetry', async () => {
+  const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+
+  const message = `gomesh telemetry ${created.code}`;
+  const envelope = buildGroupTextEnvelope({
+    secretHex: process.env.TEST_CHANNEL_SECRET,
+    sender: 'GoMesh Tester',
+    message,
+    messageHash: 'CAFE1234BEEF5678',
+    timestamp: 1770000000,
+    path: ['3FA002'],
+  });
+
+  // GoMesh publishes these uppercase and as strings; LetsMesh uses lowercase numbers.
+  const gomeshEnvelope = { ...envelope, SNR: '-1.5', RSSI: '-85', duration: '2113' };
+  delete gomeshEnvelope.snr;
+  delete gomeshEnvelope.rssi;
+
+  ingestMqttMessage(
+    'meshcore/SFO/AF07FC2005E04D08DDA921E64985E62201BF974AE0B0E35084B804229ED11A2B/packets',
+    Buffer.from(JSON.stringify(gomeshEnvelope)),
+  );
+
+  const sessionResponse = await fetch(`${baseUrl}/api/sessions/${created.id}`);
+  assert.equal(sessionResponse.status, 200);
+  const session = await sessionResponse.json();
+  assert.equal(session.receipts.length, 1);
+  assert.equal(session.receipts[0].snr, -1.5);
+  assert.equal(session.receipts[0].rssi, -85);
+  assert.equal(session.receipts[0].duration, 2113);
+});
+
+test('a follow-up packet without telemetry does not blank stored SNR/RSSI', async () => {
+  const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+
+  const message = `gomesh rebroadcast ${created.code}`;
+  const base = buildGroupTextEnvelope({
+    secretHex: process.env.TEST_CHANNEL_SECRET,
+    sender: 'GoMesh Tester',
+    message,
+    messageHash: 'CAFE1234BEEF9999',
+    timestamp: 1770000001,
+    path: ['3FA002'],
+  });
+  const topic = 'meshcore/SJC/AF07FC2005E04D08DDA921E64985E62201BF974AE0B0E35084B804229ED11A2B/packets';
+
+  const rx = { ...base, SNR: '5', RSSI: '-100' };
+  delete rx.snr;
+  delete rx.rssi;
+  ingestMqttMessage(topic, Buffer.from(JSON.stringify(rx)));
+
+  // The observer's own tx rebroadcast of the same packet carries no SNR/RSSI,
+  // and an empty string must not be read as a real 0 dBm reading either.
+  const tx = { ...base, direction: 'tx', SNR: '', RSSI: '' };
+  delete tx.snr;
+  delete tx.rssi;
+  ingestMqttMessage(topic, Buffer.from(JSON.stringify(tx)));
+
+  const sessionResponse = await fetch(`${baseUrl}/api/sessions/${created.id}`);
+  const session = await sessionResponse.json();
+  assert.equal(session.receipts.length, 1);
+  assert.equal(session.receipts[0].snr, 5);
+  assert.equal(session.receipts[0].rssi, -100);
 });

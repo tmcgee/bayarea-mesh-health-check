@@ -127,6 +127,7 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
       {
         group: 'North',
         count: 3,
+        inferredCount: 0,
         regions: [
           { name: 'Alpha', count: 1, packetCount: 1 },
           { name: 'Beta', count: 1, packetCount: 1 },
@@ -136,6 +137,7 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
       {
         group: 'South',
         count: 1,
+        inferredCount: 0,
         regions: [
           { name: 'Gamma', count: 1, packetCount: 1 },
         ],
@@ -271,6 +273,7 @@ test('bootstrap falls back to flat region filters when boundaries have no group 
       {
         group: '',
         count: 2,
+        inferredCount: 0,
         regions: [
           { name: 'Alpha', count: 1, packetCount: 1 },
           { name: 'Beta', count: 1, packetCount: 1 },

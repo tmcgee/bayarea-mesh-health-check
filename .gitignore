@@ -34,3 +34,6 @@ test-results/
 *.tmp
 *.bak
 *.orig
+
+# Bay Area adaptation: CoreScope seeding backups
+data/observer.json.bak-*

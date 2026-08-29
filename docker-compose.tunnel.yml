@@ -1,0 +1,38 @@
+# Bay Area Mesh Health Check — self-hosted behind a Cloudflare Tunnel.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d --build
+#
+# This overlay:
+#   * stops publishing 3090 to the world (binds it to 127.0.0.1 for local curl only)
+#   * adds a cloudflared sidecar that dials out to Cloudflare over 443
+#     — no inbound port forwarding, no public IP needed
+#
+# Put TUNNEL_TOKEN in .env (from Zero Trust → Networks → Tunnels → your tunnel →
+# "Install and run a connector"). Treat it as a secret: it is full control of the tunnel.
+
+services:
+  mesh-health-check:
+    # Only reachable from the tunnel container and from localhost on the host.
+    ports:
+      - "127.0.0.1:3090:3090"
+    networks:
+      - meshnet
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: mesh-health-check-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+      # Uncomment if your network blocks UDP/QUIC (cloudflared falls back noisily otherwise):
+      # TUNNEL_TRANSPORT_PROTOCOL: http2
+    depends_on:
+      - mesh-health-check
+    networks:
+      - meshnet
+
+networks:
+  meshnet:
+    driver: bridge

@@ -1,9 +1,10 @@
-const CACHE_NAME = 'mesh-health-check-pwa-v3';
+const CACHE_NAME = 'mesh-health-check-pwa-v3-bayarea';
 const CORE_ASSETS = [
   '/',
   '/app',
   '/manifest.webmanifest',
   '/styles.css',
+  '/theme-bayarea.css',
   '/app.js',
   '/landing.css',
   '/turnstile-landing.js',

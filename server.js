@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 import express from 'express';
+import qrcode from 'qrcode-generator';
 import mqtt from 'mqtt';
 import { WebSocketServer } from 'ws';
 import {
@@ -211,14 +212,38 @@ function brokerLabel(urlString) {
   }
 }
 
-function hashFromKeyPrefix(value) {
+function hashFromKeyPrefix(value, byteSize = OBSERVER_HASH_DISPLAY_BYTES) {
   const normalized = normalizeKey(value);
-  const byteSize = OBSERVER_HASH_DISPLAY_BYTES;
-  const displayLength = byteSize * 2;
+  const width = Number.isInteger(byteSize) && byteSize >= 1 && byteSize <= 3
+    ? byteSize
+    : OBSERVER_HASH_DISPLAY_BYTES;
+  const displayLength = width * 2;
   if (normalized.length < displayLength) {
     return '';
   }
   return normalized.slice(0, displayLength);
+}
+
+// A node's path hash width is a per-node firmware setting (`set path.hash.mode`)
+// that sizes only the packets that node originates. It is therefore only
+// knowable from that node's own adverts - a prefix seen inside somebody else's
+// forwarded path says nothing about the node's own config, because a 1.14+
+// repeater relays every width regardless of its setting. We only persist a
+// width when the profile source confirmed it from an advert; anything else
+// falls back to the global display default.
+function observerHashBytes(observerKey) {
+  const profile = observerProfiles.get(normalizeKey(observerKey));
+  const declared = Number(profile?.hashBytes);
+  if (Number.isInteger(declared) && declared >= 1 && declared <= 3) {
+    return declared;
+  }
+  return OBSERVER_HASH_DISPLAY_BYTES;
+}
+
+function observerHashBytesConfirmed(observerKey) {
+  const profile = observerProfiles.get(normalizeKey(observerKey));
+  const declared = Number(profile?.hashBytes);
+  return Number.isInteger(declared) && declared >= 1 && declared <= 3;
 }
 
 function observerPathHop(observerKey, hashSize = 1) {
@@ -286,7 +311,7 @@ function parseObserversJson(filePath) {
       if (typeof rawValue === 'string') {
         const name = String(rawValue || '').trim();
         if (name) {
-          profiles.set(key, { name, lat: null, lon: null });
+          profiles.set(key, { name, uplink: '', lat: null, lon: null, hashBytes: null });
         }
         continue;
       }
@@ -294,17 +319,24 @@ function parseObserversJson(filePath) {
         continue;
       }
       const name = String(rawValue.name || rawValue.label || '').trim();
+      const uplink = String(rawValue.uplink || rawValue.uplinkCode || '').trim().toUpperCase();
       const lat = normalizeCoordinate(rawValue.lat ?? rawValue.latitude ?? null, 'lat');
       const lon = normalizeCoordinate(
         rawValue.lon ?? rawValue.lng ?? rawValue.longitude ?? null,
         'lon',
       );
       const hasValidLocation = lat != null && lon != null && !(lat === 0 && lon === 0);
-      if (name || hasValidLocation) {
+      const rawHashBytes = Number(rawValue.hashBytes ?? rawValue.hash_size ?? null);
+      const hashBytes = Number.isInteger(rawHashBytes) && rawHashBytes >= 1 && rawHashBytes <= 3
+        ? rawHashBytes
+        : null;
+      if (name || uplink || hasValidLocation || hashBytes != null) {
         profiles.set(key, {
           name: name || '',
+          uplink: uplink || '',
           lat: hasValidLocation ? lat : null,
           lon: hasValidLocation ? lon : null,
+          hashBytes,
         });
       }
     }
@@ -330,6 +362,8 @@ const OBSERVERS_FILE_PATH = resolveAppPath(OBSERVERS_FILE);
 const OBSERVER_ACTIVITY_FILE = envValue('OBSERVER_ACTIVITY_FILE', path.join('data', 'observer-activity.json'));
 const OBSERVER_ACTIVITY_FILE_PATH = resolveAppPath(OBSERVER_ACTIVITY_FILE);
 const REGIONS_FILE = envValue('REGIONS_FILE', '');
+const UPLINK_CODES_FILE = envValue('UPLINK_CODES_FILE', '');
+const REGION_FALLBACK = envValue('REGION_FALLBACK', '').trim().toLowerCase();
 const REGION_NAME_PROPERTY = envValue('REGION_NAME_PROPERTY', 'name');
 const REGION_GROUP_PROPERTY = envValue('REGION_GROUP_PROPERTY', 'group');
 const RESULTS_FILE = envValue('RESULTS_FILE', path.join('data', 'session-results.json'));
@@ -346,6 +380,41 @@ const CORESCOPE_URL = normalizeSiteUrl(envValue('CORESCOPE_URL', ''));
 const DISTANCE_UNIT = normalizeDistanceUnit(envValue('DISTANCE_UNIT', 'mi'));
 const PWA_APP_NAME = 'Mesh Reach';
 const REPO_URL = 'https://github.com/yellowcooln/meshcore-health-check';
+// 'expected' plots only the scoring target set (upstream default); 'directory'
+// plots every observer that has coordinates, which is what the coverage map is
+// usually read as meaning.
+const MAP_OBSERVER_SCOPE = envValue('MAP_OBSERVER_SCOPE', 'expected').trim().toLowerCase() === 'directory'
+  ? 'directory'
+  : 'expected';
+const CARTO_API_KEY = envValue('CARTO_API_KEY', '');
+const MAP_TILE_DARK_URL = envValue('MAP_TILE_DARK_URL', '');
+const MAP_TILE_LIGHT_URL = envValue('MAP_TILE_LIGHT_URL', '');
+const OSM_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+// CARTO raster basemaps require a free API key; keyless tiles are served but
+// stamped with an "API KEY REQUIRED" watermark. https://carto.com/basemaps/apikey/
+function cartoTileUrl(style) {
+  const base = `https://{s}.basemaps.cartocdn.com/rastertiles/${style}/{z}/{x}/{y}{r}.png`;
+  return CARTO_API_KEY ? `${base}?key=${encodeURIComponent(CARTO_API_KEY)}` : base;
+}
+
+const OSM_ATTRIBUTION = '&copy; OpenStreetMap contributors';
+const CARTO_ATTRIBUTION = '&copy; OpenStreetMap contributors &copy; CARTO';
+
+function mapTileConfig() {
+  const darkTileUrl = MAP_TILE_DARK_URL || cartoTileUrl('dark_all');
+  const lightTileUrl = MAP_TILE_LIGHT_URL
+    || (CARTO_API_KEY ? cartoTileUrl('light_all') : OSM_TILE_URL);
+  const attributionFor = (url) => (url.includes('cartocdn.com') ? CARTO_ATTRIBUTION : OSM_ATTRIBUTION);
+  return {
+    darkTileUrl,
+    lightTileUrl,
+    darkAttribution: attributionFor(darkTileUrl),
+    lightAttribution: attributionFor(lightTileUrl),
+    cartoKeyConfigured: Boolean(CARTO_API_KEY),
+  };
+}
+
 const EXTERNAL_LINK_URL = normalizeSiteUrl(envValue('EXTERNAL_LINK_URL', ''));
 const EXTERNAL_LINK_LABEL = envValue('EXTERNAL_LINK_LABEL', '');
 const DASH_BROKER_HOST = envValue('DASH_BROKER_HOST', '');
@@ -409,6 +478,23 @@ const OBSERVER_TOP_COUNT = Math.max(
   1,
   Math.round(envNumber('OBSERVER_TOP_COUNT', 10)),
 );
+// 'top-window' is the upstream behaviour: the default scoring target is the
+// busiest OBSERVER_TOP_COUNT observers over OBSERVER_TOP_WINDOW_DAYS. 'active'
+// makes it every scoring-eligible observer that reported inside the active
+// window instead, which is the honest reachable audience once the eligible pool
+// is comfortably larger than OBSERVER_TOP_COUNT.
+const OBSERVER_TARGET_MODE = envValue('OBSERVER_TARGET_MODE', 'top-window')
+  .trim()
+  .toLowerCase() === 'active'
+  ? 'active'
+  : 'top-window';
+// A percentage over a denominator of one or two is not a health score, it is a
+// coin flip wearing a grade. Below this many observers in the scoring set the
+// raw count is still reported but the percentage and the label are withheld.
+const OBSERVER_MIN_SCORING_SET = Math.max(
+  1,
+  Math.round(envNumber('OBSERVER_MIN_SCORING_SET', 3)),
+);
 const OBSERVER_HASH_DISPLAY_BYTES = Math.max(
   1,
   Math.min(3, Math.round(envNumber('OBSERVER_HASH_DISPLAY_BYTES', 1))),
@@ -461,6 +547,31 @@ if (channelsConfig && Array.isArray(channelsConfig.channels)) {
 
 const envTestChannelSecret = normalizeHex(envValue('TEST_CHANNEL_SECRET', ''));
 const testChannelName = envValue('TEST_CHANNEL_NAME', 'health-check').toLowerCase();
+
+// The companion app imports a channel from meshcore://channel/add?name=&secret=
+// (docs.meshcore.io/qr_codes). A hashtag channel's key is not random - it is
+// sha256("#name") truncated to 16 bytes - so when TEST_CHANNEL_SECRET is left
+// blank, as it should be for a hashtag channel, derive the same key the app
+// would rather than shipping a QR that cannot be scanned.
+const testChannelLabel = `#${testChannelName}`;
+const testChannelInviteSecret = envTestChannelSecret
+  || createHash('sha256').update(testChannelLabel).digest('hex').slice(0, 32);
+const testChannelInviteUri =
+  `meshcore://channel/add?name=${encodeURIComponent(testChannelLabel)}`
+  + `&secret=${testChannelInviteSecret}`;
+const testChannelQrSvg = (() => {
+  try {
+    const qr = qrcode(0, 'M');
+    qr.addData(testChannelInviteUri);
+    qr.make();
+    // The generated tag carries its own white background rect, so it stays
+    // scannable on the dark theme without a wrapper.
+    return qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+  } catch (error) {
+    log('warn', `[qr] could not encode channel invite: ${error.message}`);
+    return '';
+  }
+})();
 let testChannelHash = envValue('TEST_CHANNEL_HASH', '').toLowerCase();
 if (envTestChannelSecret) {
   const derivedHash = calculateChannelHash(envTestChannelSecret);
@@ -670,6 +781,11 @@ function loadRegionBoundaries() {
 }
 
 const regionBoundaries = loadRegionBoundaries();
+// When true, a coordinate that falls outside every region boundary is ignored.
+// mqtt.gomesh.dev carries observers well outside the Bay Area (an Orlando
+// cluster, a Philadelphia repeater), and their adverts otherwise stretch the
+// coverage map and its bounds across the continent.
+const REQUIRE_REGION_MATCH = envBool('REQUIRE_REGION_MATCH', false);
 
 function deriveRegionInfo(lat, lon) {
   if (lat == null || lon == null || regionBoundaries.length === 0) {
@@ -687,6 +803,158 @@ function deriveRegionInfo(lat, lon) {
     }
   }
   return { region: null, regionGroup: null };
+}
+
+// ---------- Uplink-code region classification ----------
+// GoMesh publishes on meshcore/<CODE>/<pubkey>/<stream>, where <CODE> is the
+// airport identifier of the uplink gateway's metro - not the node's own position.
+// UPLINK_CODES_FILE classifies codes explicitly: "codes" are in-area, and the
+// "outOfArea" block is the exclusion list. Observers on an out-of-area code are
+// ALWAYS excluded - they never enter the directory, the region hierarchy, or any
+// count - regardless of REGION_FALLBACK. A code in neither block stays
+// unclassified: the observer is listed with no region, exactly as upstream, and
+// the code is logged once so a new metro can be added deliberately. Setting
+// REGION_FALLBACK=uplink-code additionally lets a listed code stand in for the
+// region *group* of an observer that never publishes coordinates. Those
+// observers are ordinary scoring targets; the inferred group is used for
+// grouping and filtering only, never for the map or for Regions Reached.
+// Without a mapping file nothing is classified and behaviour matches upstream.
+
+function normalizeUplinkCode(value) {
+  const code = String(value || '').trim().toUpperCase();
+  return /^[A-Z0-9]{3,4}$/.test(code) ? code : '';
+}
+
+function loadUplinkCodes() {
+  const codes = new Map();
+  const excluded = new Set();
+  if (!UPLINK_CODES_FILE) {
+    return { codes, excluded };
+  }
+  const filePath = resolveAppPath(UPLINK_CODES_FILE);
+  if (!fs.existsSync(filePath)) {
+    logger.warn(`[regions] uplink code file not found: ${filePath}`);
+    return { codes, excluded };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (error) {
+    logger.warn(`[regions] failed to parse ${filePath}: ${error.message}`);
+    return { codes, excluded };
+  }
+  if (parsed?.outOfArea && typeof parsed.outOfArea === 'object' && !Array.isArray(parsed.outOfArea)) {
+    for (const rawCode of Object.keys(parsed.outOfArea)) {
+      const code = normalizeUplinkCode(rawCode);
+      if (code) {
+        excluded.add(code);
+      }
+    }
+  }
+  const table = parsed?.codes && typeof parsed.codes === 'object' ? parsed.codes : parsed;
+  if (!table || typeof table !== 'object' || Array.isArray(table)) {
+    return { codes, excluded };
+  }
+  const knownGroups = new Set(regionBoundaries.map((boundary) => boundary.group).filter(Boolean));
+  for (const [rawCode, rawValue] of Object.entries(table)) {
+    const code = normalizeUplinkCode(rawCode);
+    if (!code || excluded.has(code)) {
+      continue;
+    }
+    const isObject = rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue);
+    const group = String((typeof rawValue === 'string' ? rawValue : isObject ? rawValue.group : '') || '').trim();
+    if (!group) {
+      continue;
+    }
+    // A code pointing at a group the boundary file does not define would create a
+    // phantom chip that no located observer can ever join.
+    if (knownGroups.size > 0 && !knownGroups.has(group)) {
+      logger.warn(`[regions] uplink code ${code} maps to unknown group "${group}", ignored`);
+      continue;
+    }
+    codes.set(code, {
+      group,
+      label: String((isObject && rawValue.label) || code).trim() || code,
+      confidence: String((isObject && rawValue.confidence) || 'observed').trim().toLowerCase(),
+    });
+  }
+  return { codes, excluded };
+}
+
+const { codes: uplinkCodes, excluded: uplinkCodesOutOfArea } = loadUplinkCodes();
+const UPLINK_CODES_LOADED = uplinkCodes.size > 0 || uplinkCodesOutOfArea.size > 0;
+const REGION_FALLBACK_UPLINK = REGION_FALLBACK === 'uplink-code' && uplinkCodes.size > 0;
+if (UPLINK_CODES_LOADED) {
+  logger.info(
+    `[regions] loaded ${uplinkCodes.size} in-area and ${uplinkCodesOutOfArea.size} out-of-area`
+    + ` uplink codes from ${UPLINK_CODES_FILE}; region fallback ${REGION_FALLBACK_UPLINK ? 'on' : 'off'}`,
+  );
+} else if (REGION_FALLBACK === 'uplink-code') {
+  logger.warn('[regions] REGION_FALLBACK=uplink-code needs UPLINK_CODES_FILE; fallback disabled');
+}
+
+function uplinkCodeIsOutOfArea(value) {
+  const code = normalizeUplinkCode(value);
+  return Boolean(code && uplinkCodesOutOfArea.has(code));
+}
+
+// Codes in neither block are reported once each, so a new metro shows up in the
+// log instead of silently sitting in the directory with no region.
+const unclassifiedUplinkCodes = new Set();
+function noteUplinkCode(value) {
+  const code = normalizeUplinkCode(value);
+  if (!UPLINK_CODES_LOADED || !code || unclassifiedUplinkCodes.has(code)) {
+    return;
+  }
+  if (uplinkCodes.has(code) || uplinkCodesOutOfArea.has(code)) {
+    return;
+  }
+  unclassifiedUplinkCodes.add(code);
+  logger.warn(`[regions] uplink code ${code} is in neither codes nor outOfArea; region unresolved`);
+}
+
+function observerIsOutOfArea(observer) {
+  return uplinkCodeIsOutOfArea(observer?.uplinkCode);
+}
+
+// Coordinates always win. The uplink code is a group-level hint only: it never
+// sets observer.region, so an inferred observer contributes no county to the
+// hierarchy and can never gain a map marker.
+function resolveObserverRegion(observer) {
+  const fromCoordinates = deriveRegionInfo(observer?.lat ?? null, observer?.lon ?? null);
+  if (fromCoordinates.region) {
+    return { ...fromCoordinates, regionSource: 'coordinates' };
+  }
+  if (REGION_FALLBACK_UPLINK) {
+    const info = uplinkCodes.get(normalizeUplinkCode(observer?.uplinkCode));
+    if (info) {
+      return { region: null, regionGroup: info.group, regionSource: 'uplink-code' };
+    }
+  }
+  return { region: null, regionGroup: null, regionSource: null };
+}
+
+function observerRegionIsInferred(observer) {
+  return Boolean(REGION_FALLBACK_UPLINK && observer?.regionSource === 'uplink-code');
+}
+
+// Only an out-of-area uplink code disqualifies an observer from scoring. A
+// missing position does NOT: an observer that publishes no coordinates still
+// hears the channel and still publishes a receipt, and that receipt is the only
+// thing scoring actually measures. Excluding those nodes threw away 13 of 35
+// live Bay Area observers - several of them among the busiest on the network -
+// and made the health score a report on who happens to broadcast GPS.
+//
+// The two properties that a missing position DOES govern are handled elsewhere
+// and stay strict: the coverage map plots lat/lon so an unlocated observer never
+// gets a marker, and regionCoverageFor() counts coordinate-derived groups only,
+// so an uplink-inferred group cannot inflate Regions Reached.
+function observerIsScoringEligible(observerKey) {
+  const observer = observerState.get(normalizeKey(observerKey));
+  if (!observer) {
+    return true;
+  }
+  return !observerIsOutOfArea(observer);
 }
 
 function utcDayKey(timestamp = Date.now()) {
@@ -835,6 +1103,9 @@ function serializeSessionRecord(session) {
     channelHash: session.channelHash,
     channelName: session.channelName,
     allowlistEnabled: Boolean(session.allowlistEnabled),
+    activeObserverKeys: Array.isArray(session.activeObserverKeys)
+      ? session.activeObserverKeys.map(normalizeKey).filter(Boolean)
+      : [],
     expectedObserverKeys: Array.isArray(session.expectedObserverKeys)
       ? session.expectedObserverKeys.map(normalizeKey).filter(Boolean)
       : [],
@@ -924,6 +1195,9 @@ function restoreSessionRecord(rawSession) {
     channelHash: String(rawSession.channelHash || '').trim().toLowerCase(),
     channelName: String(rawSession.channelName || ''),
     allowlistEnabled: Boolean(rawSession.allowlistEnabled),
+    activeObserverKeys: Array.isArray(rawSession.activeObserverKeys)
+      ? rawSession.activeObserverKeys.map(normalizeKey).filter(Boolean)
+      : [],
     expectedObserverKeys,
     expectedObserverSource: String(rawSession.expectedObserverSource || ''),
     receipts,
@@ -979,12 +1253,19 @@ function writeObserverNamesFile() {
       continue;
     }
     const name = String(profile.name || '').trim();
+    const uplink = normalizeUplinkCode(profile.uplink);
     const lat = normalizeCoordinate(profile.lat, 'lat');
     const lon = normalizeCoordinate(profile.lon, 'lon');
+    const rawHashBytes = Number(profile.hashBytes);
+    const hashBytes = Number.isInteger(rawHashBytes) && rawHashBytes >= 1 && rawHashBytes <= 3
+      ? rawHashBytes
+      : null;
     payload[key] = {
       ...(name ? { name } : {}),
+      ...(uplink ? { uplink } : {}),
       ...(lat != null ? { lat } : {}),
       ...(lon != null ? { lon } : {}),
+      ...(hashBytes != null ? { hashBytes } : {}),
     };
   }
   writeJsonFileAtomic(OBSERVERS_FILE_PATH, payload);
@@ -1050,16 +1331,19 @@ function createObserverRecord(observerKey) {
   const activity = observerActivityHistory.get(observerKey) || null;
   const lat = normalizeCoordinate(profile?.lat ?? null, 'lat');
   const lon = normalizeCoordinate(profile?.lon ?? null, 'lon');
-  const regionInfo = deriveRegionInfo(lat, lon);
+  const uplinkCode = normalizeUplinkCode(profile?.uplink ?? null);
+  const regionInfo = resolveObserverRegion({ lat, lon, uplinkCode });
   const lastPacketAt = Math.max(0, Number(activity?.lastPacketAt || 0));
   return {
     key: observerKey,
-    hash: hashFromKeyPrefix(observerKey),
+    hash: hashFromKeyPrefix(observerKey, observerHashBytes(observerKey)),
     name: profile?.name || null,
     lat,
     lon,
+    uplinkCode: uplinkCode || null,
     region: regionInfo.region,
     regionGroup: regionInfo.regionGroup,
+    regionSource: regionInfo.regionSource,
     firstSeenAt: lastPacketAt,
     lastPacketAt,
     packetCount: 0,
@@ -1216,6 +1500,9 @@ function ensureObserverRecord(observerKey) {
   if (observer.lon == null && profile?.lon != null) {
     observer.lon = normalizeCoordinate(profile.lon, 'lon');
   }
+  if (!observer.uplinkCode && profile?.uplink) {
+    observer.uplinkCode = normalizeUplinkCode(profile.uplink) || null;
+  }
   return observer;
 }
 
@@ -1340,7 +1627,8 @@ function renderHtmlTemplate(template, request, pageTitleSuffix = '') {
     .replaceAll('__APP_META_TITLE__', escapeHtml(title))
     .replaceAll('__APP_META_DESCRIPTION__', escapeHtml(description))
     .replaceAll('__APP_META_URL__', escapeHtml(url))
-    .replaceAll('__APP_META_IMAGE__', escapeHtml(imageUrl));
+    .replaceAll('__APP_META_IMAGE__', escapeHtml(imageUrl))
+    .replaceAll('__MAP_OBSERVER_SCOPE__', escapeHtml(MAP_OBSERVER_SCOPE));
 }
 
 function clientAddress(requestLike) {
@@ -1506,6 +1794,33 @@ async function verifyTurnstileToken(token, remoteIp = '') {
   } catch (error) {
     return { success: false, error: error.message || 'verification_error' };
   }
+}
+
+// Brokers disagree on telemetry field casing: LetsMesh publishes lowercase
+// `rssi`/`snr`, GoMesh publishes uppercase `RSSI`/`SNR` as strings. Match on a
+// case-insensitive key so both work, and reject blank strings (Number('') is 0,
+// which would otherwise be recorded as a real 0 dBm reading).
+function envelopeNumber(envelope, ...names) {
+  if (!envelope || typeof envelope !== 'object') {
+    return null;
+  }
+  const lookup = new Map(
+    Object.keys(envelope).map((key) => [key.toLowerCase(), envelope[key]]),
+  );
+  for (const name of names) {
+    const value = lookup.get(String(name).toLowerCase());
+    if (value === null || value === undefined) {
+      continue;
+    }
+    if (typeof value === 'string' && value.trim() === '') {
+      continue;
+    }
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return null;
 }
 
 function parseEnvelope(payloadBuffer) {
@@ -1814,11 +2129,56 @@ function createCode() {
 function activeObserverKeys(now = Date.now()) {
   const keys = [];
   for (const observer of observerState.values()) {
-    if (now - observer.lastPacketAt <= OBSERVER_ACTIVE_WINDOW_MS) {
-      keys.push(observer.key);
+    if (now - observer.lastPacketAt > OBSERVER_ACTIVE_WINDOW_MS) {
+      continue;
     }
+    if (!observerIsScoringEligible(observer.key)) {
+      continue;
+    }
+    keys.push(observer.key);
   }
   return dedupe(keys.sort());
+}
+
+// Region coverage is deliberately stricter than scoring eligibility: only a
+// coordinate-derived group counts. A group inferred from an uplink code is a
+// plausible guess, not a position, and letting it tally would inflate reach
+// with data the map itself refuses to plot.
+function coordinateRegionGroupForKey(observerKey) {
+  const observer = observerState.get(normalizeKey(observerKey));
+  if (!observer || observer.regionSource !== 'coordinates') {
+    return null;
+  }
+  return observer.regionGroup || null;
+}
+
+// Denominator = groups that had at least one located observer in the scoring
+// set. Numerator = groups where at least one of them actually reported. A group
+// with no located observer is invisible to the metric rather than counted as a
+// miss: we have no way to hear from it.
+function regionCoverageFor(scoringKeys, seenKeys) {
+  const seenSet = new Set(seenKeys.map(normalizeKey));
+  const groups = new Map();
+  for (const key of scoringKeys) {
+    const group = coordinateRegionGroupForKey(key);
+    if (!group) {
+      continue;
+    }
+    if (!groups.has(group)) {
+      groups.set(group, { group, observerCount: 0, seenCount: 0 });
+    }
+    const entry = groups.get(group);
+    entry.observerCount += 1;
+    if (seenSet.has(normalizeKey(key))) {
+      entry.seenCount += 1;
+    }
+  }
+  const list = [...groups.values()].sort((left, right) => left.group.localeCompare(right.group));
+  return {
+    reached: list.filter((entry) => entry.seenCount > 0).length,
+    total: list.length,
+    groups: list,
+  };
 }
 
 function observerDisplayLabelForKey(observerKey) {
@@ -1841,6 +2201,11 @@ function topObserverKeys(now = Date.now()) {
       total += Math.max(0, Math.floor(Number(entry?.days?.[dayKey] || 0)));
     }
     if (total <= 0) {
+      continue;
+    }
+    // Out-of-area observers are excluded outright. An unlocated observer is
+    // not: it can still report, so it can still be scored.
+    if (!observerIsScoringEligible(key)) {
       continue;
     }
     ranked.push({
@@ -1875,6 +2240,15 @@ function defaultObserverTarget(now = Date.now()) {
       source: 'configured',
     };
   }
+  if (OBSERVER_TARGET_MODE === 'active') {
+    const activeKeys = activeObserverKeys(now);
+    if (activeKeys.length > 0) {
+      return {
+        keys: activeKeys,
+        source: 'active-window',
+      };
+    }
+  }
   const topKeys = topObserverKeys(now);
   if (topKeys.length > 0) {
     return {
@@ -1888,7 +2262,17 @@ function defaultObserverTarget(now = Date.now()) {
   };
 }
 
-function healthLabel(percent) {
+// A session that has not yet matched a message has nothing to score, so 0% is
+// not a result - it is the absence of one. Callers pass measured=false for that
+// state and render a placeholder instead of a failing grade.
+function healthLabel(percent, measured = true, rated = true) {
+  if (!measured) {
+    return 'WAITING';
+  }
+  // Heard, but the target set is too small for the percentage to mean anything.
+  if (!rated) {
+    return 'NOT RATED';
+  }
   if (percent >= 85) {
     return 'VERY HEALTHY';
   }
@@ -1904,7 +2288,11 @@ function healthLabel(percent) {
 function serializeObserver(observer) {
   return {
     key: observer.key,
-    hash: observer.hash,
+    // Recomputed rather than read from observer.hash so a width learned after
+    // the record was created takes effect without a restart.
+    hash: hashFromKeyPrefix(observer.key, observerHashBytes(observer.key)),
+    hashBytes: observerHashBytes(observer.key),
+    hashBytesConfirmed: observerHashBytesConfirmed(observer.key),
     label: observer.name || shortKey(observer.key),
     name: observer.name || null,
     lat: observer.lat ?? null,
@@ -1912,6 +2300,10 @@ function serializeObserver(observer) {
     hasLocation: observer.lat != null && observer.lon != null,
     region: observer.region ?? null,
     regionGroup: observer.regionGroup ?? null,
+    regionSource: observer.regionSource ?? null,
+    regionInferred: observerRegionIsInferred(observer),
+    uplinkCode: observer.uplinkCode ?? null,
+    uplinkLabel: uplinkCodes.get(normalizeUplinkCode(observer.uplinkCode))?.label ?? null,
     shortKey: shortKey(observer.key),
     packetCount: observer.packetCount,
     firstSeenAt: observer.firstSeenAt,
@@ -1936,7 +2328,9 @@ function serializeObserverForKey(observerKey) {
   if (!observer) {
     return {
       key: observerKey,
-      hash: hashFromKeyPrefix(observerKey),
+      hash: hashFromKeyPrefix(observerKey, observerHashBytes(observerKey)),
+      hashBytes: observerHashBytes(observerKey),
+      hashBytesConfirmed: observerHashBytesConfirmed(observerKey),
       label: shortKey(observerKey),
       name: null,
       lat: null,
@@ -1944,6 +2338,10 @@ function serializeObserverForKey(observerKey) {
       hasLocation: false,
       region: null,
       regionGroup: null,
+      regionSource: null,
+      regionInferred: false,
+      uplinkCode: null,
+      uplinkLabel: null,
       shortKey: shortKey(observerKey),
       packetCount: 0,
       firstSeenAt: 0,
@@ -1960,6 +2358,10 @@ function observerDirectory() {
   const defaultKeys = new Set(defaultObserverTarget().keys);
   return [...observerState.values()]
     .filter((observer) => observerIsRetained(observer, now))
+    // An out-of-area uplink code excludes the observer outright - no directory
+    // entry, no counts, no selection, no map. This is unconditional whenever a
+    // code table is loaded.
+    .filter((observer) => !observerIsOutOfArea(observer))
     .sort((left, right) => {
       const leftDefault = defaultKeys.has(left.key) ? 1 : 0;
       const rightDefault = defaultKeys.has(right.key) ? 1 : 0;
@@ -1980,9 +2382,16 @@ function observerDirectory() {
 function buildRegionHierarchy(directory) {
   const groups = new Map();
   const ungrouped = new Map();
+  // Observers whose group came from the uplink code carry no county, so they can
+  // only be counted at group level. They are tallied separately and reported as
+  // inferredCount so the UI can show them without implying a polygon match.
+  const inferred = new Map();
 
   for (const observer of directory) {
     if (!observer.region) {
+      if (observer.regionInferred && observer.regionGroup) {
+        inferred.set(observer.regionGroup, (inferred.get(observer.regionGroup) || 0) + 1);
+      }
       continue;
     }
     const count = Number.isInteger(observer.packetCount) ? observer.packetCount : 0;
@@ -2021,14 +2430,30 @@ function buildRegionHierarchy(directory) {
     .map((group) => ({
       group: group.group,
       count: group.count,
+      inferredCount: inferred.get(group.group) || 0,
       regions: [...group.regions.values()].sort(byName),
     }))
     .sort(byName);
+
+  // A group can exist purely from inferred members - e.g. every observer that
+  // uplinks through SQL is coordinate-less. Emit it so the chip still appears.
+  for (const [groupName, count] of inferred.entries()) {
+    if (!groups.has(groupName)) {
+      out.push({
+        group: groupName,
+        count: 0,
+        inferredCount: count,
+        regions: [],
+      });
+    }
+  }
+  out.sort(byName);
 
   if (ungrouped.size > 0) {
     out.push({
       group: '',
       count: [...ungrouped.values()].reduce((sum, region) => sum + region.count, 0),
+      inferredCount: 0,
       regions: [...ungrouped.values()].sort(byName),
     });
   }
@@ -2216,7 +2641,15 @@ function serializeSession(session, request = null) {
       const distanceEstimate = receiptDistanceEstimate(report);
       return {
         observerKey: report.observerKey,
-        observerHash: report.observerHash,
+        // Recomputed at serialize time, like serializeObserver, so a receipt
+        // shows the observer's own confirmed path hash width. report.observerHash
+        // is whatever width was current when the packet arrived, and persisted
+        // sessions can carry a narrower value from before the width was learned.
+        observerHash:
+          hashFromKeyPrefix(report.observerKey, observerHashBytes(report.observerKey))
+          || report.observerHash,
+        observerHashBytes: observerHashBytes(report.observerKey),
+        observerHashBytesConfirmed: observerHashBytesConfirmed(report.observerKey),
         observerLabel: observer?.name || report.observerLabel,
         observerName: observer?.name || report.observerName,
         observerShortKey: shortKey(report.observerKey),
@@ -2273,8 +2706,36 @@ function serializeSession(session, request = null) {
         : []
     ),
   );
-  const denominator = Math.max(1, expected.length, seen.length);
+  // Scoring set. An explicit allowlist is the user's own choice of denominator
+  // and is used verbatim. Otherwise the denominator is the set of scoring-
+  // eligible observers that were active when the session was created, unioned
+  // with anyone who actually reported. The union matters twice over: an observer
+  // that woke up mid-session can never push the score above 100%, and dropping
+  // the old Math.max(..., seen.length) removes the bug where any well-heard
+  // message landed on exactly 100% because seen became its own denominator.
+  // activeObserverKeys is absent on sessions retained from an older build, so
+  // those fall back to the former top-N roster.
+  const activeAtStart = dedupe((session.activeObserverKeys || []).map(normalizeKey));
+  const scoringBaseline = OBSERVER_TARGET_MODE === 'active' && activeAtStart.length > 0
+    ? activeAtStart
+    : expected;
+  const scoringKeys = session.allowlistEnabled && expected.length > 0
+    ? expected
+    : dedupe([...scoringBaseline, ...seen]);
+  const denominator = Math.max(1, scoringKeys.length);
   const percent = Math.round((seen.length / denominator) * 100);
+  const regionCoverage = regionCoverageFor(scoringKeys, seen);
+  // Nothing has been heard and no message has matched yet: the score is not zero,
+  // it is undefined. matchedAt means the test message did land, so a genuine 0%
+  // after that is a real (bad) result and stays scored.
+  const healthMeasured = seen.length > 0 || Boolean(session.matchedAt);
+  // A hand-picked or single-observer target is a reachability check, not a health
+  // measurement. Report what was heard, withhold the grade, and say why.
+  const scoringSetTooSmall = scoringKeys.length < OBSERVER_MIN_SCORING_SET;
+  const healthRated = healthMeasured && !scoringSetTooSmall;
+  const healthUnratedReason = healthMeasured && scoringSetTooSmall
+    ? 'target-too-small'
+    : null;
   const longestPacketDistance = reports
     .map((report) => Number(report.pathDistance))
     .filter((value) => Number.isFinite(value))
@@ -2293,7 +2754,7 @@ function serializeSession(session, request = null) {
     expiresAt: session.expiresAt,
     resultExpiresAt: sessionRetentionDeadline(session),
     status: session.status,
-    instructions: `Send ${session.code} to #${testChannelName}`,
+    instructions: `Step 2. Send the code ${session.code} to the ${testChannelLabel} channel.`,
     useCount: session.useCount,
     maxUses: session.maxUses,
     usesRemaining: Math.max(0, session.maxUses - session.useCount),
@@ -2319,16 +2780,23 @@ function serializeSession(session, request = null) {
         }
       : null,
     expectedCount: denominator,
+    regionCoverage,
     healthPercent: percent,
-    healthLabel: healthLabel(percent),
+    healthMeasured: healthMeasured,
+    healthRated,
+    healthUnratedReason,
+    minScoringSet: OBSERVER_MIN_SCORING_SET,
+    healthLabel: healthLabel(percent, healthMeasured, healthRated),
     expectedObserverSource: session.expectedObserverSource,
     sharePath: sharePathForSession(session),
     shareUrl: shareUrlForSession(session, request),
-    expectedObservers: expected.map((key) => {
+    expectedObservers: scoringKeys.map((key) => {
       const observer = observerState.get(key);
       return {
         key,
-        hash: hashFromKeyPrefix(key),
+        hash: hashFromKeyPrefix(key, observerHashBytes(key)),
+        hashBytes: observerHashBytes(key),
+        hashBytesConfirmed: observerHashBytesConfirmed(key),
         label: observer?.name || shortKey(key),
         seen: seen.includes(key),
       };
@@ -2358,6 +2826,7 @@ function snapshotPayload() {
       coreScopeUrl: CORESCOPE_URL,
       externalLinkUrl: EXTERNAL_LINK_URL,
       externalLinkLabel: EXTERNAL_LINK_LABEL,
+      map: mapTileConfig(),
     },
     mqtt: {
       connected: mqttConnected,
@@ -2375,8 +2844,14 @@ function snapshotPayload() {
       windowSeconds: Math.round(OBSERVER_ACTIVE_WINDOW_MS / 1000),
       topWindowDays: OBSERVER_TOP_WINDOW_DAYS,
       topCount: OBSERVER_TOP_COUNT,
+      targetMode: OBSERVER_TARGET_MODE,
       hashDisplayBytes: OBSERVER_HASH_DISPLAY_BYTES,
       distanceUnit: DISTANCE_UNIT,
+      regionFallback: REGION_FALLBACK_UPLINK ? 'uplink-code' : null,
+      uplinkCodesLoaded: UPLINK_CODES_LOADED,
+      inferredRegionCount: directory.filter((observer) => observer.regionInferred).length,
+      outOfAreaCount: [...observerState.values()]
+        .filter((observer) => observerIsRetained(observer) && observerIsOutOfArea(observer)).length,
     },
     results: {
       retentionSeconds: Math.round(RESULT_RETENTION_MS / 1000),
@@ -2393,6 +2868,8 @@ function snapshotPayload() {
       name: testChannelName,
       hash: testChannelHash || null,
       configured: Boolean(testChannelHash),
+      inviteUri: testChannelInviteUri,
+      qrAvailable: Boolean(testChannelQrSvg),
     },
   };
 }
@@ -2487,6 +2964,10 @@ function updateObserverLocation(observerKey, location) {
   if (!normalizedKey || lat == null || lon == null || (lat === 0 && lon === 0)) {
     return false;
   }
+  if (REQUIRE_REGION_MATCH && regionBoundaries.length > 0 && !deriveRegionInfo(lat, lon).region) {
+    logger.debug(`[observer] location ${normalizedKey} -> ${lat}, ${lon} outside configured regions, ignored`);
+    return false;
+  }
   const observer = ensureObserverRecord(normalizedKey);
   if (!observer) {
     return false;
@@ -2496,14 +2977,46 @@ function updateObserverLocation(observerKey, location) {
   observerProfiles.set(normalizedKey, { ...profile, lat, lon });
   observer.lat = lat;
   observer.lon = lon;
-  const regionInfo = deriveRegionInfo(lat, lon);
+  const regionInfo = resolveObserverRegion(observer);
   observer.region = regionInfo.region;
   observer.regionGroup = regionInfo.regionGroup;
+  observer.regionSource = regionInfo.regionSource;
   if (changed) {
     logger.debug(`[observer] location ${normalizedKey} -> ${lat}, ${lon}`);
     scheduleObserverNamesWrite();
   }
   return changed;
+}
+
+// The uplink code arrives on every topic, so this runs on a hot path: bail out
+// unless the value actually changed.
+function updateObserverUplinkCode(observerKey, rawCode) {
+  const normalizedKey = normalizeKey(observerKey);
+  const code = normalizeUplinkCode(rawCode);
+  if (!normalizedKey || !code) {
+    return false;
+  }
+  const observer = observerState.get(normalizedKey);
+  if (observer && observer.uplinkCode === code) {
+    return false;
+  }
+  const record = observer || ensureObserverRecord(normalizedKey);
+  if (!record) {
+    return false;
+  }
+  record.uplinkCode = code;
+  noteUplinkCode(code);
+  const regionInfo = resolveObserverRegion(record);
+  record.region = regionInfo.region;
+  record.regionGroup = regionInfo.regionGroup;
+  record.regionSource = regionInfo.regionSource;
+  const profile = observerProfiles.get(normalizedKey) || { name: '', uplink: '', lat: null, lon: null };
+  if (profile.uplink !== code) {
+    observerProfiles.set(normalizedKey, { ...profile, uplink: code });
+    scheduleObserverNamesWrite();
+  }
+  logger.debug(`[observer] uplink ${normalizedKey} -> ${code}${uplinkCodeIsOutOfArea(code) ? ' (out of area)' : ''}`);
+  return true;
 }
 
 function handleObserverMetadata(topic, observerKey, payloadBuffer) {
@@ -2627,9 +3140,17 @@ function recordReceipt(session, packetInfo) {
     existing.count += 1;
     existing.path = [...packetInfo.path];
     existing.topic = packetInfo.topic;
-    existing.rssi = packetInfo.rssi;
-    existing.snr = packetInfo.snr;
-    existing.duration = packetInfo.duration;
+    // Keep the first real reading: an observer's own tx rebroadcast of the same
+    // packet carries no SNR/RSSI and would otherwise blank out good telemetry.
+    if (Number.isFinite(packetInfo.rssi)) {
+      existing.rssi = packetInfo.rssi;
+    }
+    if (Number.isFinite(packetInfo.snr)) {
+      existing.snr = packetInfo.snr;
+    }
+    if (Number.isFinite(packetInfo.duration)) {
+      existing.duration = packetInfo.duration;
+    }
     existing.channelName = packetInfo.channelName;
     return true;
   }
@@ -2808,11 +3329,9 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
     channelName,
     path,
     packetType: packet.payloadType,
-    rssi: Number.isFinite(Number(envelope?.rssi)) ? Number(envelope.rssi) : null,
-    snr: Number.isFinite(Number(envelope?.snr)) ? Number(envelope.snr) : null,
-    duration: Number.isFinite(Number(envelope?.duration))
-      ? Number(envelope.duration)
-      : null,
+    rssi: envelopeNumber(envelope, 'rssi', 'rx_rssi', 'rxRssi'),
+    snr: envelopeNumber(envelope, 'snr', 'rx_snr', 'rxSnr'),
+    duration: envelopeNumber(envelope, 'duration', 'airtime'),
   };
 
   let session = null;
@@ -2924,6 +3443,16 @@ app.get('/manifest.webmanifest', (request, response) => {
 app.use('/vendor/leaflet', express.static(path.join(APP_DIR, 'node_modules/leaflet/dist'), { index: false }));
 app.use(express.static(path.join(APP_DIR, 'public'), { index: false }));
 
+app.get('/channel-qr.svg', (request, response) => {
+  if (!testChannelQrSvg) {
+    response.status(404).type('text/plain').send('channel QR unavailable');
+    return;
+  }
+  response.type('image/svg+xml');
+  response.set('Cache-Control', 'public, max-age=3600');
+  response.send(testChannelQrSvg);
+});
+
 app.get('/api/bootstrap', (request, response) => {
   response.json(serializeBootstrap(request));
 });
@@ -2987,6 +3516,8 @@ app.post(
       channelHash: '',
       channelName: '',
       allowlistEnabled: requestedAllowlist.enabled,
+      // Snapshotted so the denominator cannot drift while the session is open.
+      activeObserverKeys: activeObserverKeys(now),
       expectedObserverKeys: expected.keys.length > 0 ? expected.keys : [],
       expectedObserverSource: expected.source || '',
       receipts: new Map(),
@@ -3164,6 +3695,11 @@ function startRuntime() {
     if (!decoderKeyCandidates.length) {
       logger.warn('[web] no decoder key configured for the test channel');
     }
+    if (!CARTO_API_KEY && mapTileConfig().darkTileUrl.includes('cartocdn.com')) {
+      logger.warn(
+        '[web] no CARTO_API_KEY set - basemap tiles carry an "API KEY REQUIRED" watermark (free key: https://carto.com/basemaps/apikey/)',
+      );
+    }
     logger.info(`[web] log level ${logger.level}`);
   });
 }
@@ -3197,6 +3733,12 @@ export function ingestMqttMessage(topic, payload) {
   const observerKey = parts[parts.length - 2] || '';
   if (!observerKey) {
     return;
+  }
+  // meshcore/<CODE>/<pubkey>/<stream> - the segment before the key is the uplink
+  // gateway's airport identifier. Upstream discards it; it is the only region
+  // signal available for an observer that never publishes a position.
+  if (parts.length >= 3) {
+    updateObserverUplinkCode(observerKey, parts[parts.length - 3]);
   }
   if (streamType === 'packets') {
     handlePacketMessage(topic, observerKey, payload);

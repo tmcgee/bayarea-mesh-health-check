@@ -1,0 +1,179 @@
+{
+  "$comment": [
+    "GoMesh publishes on meshcore/<CODE>/<pubkey>/<stream>, where <CODE> is the",
+    "airport identifier of the uplink gateway's metro - NOT the node's own position.",
+    "Use it only as a group-level hint for observers that never publish coordinates.",
+    "Any code absent from this table is treated as out-of-area and its observers are",
+    "excluded from the directory, the region hierarchy and every count.",
+    "confidence=observed: seen on mqtt.gomesh.dev and cross-checked against the",
+    "  polygon-derived group of at least one located observer publishing under it.",
+    "confidence=anticipated: an airport identifier inside a county in",
+    "  regions/us-ca-bay-area.geojson, not yet observed on the broker. Listed so a",
+    "  new gateway does not silently drop its observers as out-of-area.",
+    "Groups must match REGION_GROUP_PROPERTY values in the boundary file."
+  ],
+  "version": 1,
+  "codes": {
+    "SFO": {
+      "group": "San Francisco",
+      "label": "San Francisco",
+      "confidence": "observed"
+    },
+    "OAK": {
+      "group": "East Bay",
+      "label": "Oakland",
+      "confidence": "observed"
+    },
+    "HWD": {
+      "group": "East Bay",
+      "label": "Hayward",
+      "confidence": "anticipated"
+    },
+    "LVK": {
+      "group": "East Bay",
+      "label": "Livermore",
+      "confidence": "anticipated"
+    },
+    "CCR": {
+      "group": "East Bay",
+      "label": "Concord",
+      "confidence": "anticipated"
+    },
+    "SJC": {
+      "group": "South Bay",
+      "label": "San Jose",
+      "confidence": "observed"
+    },
+    "RHV": {
+      "group": "South Bay",
+      "label": "Reid-Hillview",
+      "confidence": "anticipated"
+    },
+    "NUQ": {
+      "group": "South Bay",
+      "label": "Moffett Field",
+      "confidence": "anticipated"
+    },
+    "PAO": {
+      "group": "South Bay",
+      "label": "Palo Alto",
+      "confidence": "anticipated"
+    },
+    "SQL": {
+      "group": "Peninsula",
+      "label": "San Carlos",
+      "confidence": "observed"
+    },
+    "HAF": {
+      "group": "Peninsula",
+      "label": "Half Moon Bay",
+      "confidence": "anticipated"
+    },
+    "STS": {
+      "group": "North Bay",
+      "label": "Santa Rosa",
+      "confidence": "observed"
+    },
+    "APC": {
+      "group": "North Bay",
+      "label": "Napa",
+      "confidence": "observed"
+    },
+    "DVO": {
+      "group": "North Bay",
+      "label": "Novato",
+      "confidence": "anticipated"
+    },
+    "SUU": {
+      "group": "North Bay",
+      "label": "Travis AFB",
+      "confidence": "anticipated"
+    },
+    "MRY": {
+      "group": "Central Coast",
+      "label": "Monterey",
+      "confidence": "observed"
+    },
+    "PRB": {
+      "group": "Central Coast",
+      "label": "Paso Robles",
+      "confidence": "observed"
+    },
+    "SNS": {
+      "group": "Central Coast",
+      "label": "Salinas",
+      "confidence": "anticipated"
+    },
+    "CVH": {
+      "group": "Central Coast",
+      "label": "Hollister",
+      "confidence": "anticipated"
+    },
+    "WVI": {
+      "group": "Central Coast",
+      "label": "Watsonville",
+      "confidence": "anticipated"
+    },
+    "SBP": {
+      "group": "Central Coast",
+      "label": "San Luis Obispo",
+      "confidence": "anticipated"
+    },
+    "MCE": {
+      "group": "Central Valley",
+      "label": "Merced",
+      "confidence": "observed"
+    },
+    "MOD": {
+      "group": "Central Valley",
+      "label": "Modesto",
+      "confidence": "anticipated"
+    },
+    "SCK": {
+      "group": "Central Valley",
+      "label": "Stockton",
+      "confidence": "anticipated"
+    },
+    "SMF": {
+      "group": "Central Valley",
+      "label": "Sacramento",
+      "confidence": "anticipated"
+    },
+    "MHR": {
+      "group": "Central Valley",
+      "label": "Mather",
+      "confidence": "anticipated"
+    },
+    "COA": {
+      "group": "Sierra Foothills",
+      "label": "Columbia",
+      "confidence": "observed"
+    },
+    "AUN": {
+      "group": "Sierra Foothills",
+      "label": "Auburn",
+      "confidence": "anticipated"
+    },
+    "PVF": {
+      "group": "Sierra Foothills",
+      "label": "Placerville",
+      "confidence": "anticipated"
+    },
+    "JAQ": {
+      "group": "Sierra Foothills",
+      "label": "Jackson",
+      "confidence": "anticipated"
+    },
+    "TVL": {
+      "group": "Sierra Foothills",
+      "label": "South Lake Tahoe",
+      "confidence": "anticipated"
+    }
+  },
+  "outOfArea": {
+    "$comment": "Authoritative exclusion list. Observers uplinking through these codes are removed from the directory, all counts, region chips, the map, and every selection - unconditionally, whether or not REGION_FALLBACK is set. A code in neither block is left unclassified: the observer stays listed with no region and the code is logged once.",
+    "BFL": "Bakersfield - Kern County, outside the boundary file",
+    "MCO": "Orlando FL - the cluster REQUIRE_REGION_MATCH was added for",
+    "PHL": "Philadelphia PA - single repeater"
+  }
+}

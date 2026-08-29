@@ -131,7 +131,9 @@ code {
   display: grid;
   grid-template-columns: 1fr;
   gap: 18px;
-  width: min(1480px, calc(100vw - 40px));
+  /* was min(1480px, ...), which left a wide monitor showing the whole app in a
+     centred column roughly half the screen wide */
+  width: min(1860px, calc(100vw - 40px));
   margin: 0 auto;
   padding: 24px 0 52px;
 }
@@ -222,7 +224,6 @@ code {
 .dock-brand,
 .toolbar,
 .panel-header,
-.timeline-row,
 .receipt-head,
 .history-item,
 .observer-pill,
@@ -236,6 +237,9 @@ code {
   align-items: flex-start;
   gap: 14px;
   padding-right: 8px;
+  /* the utility controls must be able to drop to their own line rather than
+     crushing the title to one word per row on a phone */
+  flex-wrap: wrap;
 }
 
 .brand-orb {
@@ -276,7 +280,6 @@ code {
 }
 
 .brand-copy,
-.toolbar-copy,
 .dock-note,
 .dock-meta__item,
 .panel-header > div,
@@ -290,7 +293,6 @@ code {
 .panel-label,
 .meta-label,
 .small-note,
-.toolbar-label,
 .landing-eyebrow,
 .landing-status,
 .landing-module__label {
@@ -302,7 +304,6 @@ code {
 }
 
 .brand-copy h1,
-.toolbar-copy h2,
 .panel h2,
 .panel h3,
 .detail-drawer h2 {
@@ -317,13 +318,92 @@ code {
 }
 
 .dock-lede,
-.toolbar-copy p,
+.session-share-invite {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.session-share-invite__copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.session-share-invite__copy .session-share-note {
+  margin-top: 6px;
+}
+
+.session-share-invite__text {
+  margin: 0;
+  color: var(--muted-strong);
+  line-height: 1.6;
+}
+
+.session-share-invite .control-button {
+  flex: 0 0 auto;
+}
+
+.session-steps {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  min-width: 0;
+}
+
+.session-steps__list {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.session-step {
+  color: var(--muted-strong);
+  line-height: 1.6;
+}
+
+.session-step strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The QR keeps a white plate in both themes because a scanner needs the quiet
+   zone and module contrast the spec asks for - inverting it for dark mode is a
+   good way to make a code that will not read. */
+.channel-qr {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #ffffff;
+  text-decoration: none;
+}
+
+.channel-qr img {
+  display: block;
+  width: 84px;
+  height: 84px;
+}
+
+.channel-qr[hidden] {
+  display: none;
+}
+
 .session-instructions,
-.message-preview p,
 .receipt-meta,
 .history-item p,
 .drawer-body p,
-.observer-option-copy span,
 .landing-copy,
 .landing-module p {
   color: var(--muted-strong);
@@ -337,48 +417,32 @@ code {
 }
 
 .dock-lede strong {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
+  display: inline;
   color: var(--accent-strong);
   font-family: var(--font-mono);
 }
 
-.dock-lede strong::before {
-  content: "";
-  width: 0.62rem;
-  height: 0.62rem;
-  border-radius: 50%;
-  background: var(--good);
-  box-shadow: 0 0 14px var(--good-glow);
-  animation: pulse 2.6s ease-in-out infinite;
+/* The hidden attribute alone loses to the display declaration above, the same
+   way it does on #install-app-button, so spell the hidden case out. */
+.dock-lede strong[hidden] {
+  display: none;
 }
 
-.dock-status-stack,
 .dock-meta,
 .glance-grid,
 .command-grid,
 .dashboard-grid,
 .score-grid,
 .session-meta,
-.observer-selector,
 .observer-badges,
 .history-list,
 .receipts,
-.receipt-timeline,
 .session-code-actions,
 .control-utility-actions,
 .drawer-body,
 .drawer-stat-grid {
   display: grid;
   gap: 14px;
-}
-
-.dock-status-stack {
-  justify-self: stretch;
-  align-content: start;
-  gap: 12px;
-  min-width: 0;
 }
 
 .dock-note strong,
@@ -574,23 +638,6 @@ body[data-page-mode="share"] .status-pill::before {
   padding: 20px 24px;
   border-radius: var(--radius-xl);
   background: rgba(15, 22, 34, 0.7);
-}
-
-.toolbar-copy h2 {
-  font-size: clamp(1.45rem, 1.8vw, 2rem);
-}
-
-.toolbar-copy p {
-  margin: 8px 0 0;
-  max-width: 62ch;
-  font-size: 0.93rem;
-}
-
-.control-center-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 18px;
 }
 
 .toolbar-actions,
@@ -818,7 +865,6 @@ body[data-page-mode="share"] .status-pill::before {
   margin: -2px 0 0;
 }
 
-.observer-panel .observer-selector,
 .observer-panel .observer-badges {
   margin-top: 2px;
 }
@@ -884,59 +930,89 @@ body[data-page-mode="share"] .status-pill::before {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
+/* Stacked and pinned right so they read as the same kind of control pair as the
+   utility stack in the header, rather than a three-across button row. */
 .session-code-actions {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: auto;
+  justify-content: end;
   align-content: start;
+  gap: 10px;
+}
+
+.session-code-actions .control-button {
+  width: 100%;
+  white-space: nowrap;
 }
 
 .control-utility-actions {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 
-.hero-stage__brief .control-utility-actions {
-  position: absolute;
-  top: 30px;
-  right: 28px;
+/* In the brand row these are controls, not a metric block: they sit hard right
+   and size to their own text instead of stretching to a 160px column grid. */
+/* The brand row is a grid, not a flex row, for one reason: the lede has to
+   start at the orb's left edge (spanning columns 1-2) while the utility stack
+   stays in the top row on the right. A flex row can only put the lede either
+   inside the copy column - indented past the orb - or on a line below the
+   buttons. Explicit placement gives both. */
+.hero-stage__lead .dock-brand {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: start;
+  column-gap: 14px;
+  row-gap: 0;
+}
+
+.hero-stage__lead .dock-brand > .brand-orb {
+  grid-area: 1 / 1;
+}
+
+.hero-stage__lead .dock-brand > .brand-copy {
+  grid-area: 1 / 2;
+}
+
+.hero-stage__lead .dock-brand > .dock-lede {
+  grid-column: 1 / 3;
+  grid-row: 2;
+}
+
+.hero-stage__lead .dock-brand > .control-utility-actions {
+  grid-area: 1 / 3 / span 2 / auto;
+}
+
+.dock-brand .control-utility-actions {
+  /* A compact stack pinned to the right edge and centred against the copy.
+     Stacking rather than sitting in a row is what keeps them narrow enough for
+     the headline to hold one line, and being a side column rather than a row of
+     its own is what stops them pushing the header down. */
   display: flex;
   flex-direction: column;
-  justify-content: flex-start;
   align-items: stretch;
-  gap: 10px;
-  width: min(210px, 34%);
-  max-width: 210px;
-}
-
-.hero-stage__brief .toolbar-copy {
-  min-width: 0;
-  padding-right: clamp(0px, 22vw, 250px);
-}
-
-.hero-stage__brief .control-utility-actions .control-button,
-.hero-stage__brief .control-utility-actions a {
-  width: 100%;
-}
-
-body[data-page-mode="share"] .hero-stage__brief .toolbar-copy {
-  min-width: 0;
-  padding-right: clamp(0px, 24vw, 280px);
-}
-
-body[data-page-mode="share"] .hero-stage__brief .control-utility-actions {
-  position: absolute;
-  top: 30px;
-  right: 28px;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  align-items: stretch;
-  width: min(240px, 38%);
-  max-width: 240px;
-}
-
-body[data-page-mode="share"] .hero-stage__brief .control-utility-actions .control-button,
-body[data-page-mode="share"] .hero-stage__brief .control-utility-actions a {
+  gap: 6px;
+  order: 0;
   flex: 0 0 auto;
+  width: auto;
+  max-width: 172px;
+  margin-left: auto;
+  align-self: flex-start;
+}
+
+/* deliberately hidden: the PWA install prompt is not worth a slot in the
+   header, and the install plumbing in app.js still expects the node to exist */
+#install-app-button {
+  display: none;
+}
+
+.dock-brand .control-utility-actions .control-button,
+.dock-brand .control-utility-actions a.control-button {
   width: 100%;
+  white-space: nowrap;
+  /* smaller than a primary action: these are utilities beside the headline */
+  padding: 5px 12px;
+  font-size: 0.76rem;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
 }
 
 .copy-button {
@@ -1016,6 +1092,13 @@ body[data-page-mode="share"] .hero-stage__brief .control-utility-actions a {
   transition: color 0.35s ease;
 }
 
+.score-num--pending {
+  /* No score yet: neutral text colour and tighter tracking so the two hyphens
+     read as one "--" placeholder rather than two stray dashes. */
+  color: var(--text);
+  letter-spacing: -0.12em;
+}
+
 .score-unit {
   vertical-align: super;
   font-size: 0.74rem;
@@ -1029,7 +1112,6 @@ body[data-page-mode="share"] .hero-stage__brief .control-utility-actions a {
 .metric-card,
 .history-item,
 .receipt-card,
-.observer-option,
 .observer-pill,
 .empty-state,
 .drawer-card {
@@ -1065,10 +1147,10 @@ body[data-page-mode="share"] .hero-stage__brief .control-utility-actions a {
   line-height: 1.28;
 }
 
-.message-preview {
-  margin-top: 18px;
-  padding-top: 18px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+.message-card p {
+  margin: 6px 0 0;
+  color: var(--muted-strong);
+  line-height: 1.6;
 }
 
 #message-preview {
@@ -1154,25 +1236,29 @@ body[data-page-mode="share"] .hero-stage__brief .control-utility-actions a {
   color: var(--good);
 }
 
+/* Uplink-inferred members of a group: dashed to read as "not mapped". */
+.region-btn__count--inferred {
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--text) 32%, transparent);
+  font-weight: 600;
+  opacity: 0.72;
+  padding: 2px 4px;
+}
+
+.region-btn.active .region-btn__count--inferred {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--good) 45%, transparent);
+  color: var(--good);
+}
+
 .observer-panel {
   display: grid;
   align-content: start;
   min-width: 0;
 }
 
-.observer-selector,
 .observer-badges {
   min-width: 0;
-}
-
-.observer-selector {
-  display: grid;
-  gap: 12px;
-  align-content: start;
-  max-height: 320px;
-  overflow: auto;
-  padding-right: 6px;
-  scrollbar-gutter: stable;
 }
 
 .observer-badges {
@@ -1180,65 +1266,6 @@ body[data-page-mode="share"] .hero-stage__brief .control-utility-actions a {
   gap: 12px;
   align-content: start;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
-
-.observer-option {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
-  min-height: 104px;
-  padding: 16px;
-}
-
-.observer-option input {
-  width: 16px;
-  height: 16px;
-  margin-top: 2px;
-  align-self: start;
-  accent-color: var(--accent);
-}
-
-.observer-option-copy {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  min-width: 0;
-  gap: 8px;
-}
-
-.observer-option-copy strong {
-  display: block;
-  width: 100%;
-  margin: 0;
-  font-size: 1rem;
-  line-height: 1.34;
-}
-
-.observer-option-copy span {
-  display: block;
-  width: 100%;
-  margin: 0;
-  font-size: 0.92rem;
-  line-height: 1.45;
-}
-
-.observer-option-copy strong,
-.observer-option-copy span {
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.observer-option.selected {
-  border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent) 10%, transparent), rgba(255, 255, 255, 0.02)),
-    rgba(255, 255, 255, 0.03);
-}
-
-.observer-option.stale {
-  opacity: 0.84;
-  border-style: dashed;
 }
 
 .observer-pill {
@@ -1320,6 +1347,31 @@ body[data-page-mode="share"] .hero-stage__brief .control-utility-actions a {
   box-shadow: none;
 }
 
+/* Known to the directory but not heard inside the active window, so this code is
+   not scored against it. Neutral, not red: it is not a failure, it is not in the
+   measurement at all. Muted so the scored block reads first. */
+.observer-pill.untargeted {
+  border-style: dashed;
+  opacity: 0.72;
+}
+
+.observer-pill.untargeted .status {
+  color: var(--muted-strong);
+  border-style: dashed;
+}
+
+.observer-pill.untargeted .status::before {
+  background: transparent;
+  border: 2px solid currentColor;
+  box-shadow: none;
+}
+
+/* Publishes no position, so its region group came from the uplink code. Marked,
+   never dimmed - it is a full scoring target. */
+.observer-pill.unlocated {
+  border-style: dashed;
+}
+
 .observer-hash,
 .receipt-hash,
 .history-code,
@@ -1331,12 +1383,21 @@ body[data-page-mode="share"] .hero-stage__brief .control-utility-actions a {
 }
 
 .observer-hash,
+.observer-detail,
 .receipt-hash {
   color: var(--muted);
   font-size: 0.8rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+/* Exempt from the break-anywhere above, which split "2-BYTE PATH" at the hyphen.
+   Short and fixed length, so it cannot overflow even at 390px. */
+.observer-detail__mode {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 
 .map-panel,
@@ -1455,66 +1516,58 @@ body[data-page-mode="share"] .hero-stage__brief .control-utility-actions a {
   animation: none;
 }
 
-.timeline-block {
+.receipt-arrival {
   display: grid;
-  gap: 14px;
-}
-
-.timeline-scale {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-family: var(--font-mono);
-  color: var(--muted);
-  font-size: 0.76rem;
-}
-
-.receipt-timeline {
-  gap: 12px;
-}
-
-.timeline-row {
-  align-items: center;
-  padding: 12px 14px;
-  border-radius: var(--radius-md);
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 0.6rem 0.72rem;
   border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.025);
 }
 
-.timeline-copy {
-  display: grid;
-  gap: 4px;
+.receipt-arrival__copy {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
   min-width: 0;
 }
 
-.timeline-copy strong,
-.timeline-copy span {
-  overflow-wrap: anywhere;
-  word-break: break-word;
+.receipt-arrival__copy strong,
+.receipt-arrival__copy span {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 
-.timeline-copy span {
+.receipt-arrival__copy strong {
+  font-size: 0.84rem;
+}
+
+.receipt-arrival__copy span {
   color: var(--muted);
-  font-size: 0.82rem;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
 }
 
-.timeline-track {
+.receipt-arrival__track {
   position: relative;
-  flex: 1 1 240px;
+  width: 100%;
   height: 0.82rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.05);
   overflow: hidden;
 }
 
-.timeline-fill {
+.receipt-arrival__fill {
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: inherit;
   background: linear-gradient(90deg, rgba(123, 214, 255, 0.34), rgba(123, 214, 255, 0.12));
 }
 
-.timeline-dot {
+.receipt-arrival__dot {
   position: absolute;
   top: 50%;
   width: 0.92rem;
@@ -1637,6 +1690,28 @@ body[data-page-mode="share"] .hero-stage__brief .control-utility-actions a {
   color: var(--muted-strong);
   font-size: 0.78rem;
   line-height: 1.45;
+}
+
+/* One leg per line. The route wraps if the labels are long; the distance is
+   held together on the right so the numbers read as a column. */
+.receipt-distance__leg {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.receipt-distance__leg-route {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.receipt-distance__leg-value {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-family: var(--font-mono);
+  text-align: right;
 }
 
 .history-list {
@@ -1907,15 +1982,6 @@ body[data-page-mode="share"] .share-hidden {
     width: min(1280px, calc(100vw - 28px));
   }
 
-  .hero-band {
-    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-  }
-
-  .hero-actions-stack {
-    grid-column: 1 / -1;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
   .glance-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1940,7 +2006,6 @@ body[data-page-mode="share"] .share-hidden {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .dock-status-stack,
   .dock-meta {
     justify-self: stretch;
   }
@@ -2028,31 +2093,6 @@ body[data-page-mode="share"] .share-hidden {
     width: 100%;
   }
 
-  .toolbar-copy h2 {
-    font-size: 1.35rem;
-  }
-
-  .control-center-head {
-    flex-direction: column;
-  }
-
-  .hero-stage__brief .control-utility-actions {
-    position: static;
-    width: 100%;
-    max-width: none;
-    justify-content: flex-start;
-  }
-
-  body[data-page-mode="share"] .hero-stage__brief .toolbar-copy {
-    padding-right: 0;
-  }
-
-  .toolbar-copy p {
-    margin-top: 8px;
-    font-size: 0.9rem;
-    line-height: 1.45;
-  }
-
   .workspace {
     gap: 14px;
   }
@@ -2076,6 +2116,15 @@ body[data-page-mode="share"] .share-hidden {
   .glance-card {
     scroll-snap-align: none;
     padding: 16px;
+  }
+
+  /* The dashboard grid now sits inside <details class="additional-info">, so the
+     order below applies to the <details> element - the grid itself is no longer
+     a .workspace child. Without this the collapsed section inherits order: 0
+     and jumps above Session Control on narrow screens. The .dashboard-grid
+     order is kept for share.html, where the grid is still a direct child. */
+  .additional-info {
+    order: 3;
   }
 
   .dashboard-grid {
@@ -2103,8 +2152,7 @@ body[data-page-mode="share"] .share-hidden {
 
   .session-code-row,
   .score-layout,
-  .history-item,
-  .timeline-row {
+  .history-item {
     grid-template-columns: 1fr;
     display: grid;
   }
@@ -2141,7 +2189,7 @@ body[data-page-mode="share"] .share-hidden {
     min-height: 320px;
   }
 
-  .timeline-track {
+  .receipt-arrival__track {
     min-width: 0;
   }
 
@@ -2161,7 +2209,7 @@ body[data-page-mode="share"] .share-hidden {
 .hero-stage {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1.18fr) minmax(320px, 0.82fr) minmax(132px, 0.28fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
   overflow: hidden;
   border: 1px solid rgba(173, 196, 228, 0.14);
@@ -2201,7 +2249,6 @@ body[data-page-mode="share"] .share-hidden {
 }
 
 .hero-stage .hero-panel,
-.hero-stage .telemetry-strip,
 .hero-stage__action-rail {
   background: transparent;
   box-shadow: none;
@@ -2209,18 +2256,15 @@ body[data-page-mode="share"] .share-hidden {
   -webkit-backdrop-filter: none;
 }
 
-.hero-stage .hero-panel,
-.hero-stage .telemetry-strip__item {
+.hero-stage .hero-panel {
   border: 0;
 }
 
-.hero-stage .hero-panel::before,
-.hero-stage .telemetry-strip__item::before {
+.hero-stage .hero-panel::before {
   display: none;
 }
 
-.hero-stage__lead,
-.hero-stage__brief {
+.hero-stage__lead {
   min-width: 0;
   min-height: 100%;
   padding: 30px 28px 24px;
@@ -2232,46 +2276,21 @@ body[data-page-mode="share"] .share-hidden {
   align-content: start;
 }
 
-.hero-stage__brief {
-  position: relative;
-  display: grid;
-  gap: 18px;
-  align-content: start;
-  border-left: 1px solid rgba(173, 196, 228, 0.1);
-  border-right: 1px solid rgba(173, 196, 228, 0.1);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 70%);
+.hero-stage__lead .brand-copy {
+  flex: 1 1 0%;
+  min-width: 0;
 }
 
 .hero-stage__lead .brand-copy h1 {
-  font-size: clamp(2.25rem, 4vw, 4.2rem);
-  line-height: 0.94;
+  font-size: clamp(2.25rem, 3.5vw, 4.2rem);
+  line-height: 0.98;
+  text-wrap: pretty;
 }
 
 .hero-stage__lead .dock-lede {
-  max-width: 62ch;
+  max-width: 96ch;
   font-size: 0.98rem;
-}
-
-.hero-stage__pulse {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
-  max-width: 38rem;
-}
-
-.hero-stage__pulse-dot {
-  width: 0.78rem;
-  height: 0.78rem;
-  margin-top: 0.34rem;
-  border-radius: 50%;
-  background: var(--good);
-  box-shadow: 0 0 18px var(--good-glow);
-  animation: pulse 2.4s ease-in-out infinite;
-}
-
-.hero-stage__pulse .small-note {
-  margin-top: 4px;
+  margin: 0.6rem 0 0;
 }
 
 .hero-stage__meta-strip {
@@ -2294,42 +2313,6 @@ body[data-page-mode="share"] .share-hidden {
   gap: 12px;
   align-content: start;
   padding: 20px 18px;
-}
-
-.telemetry-strip {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0;
-  border-top: 1px solid rgba(173, 196, 228, 0.12);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.01));
-}
-
-.telemetry-strip__item {
-  min-width: 0;
-  padding: 18px 22px 20px;
-  border-right: 1px solid rgba(173, 196, 228, 0.12);
-  border-radius: 0;
-  overflow: hidden;
-}
-
-.telemetry-strip__item:last-child {
-  border-right: 0;
-}
-
-.telemetry-strip .glance-card__value {
-  margin-top: 14px;
-  font-size: clamp(2rem, 3vw, 3.1rem);
-}
-
-.telemetry-strip .sparkline {
-  max-width: 220px;
-}
-
-.telemetry-strip .panel-lens {
-  padding: 0;
-  border: 0;
-  background: transparent;
 }
 
 .marquee-panel {
@@ -2396,7 +2379,6 @@ body[data-page-mode="share"] .share-hidden {
   gap: 12px;
 }
 
-.marquee-panel .session-meta .metric-card,
 .health-pocket .metric-card {
   padding: 12px 0;
   border-radius: 0;
@@ -2408,12 +2390,6 @@ body[data-page-mode="share"] .share-hidden {
 .marquee-panel .session-meta .metric-card:last-child,
 .health-pocket .metric-card:nth-last-child(-n + 2) {
   border-bottom: 0;
-}
-
-.marquee-panel .message-preview {
-  margin-top: 20px;
-  padding-top: 18px;
-  border-top: 1px solid rgba(173, 196, 228, 0.12);
 }
 
 .dashboard-grid {
@@ -2494,35 +2470,7 @@ body[data-page-mode="share"] .ledger-panel .history-list {
   }
 
   .hero-stage {
-    grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-  }
-
-  .hero-stage__brief {
-    border-right: 0;
-  }
-
-  .hero-stage__action-rail {
-    grid-column: 1 / -1;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    padding-top: 16px;
-    border-top: 1px solid rgba(173, 196, 228, 0.12);
-  }
-
-  .telemetry-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .telemetry-strip__item {
-    border-right: 1px solid rgba(173, 196, 228, 0.12);
-    border-top: 1px solid rgba(173, 196, 228, 0.12);
-  }
-
-  .telemetry-strip__item:nth-child(2n) {
-    border-right: 0;
-  }
-
-  .telemetry-strip__item:nth-child(-n + 2) {
-    border-top: 0;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .marquee-layout,
@@ -2550,6 +2498,42 @@ body[data-page-mode="share"] .ledger-panel .history-list {
 }
 
 @media (max-width: 720px) {
+  /* no room for a side column on a phone: wrap into a row under the title */
+  .hero-stage__lead .dock-brand {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .hero-stage__lead .dock-brand > .control-utility-actions {
+    grid-area: 3 / 1 / auto / -1;
+    margin-top: 12px;
+  }
+
+  .session-share-invite {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .session-steps {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .dock-brand .control-utility-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    flex: 1 0 100%;
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+    align-self: stretch;
+    justify-content: flex-start;
+  }
+
+  .dock-brand .control-utility-actions .control-button,
+  .dock-brand .control-utility-actions a.control-button {
+    width: auto;
+  }
+
   .splash-scene {
     inset: -36px -18px auto;
     height: 430px;
@@ -2586,41 +2570,18 @@ body[data-page-mode="share"] .ledger-panel .history-list {
     border-radius: 24px;
   }
 
-  .hero-stage__lead,
-  .hero-stage__brief {
+  .hero-stage__lead {
     padding: 18px 16px;
-  }
-
-  .hero-stage__brief {
-    border-left: 0;
-    border-right: 0;
-    border-top: 1px solid rgba(173, 196, 228, 0.12);
   }
 
   .hero-stage__lead .brand-copy h1 {
     font-size: clamp(1.6rem, 8vw, 2.35rem);
   }
 
-  .hero-stage__action-rail {
-    grid-template-columns: 1fr;
-    padding: 12px 16px 18px;
-  }
-
   .action-menu__panel {
     top: auto;
     bottom: calc(100% + 10px);
     width: 100%;
-  }
-
-  .telemetry-strip {
-    grid-template-columns: 1fr;
-    overflow-x: visible;
-    scrollbar-width: none;
-  }
-
-  .telemetry-strip__item {
-    border-right: 0;
-    border-top: 1px solid rgba(173, 196, 228, 0.12);
   }
 
   .marquee-panel {
@@ -2762,7 +2723,7 @@ body[data-ui-theme="light"] .hero-stage {
 body[data-ui-theme="light"] .pill,
 body[data-ui-theme="light"] .dock-meta__item,
 body[data-ui-theme="light"] .observer-pill .status,
-body[data-ui-theme="light"] .timeline-track,
+body[data-ui-theme="light"] .receipt-arrival__track,
 body[data-ui-theme="light"] .meter-track,
 body[data-ui-theme="light"] .score-ring,
 body[data-ui-theme="light"] .action-menu__panel,
@@ -2818,16 +2779,16 @@ body[data-ui-theme="light"] .sparkline[data-tone="neutral"] .sparkline-bar {
   background: linear-gradient(180deg, rgba(96, 114, 138, 0.32), rgba(96, 114, 138, 0.08));
 }
 
-body[data-ui-theme="light"] .timeline-track,
+body[data-ui-theme="light"] .receipt-arrival__track,
 body[data-ui-theme="light"] .meter-track {
   background: rgba(39, 98, 210, 0.08);
 }
 
-body[data-ui-theme="light"] .timeline-fill {
+body[data-ui-theme="light"] .receipt-arrival__fill {
   background: linear-gradient(90deg, rgba(39, 98, 210, 0.24), rgba(39, 98, 210, 0.08));
 }
 
-body[data-ui-theme="light"] .timeline-dot {
+body[data-ui-theme="light"] .receipt-arrival__dot {
   border-color: rgba(255, 255, 255, 0.92);
   box-shadow: 0 0 16px rgba(39, 98, 210, 0.14);
 }
@@ -2852,17 +2813,6 @@ body[data-ui-theme="light"] .hero-stage::after {
   background: radial-gradient(circle, rgba(140, 171, 214, 0.14), transparent 72%);
 }
 
-body[data-ui-theme="light"] .hero-stage__brief {
-  border-color: rgba(32, 52, 84, 0.12);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(217, 229, 246, 0.08) 100%);
-}
-
-body[data-ui-theme="light"] .telemetry-strip {
-  border-top-color: rgba(32, 52, 84, 0.12);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.16));
-}
-
-body[data-ui-theme="light"] .telemetry-strip__item,
 body[data-ui-theme="light"] .hero-stage__action-rail,
 body[data-ui-theme="light"] .marquee-panel,
 body[data-ui-theme="light"] .spotlight-panel,
@@ -2876,25 +2826,25 @@ body[data-ui-theme="light"] .detail-drawer {
   color: var(--text);
 }
 
-body[data-ui-theme="light"] .telemetry-strip__item {
+/* .glance-card's dark base fill (rgba(16,24,36,0.78)) used to be masked in light
+   mode by the hero strip's own override. That strip is gone, so the cards need
+   their own light fill or they render as dark navy blocks on a white page. */
+body[data-ui-theme="light"] .glance-card {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(245, 249, 255, 0.62));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.52);
 }
 
-body[data-ui-theme="light"] .telemetry-strip__item:nth-child(1) {
-  background: linear-gradient(180deg, rgba(215, 229, 248, 0.9), rgba(255, 255, 255, 0.76));
+body[data-ui-theme="light"] .receipt-spread-card {
+  border-color: rgba(43, 76, 124, 0.16);
 }
 
-body[data-ui-theme="light"] .telemetry-strip__item:nth-child(2) {
-  background: linear-gradient(180deg, rgba(231, 237, 246, 0.88), rgba(255, 255, 255, 0.76));
-}
-
-body[data-ui-theme="light"] .telemetry-strip__item:nth-child(3) {
-  background: linear-gradient(180deg, rgba(236, 239, 245, 0.88), rgba(255, 255, 255, 0.78));
-}
-
-body[data-ui-theme="light"] .telemetry-strip__item:nth-child(4) {
-  background: linear-gradient(180deg, rgba(226, 234, 246, 0.9), rgba(255, 255, 255, 0.76));
+/* Light mode only ever repainted the four named panel variants, so a bare
+   .panel kept its dark fill (rgba(15,22,34,0.84)) and rendered as grey-on-grey.
+   The named variants all carry .panel too and override this later in the file,
+   so filling .panel here is safe and stops the next bare panel hitting it. */
+body[data-ui-theme="light"] .panel {
+  background:
+    linear-gradient(180deg, rgba(252, 253, 255, 0.92), rgba(245, 248, 253, 0.84));
+  box-shadow: 0 18px 46px rgba(52, 80, 121, 0.1);
 }
 
 body[data-ui-theme="light"] .marquee-panel,
@@ -2941,11 +2891,8 @@ body[data-ui-theme="light"] .marquee-panel::after {
 }
 
 body[data-ui-theme="light"] .health-pocket,
-body[data-ui-theme="light"] .message-preview,
 body[data-ui-theme="light"] .ledger-divider,
-body[data-ui-theme="light"] .panel-divider,
-body[data-ui-theme="light"] .hero-stage__brief,
-body[data-ui-theme="light"] .telemetry-strip__item {
+body[data-ui-theme="light"] .panel-divider {
   border-color: rgba(43, 76, 124, 0.12);
 }
 
@@ -2981,18 +2928,51 @@ body[data-ui-theme="light"] .primary-button:focus-visible {
 body[data-ui-theme="light"] .metric-card,
 body[data-ui-theme="light"] .history-item,
 body[data-ui-theme="light"] .receipt-card,
-body[data-ui-theme="light"] .observer-option,
 body[data-ui-theme="light"] .observer-pill,
 body[data-ui-theme="light"] .empty-state,
 body[data-ui-theme="light"] .drawer-card,
 body[data-ui-theme="light"] .drawer-stat,
 body[data-ui-theme="light"] .drawer-list__item,
 body[data-ui-theme="light"] .console-line,
-body[data-ui-theme="light"] .timeline-row {
+body[data-ui-theme="light"] .receipt-arrival {
   border-color: rgba(32, 52, 84, 0.08);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(246, 249, 253, 0.52)),
     rgba(255, 255, 255, 0.42);
+}
+
+/* The rule above repaints every .observer-pill white, and the dark-theme state
+   tints it overrides mix their colour into transparent before layering it on
+   rgba(255, 255, 255, 0.03) - a no-op over a white card. Same trap the .targeted
+   row hit. Now that this panel is the only place observer state is shown, all
+   three states have to read here, so mix into #ffffff explicitly. */
+body[data-ui-theme="light"] .observer-pill.seen {
+  border-color: color-mix(in srgb, var(--good) 38%, var(--line));
+  background: color-mix(in srgb, var(--good) 8%, #ffffff);
+}
+
+body[data-ui-theme="light"] .observer-pill.waiting {
+  border-color: color-mix(in srgb, var(--poor) 32%, var(--line));
+  background: color-mix(in srgb, var(--poor) 6%, #ffffff);
+}
+
+body[data-ui-theme="light"] .observer-pill.untargeted {
+  border-color: rgba(32, 52, 84, 0.14);
+  background: color-mix(in srgb, #60728a 7%, #ffffff);
+}
+
+/* Light mode flattens .status to var(--text) for every pill, which erases the
+   seen/not-seen/not-scored distinction the merged panel now carries alone. */
+body[data-ui-theme="light"] .observer-pill.seen .status {
+  color: var(--good);
+}
+
+body[data-ui-theme="light"] .observer-pill.waiting .status {
+  color: var(--poor);
+}
+
+body[data-ui-theme="light"] .observer-pill.untargeted .status {
+  color: var(--muted-strong);
 }
 
 body[data-ui-theme="light"] .session-code {
@@ -3041,4 +3021,164 @@ body[data-ui-theme="light"] .drawer-codeblock {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ---------- Collapsible "Additional Information" section ---------- */
+.additional-info {
+  margin-top: 18px;
+}
+
+.additional-info__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 52px;
+  padding: 14px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: var(--muted-strong);
+  cursor: pointer;
+  list-style: none;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.additional-info__summary::-webkit-details-marker,
+.additional-info__summary::marker {
+  display: none;
+  content: '';
+}
+
+.additional-info__summary:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.additional-info__label {
+  font-size: 0.94rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.additional-info__chevron {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 160ms ease;
+}
+
+.additional-info[open] > .additional-info__summary {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.additional-info[open] > .additional-info__summary .additional-info__chevron {
+  transform: rotate(-135deg) translateY(-2px);
+}
+
+.additional-info[open] > .dashboard-grid {
+  margin-top: 18px;
+}
+
+body[data-ui-theme="light"] .additional-info__summary {
+  border-color: rgba(43, 76, 124, 0.14);
+  color: #2b3950;
+}
+
+body[data-ui-theme="light"] .additional-info__summary:hover,
+body[data-ui-theme="light"] .additional-info[open] > .additional-info__summary {
+  border-color: rgba(39, 98, 210, 0.22);
+  color: #16233a;
+}
+
+/* Coverage map placement.
+   The map lives outside <details class="additional-info"> so it is always
+   visible, in its own full-width grid directly above the toggle. These rules sit
+   at the end of the file deliberately: .dashboard-grid is redefined inside
+   several media queries, and matching that specificity by source order means one
+   pair of rules covers every breakpoint.
+
+   The grid still inside the <details> therefore drops the "map" area - leaving it
+   in place would reserve an empty 1.26fr column beside the observer panel. */
+.map-section {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "map";
+}
+
+.additional-info__grid {
+  grid-template-areas: "ledger observers";
+}
+
+/* System telemetry sits last, full width, on its own row - it describes
+   the deployment rather than any one session. Same single-area trick as
+   .map-section so the surrounding grid areas did not need rewriting. */
+.metrics-section {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "metrics";
+}
+
+.metrics-panel {
+  grid-area: metrics;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.metrics-panel__status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.metrics-panel__grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+/* Receipt Spread now sits inside the Observer Reports panel, above the cards it
+   summarises, so it is scaled to a panel row rather than a hero strip segment. */
+.receipt-spread-card {
+  border: 1px solid rgba(173, 196, 228, 0.14);
+}
+
+.receipt-spread-card .glance-card__value {
+  margin-top: 10px;
+  font-size: clamp(1.4rem, 2vw, 1.8rem);
+}
+
+.receipt-spread-card .sparkline {
+  max-width: 100%;
+}
+
+@media (max-width: 1240px) {
+  .additional-info__grid {
+    grid-template-areas:
+      "observers"
+      "ledger";
+  }
+}
+
+/* The score grid is two columns, so an odd number of metric cards leaves a
+   half-width orphan on the last row. Let the final card span instead. This is
+   self-correcting: adding or removing a metric never needs a CSS change. */
+.score-grid > .metric-card:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
+/* Explains a withheld grade (target set below OBSERVER_MIN_SCORING_SET). Muted,
+   not an error: the run succeeded, it just cannot be turned into a percentage. */
+.health-note {
+  margin: 0.35rem 0 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card) 88%, var(--line));
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  text-align: left;
 }

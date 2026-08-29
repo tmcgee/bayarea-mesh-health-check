@@ -19,10 +19,11 @@
     <link rel="icon" type="image/png" href="/logo.png">
     <link rel="apple-touch-icon" href="/logo.png">
     <link rel="manifest" href="/manifest.webmanifest">
-    <meta name="theme-color" content="#07111d">
+    <meta name="theme-color" content="#0b1220">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/theme-bayarea.css">
   </head>
   <body class="noc-body" data-page-mode="share" data-ui-theme="dark">
     <div class="screen-glow" aria-hidden="true"></div>
@@ -47,34 +48,11 @@
                 <p class="eyebrow" id="hero-eyebrow">Shared Result</p>
                 <h1 id="hero-title">Observer coverage someone shared with you.</h1>
               </div>
-            </div>
-
-            <p class="dock-lede lede">
-              <span id="hero-description-prefix">This page is read-only. Review the result from</span>
-              <strong id="hero-channel">#health-check</strong>
-              <span id="hero-description-suffix">or open the full dashboard to run your own check.</span>
-            </p>
-
-            <div class="hero-stage__pulse">
-              <span class="hero-stage__pulse-dot" aria-hidden="true"></span>
-              <div>
-                <p class="panel-label">Shared Surface</p>
-                <p class="small-note">A retained session rendered as one continuous briefing, with the map and trace detail still in reach.</p>
-              </div>
-            </div>
-
-          </article>
-
-          <article class="hero-panel hero-stage__brief">
-            <div class="control-center-head">
-              <div class="toolbar-copy">
-                <p class="toolbar-label">Shared Control Center</p>
-                <div>
-                  <h2>Health at a glance</h2>
-                  <p>Review the retained session, inspect technical traces, and step into a fresh live check only when you need it.</p>
-                </div>
-              </div>
-
+              <p class="dock-lede lede">
+                <span id="hero-description-prefix">This page is read-only. Review the result from</span>
+                <strong id="hero-channel">#health-check</strong>
+                <span id="hero-description-suffix">or open the full dashboard to run your own check.</span>
+              </p>
               <div class="control-utility-actions">
                 <button class="control-button ghost-button" id="ui-theme-toggle" type="button">
                   Light Mode
@@ -90,53 +68,8 @@
               </div>
             </div>
 
-            <div class="dock-status-stack">
-              <span class="pill status-pill" id="mqtt-pill">Shared Link</span>
-              <div class="dock-note">
-                <span class="meta-label">Share Mode</span>
-                <strong id="network-window">Read-only diagnostics</strong>
-              </div>
-            </div>
-
           </article>
 
-          <section class="glance-grid telemetry-strip" id="health-at-a-glance">
-            <article class="glance-card telemetry-strip__item">
-            <div class="glance-card__head">
-              <span class="panel-label">Transport</span>
-            </div>
-            <strong class="glance-card__value" id="network-state">Shared</strong>
-            <div class="sparkline" id="observer-sparkline" aria-hidden="true"></div>
-            <p class="small-note" id="observer-density-label">Awaiting observer directory.</p>
-            </article>
-
-            <article class="glance-card telemetry-strip__item">
-            <div class="glance-card__head">
-              <span class="panel-label">Mapped Nodes</span>
-            </div>
-            <strong class="glance-card__value" id="observer-density">0 / 0</strong>
-            <div class="sparkline" id="observer-load-sparkline" aria-hidden="true"></div>
-            <p class="small-note" id="observer-density-detail">No observer telemetry yet.</p>
-            </article>
-
-            <article class="glance-card telemetry-strip__item">
-            <div class="glance-card__head">
-              <span class="panel-label">Signal Quality</span>
-            </div>
-            <strong class="glance-card__value" id="signal-quality">--</strong>
-            <div class="sparkline" id="signal-sparkline" aria-hidden="true"></div>
-            <p class="small-note" id="signal-quality-label">Awaiting telemetry.</p>
-            </article>
-
-            <article class="glance-card telemetry-strip__item">
-            <div class="glance-card__head">
-              <span class="panel-label">Receipt Spread</span>
-            </div>
-            <strong class="glance-card__value" id="latency-score">--</strong>
-            <div class="sparkline" id="latency-sparkline" aria-hidden="true"></div>
-            <p class="small-note" id="latency-label">Awaiting receipt spread.</p>
-            </article>
-          </section>
         </section>
 
         <section class="command-grid">
@@ -170,16 +103,6 @@
                 <p class="small-note session-share-note" id="session-share-note">
                   Shared links are kept for one week by default.
                 </p>
-                <div class="session-meta">
-                  <div class="metric-card compact">
-                    <span class="meta-label">Status</span>
-                    <strong id="session-status">Waiting</strong>
-                  </div>
-                  <div class="metric-card compact">
-                    <span class="meta-label">Message Hash</span>
-                    <strong><a class="hash-link pending" id="session-hash" href="#" rel="noopener noreferrer" target="_blank">Pending</a></strong>
-                  </div>
-                </div>
               </div>
 
               <section class="health-pocket">
@@ -196,21 +119,35 @@
                       <circle class="score-ring__track" cx="60" cy="60" r="50"></circle>
                       <circle class="score-ring__fill" cx="60" cy="60" r="50"></circle>
                     </svg>
-                    <span id="health-percent"><span class="score-num">0</span><span class="score-unit">%</span></span>
+                    <span id="health-percent"><span class="score-num score-num--pending">--</span></span>
                   </div>
+
+                  <p class="health-note hidden" id="health-note"></p>
 
                   <div class="score-grid health-pocket__stats">
                     <div class="metric-card">
+                      <span class="metric-label">Status</span>
+                      <strong id="session-status">--</strong>
+                    </div>
+                    <div class="metric-card">
+                      <span class="metric-label">Message Hash</span>
+                      <strong><a class="hash-link pending" id="session-hash" href="#" rel="noopener noreferrer" target="_blank">Pending</a></strong>
+                    </div>
+                    <div class="metric-card">
                       <span class="metric-label">Observers Reached</span>
-                      <strong id="observed-count">0 / 0</strong>
+                      <strong id="observed-count">--</strong>
+                    </div>
+                    <div class="metric-card">
+                      <span class="metric-label">Regions Reached</span>
+                      <strong id="region-coverage">--</strong>
                     </div>
                     <div class="metric-card">
                       <span class="metric-label">Sender</span>
                       <strong id="sender-name">Pending</strong>
                     </div>
                     <div class="metric-card">
-                      <span class="metric-label">Repeaters</span>
-                      <strong id="repeater-count">0</strong>
+                      <span class="metric-label">Repeaters Found</span>
+                      <strong id="repeater-count">--</strong>
                     </div>
                     <div class="metric-card">
                       <span class="metric-label">Longest Packet</span>
@@ -224,15 +161,15 @@
                       <span class="metric-label">Broker</span>
                       <strong id="broker-name">Loading</strong>
                     </div>
+                    <div class="metric-card message-card">
+                      <span class="metric-label">Matched Message</span>
+                      <p id="message-preview">Waiting for a shared result.</p>
+                    </div>
                   </div>
                 </div>
               </section>
             </div>
 
-            <div class="message-preview">
-              <span class="meta-label">Matched Message</span>
-              <p id="message-preview">Waiting for a shared result.</p>
-            </div>
           </article>
         </section>
 
@@ -254,27 +191,13 @@
           <article class="panel observer-panel share-hidden" id="observer-targets">
             <div class="panel-header slim">
               <div>
-                <p class="panel-label">Observer Set</p>
                 <h2>Observers</h2>
-              </div>
-              <div class="panel-actions">
-                <button class="ghost-button" id="observer-allowlist-clear" type="button">
-                  Default Set
-                </button>
               </div>
             </div>
             <p class="small-note allowlist-note" id="observer-allowlist-note">
-              Default: 0 observers.
+              0 observers.
             </p>
-            <div class="observer-selector" id="observer-allowlist"></div>
-            <div class="panel-divider"></div>
-            <div class="panel-header slim">
-              <div>
-                <p class="panel-label">Target</p>
-                <h2>Score Against</h2>
-              </div>
-              <p class="small-note" id="expected-source">Default</p>
-            </div>
+            <div class="region-filter hidden" id="region-filter"></div>
             <div class="observer-badges" id="expected-observers"></div>
           </article>
 
@@ -286,25 +209,16 @@
               </div>
               <div class="panel-actions">
                 <p class="small-note" id="active-observer-note">0 active observers</p>
-              </div>
-            </div>
-            <div class="timeline-block">
-              <div class="panel-header slim">
-                <div>
-                  <p class="panel-label">Timeline</p>
-                  <h3>When each observer saw it</h3>
                 </div>
-                <p class="small-note" id="timeline-summary">Waiting for observer reports</p>
-              </div>
-              <div class="timeline-scale hidden" id="timeline-scale">
-                <span id="timeline-start-label">First receipt</span>
-                <span id="timeline-end-label">Latest receipt</span>
-              </div>
-              <div class="empty-state compact" id="receipt-timeline-empty">
-                Timeline appears after the first observer report.
-              </div>
-              <div class="receipt-timeline" id="receipt-timeline"></div>
             </div>
+            <article class="glance-card receipt-spread-card">
+              <div class="glance-card__head">
+                <span class="panel-label">Receipt Spread</span>
+              </div>
+              <strong class="glance-card__value" id="latency-score">--</strong>
+              <div class="sparkline" id="latency-sparkline" aria-hidden="true"></div>
+              <p class="small-note" id="latency-label">Awaiting receipt spread.</p>
+            </article>
             <div class="empty-state" id="receipts-empty">
               No observer reports yet.
             </div>
@@ -318,6 +232,52 @@
               </div>
             </div>
             <div class="history-list" id="session-history"></div>
+          </article>
+        </section>
+
+        <section class="dashboard-grid metrics-section">
+          <article class="panel metrics-panel" id="system-metrics">
+            <div class="panel-header slim">
+              <div>
+                <p class="panel-label">Shared Control Center</p>
+                <h2>System Telemetry</h2>
+              </div>
+              <div class="panel-actions">
+                <span class="pill status-pill" id="mqtt-pill">Shared Link</span>
+              </div>
+            </div>
+            <div class="metrics-panel__status">
+              <div class="dock-note">
+                <span class="meta-label">Share Mode</span>
+                <strong id="network-window">Read-only diagnostics</strong>
+              </div>
+            </div>
+            <div class="glance-grid metrics-panel__grid">
+              <article class="glance-card">
+                <div class="glance-card__head">
+                  <span class="panel-label">Transport</span>
+                </div>
+                <strong class="glance-card__value" id="network-state">Shared</strong>
+                <div class="sparkline" id="observer-sparkline" aria-hidden="true"></div>
+                <p class="small-note" id="observer-density-label">Awaiting observer directory.</p>
+              </article>
+              <article class="glance-card">
+                <div class="glance-card__head">
+                  <span class="panel-label">Mapped Nodes</span>
+                </div>
+                <strong class="glance-card__value" id="observer-density">0 / 0</strong>
+                <div class="sparkline" id="observer-load-sparkline" aria-hidden="true"></div>
+                <p class="small-note" id="observer-density-detail">No observer telemetry yet.</p>
+              </article>
+              <article class="glance-card">
+                <div class="glance-card__head">
+                  <span class="panel-label">Signal Quality</span>
+                </div>
+                <strong class="glance-card__value" id="signal-quality">--</strong>
+                <div class="sparkline" id="signal-sparkline" aria-hidden="true"></div>
+                <p class="small-note" id="signal-quality-label">Awaiting telemetry.</p>
+              </article>
+            </div>
           </article>
         </section>
 
