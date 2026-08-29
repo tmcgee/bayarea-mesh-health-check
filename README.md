@@ -1,5 +1,8 @@
 # Mesh Health Check
 
+[![pipeline status](https://gitlab.com/tmcgee/bayarea-mesh-health-check/badges/main/pipeline.svg)](https://gitlab.com/tmcgee/bayarea-mesh-health-check/-/pipelines?ref=main)
+[![node](https://img.shields.io/badge/node-%3E%3D18-3c873a)](package.json)
+
 Mesh Health Check is a self-hosted web app for measuring MeshCore message
 coverage across MQTT-connected observers. It generates a short code, watches the
 configured MeshCore group channel for that code, then scores how many selected
