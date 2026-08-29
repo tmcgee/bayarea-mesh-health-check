@@ -226,6 +226,30 @@ GET /accounts/<acct>/cfd_tunnel/<id>  ->  status healthy | total conns 8
 
 Proven by killing one outright — supervisor first, then the connector, so nothing respawned — and polling the public hostname every 3 s for 30 s: **ten consecutive 200s**. The same test against a single connector on 2026-08-29 at 14:24 produced 530s for about 30 s. On a real box this is two systemd units, or `deploy: replicas: 2` in Compose, and it is worth having even on a stable network: it also makes `cloudflared` upgrades and config changes zero-downtime, one replica at a time.
 
+**1c. The wedge that supervision cannot see — and why replicas didn't save it.** At **17:38:17Z** Cloudflare set the tunnel's connection count to zero and left it there for 30 minutes, serving 530 / 1033, while:
+
+- the app answered **200 in 13 ms** on `localhost:3090` the whole time,
+- **both** `cloudflared` replicas reported `{"status":200,"readyConnections":4}`,
+- both had **logged nothing at all** since registering at 16:58 and 16:59Z — no `Lost connection`, no retry, no error,
+- and `ss -tnp` showed all eight sockets to `198.41.x.x:7844` still `ESTAB` with empty send and receive queues.
+
+Half-open TCP. The edge had gone away; this sandbox's NAT (local address `169.254.0.21`) never delivered a FIN or RST, so from the connectors' side nothing had happened. `protocol: http2` has no application-level keepalive to notice, and a fresh `/dev/tcp` connection to `198.41.192.227:7844` succeeded on the first try, so egress itself was fine. Nothing was broken enough to fix itself.
+
+**This is why §1b was only half a fix.** Two replicas protect against one connector flapping independently. They protect against nothing when the failure is shared by the host both replicas sit on — both wedged in the same minute, in the same way, for the same reason. Redundancy on one box is redundancy against one box's *processes*, not against its network.
+
+Neither existing layer could catch it. The respawn supervisors watch for **exit**, and the process never exited. `/ready` and `/metrics` are the wedged process's own opinion of itself, and it reported four healthy connections while holding four dead sockets — so any check pointed at `:20242` would have passed happily through the entire outage. **Liveness has to be measured end to end**, from outside, at the URL a user types.
+
+Hence `/tmp/tunnel-watchdog.sh`: plain bash, no agent, no credits. Every 60 s it probes the public URL. On a non-200 it probes `localhost:3090` too, and if the app is the thing that is down it logs that and keeps its hands off, because the app supervisor owns that. Two consecutive public failures with a healthy app means the tunnel is wedged, so it kills the connector *children* by exact PID — never a supervisor, never `node` — and their own respawn loops bring them back 5 s later. Then a 90 s cooldown so it cannot fight the reconnection it just triggered.
+
+Two details that matter, both learned by testing it rather than trusting it:
+
+- **`kill` does not kill a stopped process.** The first version's `SIGTERM` sat queued while the target stayed in state `Tl`, and the watchdog logged two confident "restarting" lines having killed nothing at all. It now sends `SIGCONT`, then `SIGTERM`, waits up to 6 s, escalates to `SIGKILL`, and logs loudly if a PID survives even that.
+- **Match the binary, not the string.** The pattern is `$2 == "/tmp/cloudflared" && /tunnel run$/` on `ps -eo pid,args`, anchored on the executable, so no shell command that merely mentions `cloudflared` can be selected as a victim.
+
+Measured end to end: connectors frozen with `SIGSTOP` at **18:15:49Z** (a wedge the supervisors cannot see and `/ready` denies), detected at **18:16:39Z**, both restarted by **18:17:09Z**, public **200** at **18:17:09Z**. **80 seconds, unattended.** Cloudflare then reported `healthy | conns 8` across both connectors again. Worst case is the probe interval plus one 20 s second opinion plus reconnection — roughly 100 s — against the 30 minutes this failure ran unattended.
+
+**QUIC is not the answer here, tempting as it looks.** QUIC has the keepalives that would notice a dead path in seconds, and `cloudflared`'s own precheck reports `UDP Connectivity region1/region2 PASS - QUIC connection successful`. It fails in practice: switching one replica to `protocol: quic` registered and then immediately produced `failed to run the datagram handler error="timeout: no recent network activity"` and `failed to accept QUIC stream`, with `readyConnections: 0`. The UDP handshake survives this NAT; a sustained datagram flow does not. Reverted to `http2` on both, which is what the pinned setting in the config was always protecting.
+
 **2. UptimeRobot — external detection.** A **keyword** monitor, not a plain HTTP one:
 
 | Field | Value |
