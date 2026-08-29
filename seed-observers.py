@@ -9,18 +9,38 @@ Usage:
   python3 seed-observers.py            # dry run, prints a report
   python3 seed-observers.py --write    # writes observer.json (backs up first)
 """
+import glob
 import json
+import os
 import sys
 import shutil
 import time
 import urllib.request
 from collections import Counter, defaultdict
 
-CORESCOPE = "https://corescope.stonekitty.net/api/nodes?limit=5000"
-GEOJSON = "/home/user/workspace/mhc/regions/us-ca-bay-area.geojson"
-STORE = "/home/user/workspace/mhc/data/observer.json"
-BOOTSTRAP = "http://localhost:3090/api/bootstrap"
+# Paths were absolute to one sandbox, which made the script unusable on any
+# other host. They now default to the repo the script sits in and honour the
+# same env var names the app uses, so `server.js` can spawn it with its own
+# environment and a relocated deployment needs no edits.
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _app_path(env_name, default_rel):
+    raw = os.environ.get(env_name, "").strip() or default_rel
+    return raw if os.path.isabs(raw) else os.path.join(HERE, raw)
+
+
+CORESCOPE = (os.environ.get("CORESCOPE_URL", "").strip().rstrip("/")
+             or "https://corescope.stonekitty.net") + "/api/nodes?limit=5000"
+GEOJSON = _app_path("REGIONS_FILE", "regions/us-ca-bay-area.geojson")
+STORE = _app_path("OBSERVERS_FILE", "data/observer.json")
+BOOTSTRAP = (os.environ.get("SEED_BOOTSTRAP_URL", "").strip()
+             or f"http://localhost:{os.environ.get('PORT', '3090')}/api/bootstrap")
 WRITE = "--write" in sys.argv
+# --json adds one machine-readable summary line for the app's self-refresh.
+# The human report still goes to stdout above it, unchanged.
+AS_JSON = "--json" in sys.argv
+SUMMARY = {"wrote": False, "backup": None}
 
 
 # ---------- geometry: same ray-casting rules the server uses ----------
@@ -222,6 +242,12 @@ def main():
         elif int(prev) != width:
             hash_changed.append((cur.get("name") or key[:8], prev, width))
 
+    SUMMARY["hashWidth"] = {
+        "newlyRecorded": hash_set,
+        "changed": [{"name": n, "from": int(p), "to": int(w)} for n, p, w in hash_changed],
+        "cleared": hash_cleared,
+        "examples": [{"name": n, "bytes": w} for n, w in hash_examples],
+    }
     print(f"\npath hash width (confirmed from the node's own advert):")
     print(f"  newly recorded:  {hash_set}")
     print(f"  width changed:   {len(hash_changed)}")
@@ -250,6 +276,15 @@ def main():
         print(f"  located before: {len(located_before)}")
         print(f"  located after:  {len(now_located)}")
         still = [uplinks[k]["label"] for k in uplinks if k not in now_located]
+        SUMMARY["uplinks"] = {
+            "total": len(uplinks),
+            "locatedBefore": len(located_before),
+            "locatedAfter": len(now_located),
+            "newlyLocated": sorted(
+                uplinks[k]["label"] for k in (now_located - located_before)
+            ),
+            "stillUnlocated": len(uplinks) - len(now_located),
+        }
         print(f"  still unlocated ({len(still)}): {', '.join(sorted(still)) or 'none'}")
         print(f"  uplinks CoreScope places OUTSIDE the GeoJSON "
               f"({len(out_of_area_uplinks)}): "
@@ -288,15 +323,34 @@ def main():
     print(f"\nfinal profile count: {len(store)} "
           f"({sum(1 for v in store.values() if v.get('lat') is not None)} located)")
 
+    SUMMARY["profiles"] = {
+        "total": len(store),
+        "located": sum(1 for v in store.values() if v.get("lat") is not None),
+    }
+
     if WRITE:
         backup = f"{STORE}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
         shutil.copy2(STORE, backup)
         with open(STORE, "w", encoding="utf-8") as fh:
             json.dump(store, fh, indent=2, ensure_ascii=False, sort_keys=True)
             fh.write("\n")
+        # A daily pass would otherwise leave one backup per day forever.
+        keep = int(os.environ.get("SEED_BACKUPS_KEEP", "14") or 14)
+        stale = sorted(glob.glob(f"{STORE}.bak-*"))[:-keep] if keep > 0 else []
+        for old_backup in stale:
+            try:
+                os.remove(old_backup)
+            except OSError:
+                pass
+        SUMMARY["wrote"] = True
+        SUMMARY["backup"] = backup
+        SUMMARY["backupsPruned"] = len(stale)
         print(f"\nwrote {STORE} (backup at {backup})")
     else:
         print("\ndry run - nothing written. re-run with --write to apply.")
+
+    if AS_JSON:
+        print("SEED_JSON " + json.dumps(SUMMARY, sort_keys=True))
 
 
 if __name__ == "__main__":

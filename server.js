@@ -7,7 +7,9 @@ import {
   createHmac,
   randomBytes,
   randomUUID,
+  timingSafeEqual,
 } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
@@ -365,6 +367,18 @@ const OBSERVERS_FILE_PATH = resolveAppPath(OBSERVERS_FILE);
 const OBSERVER_ACTIVITY_FILE = envValue('OBSERVER_ACTIVITY_FILE', path.join('data', 'observer-activity.json'));
 const OBSERVER_ACTIVITY_FILE_PATH = resolveAppPath(OBSERVER_ACTIVITY_FILE);
 const REGIONS_FILE = envValue('REGIONS_FILE', '');
+// Self-refresh: the CoreScope seeding pass used to be driven from outside the
+// process, which meant stopping the app so the external write was not clobbered
+// by writeObserverNamesFile(). Running it here removes both the outage and the
+// race - the script writes the file, then this process reloads it into the same
+// Map it would otherwise have overwritten.
+const OBSERVER_RESEED_ENABLED = envBool('OBSERVER_RESEED_ENABLED', false);
+const OBSERVER_RESEED_HOUR = Math.min(23, Math.max(0, Math.round(envNumber('OBSERVER_RESEED_HOUR', 4))));
+const OBSERVER_RESEED_SCRIPT = resolveAppPath(envValue('OBSERVER_RESEED_SCRIPT', 'seed-observers.py'));
+const OBSERVER_RESEED_PYTHON = envValue('OBSERVER_RESEED_PYTHON', 'python3');
+const OBSERVER_RESEED_LOG_PATH = resolveAppPath(envValue('OBSERVER_RESEED_LOG', path.join('data', 'reseed-log.jsonl')));
+const OBSERVER_RESEED_TIMEOUT_MS = Math.max(30000, envNumber('OBSERVER_RESEED_TIMEOUT_MS', 240000));
+const ADMIN_TOKEN = envValue('ADMIN_TOKEN', '');
 const UPLINK_CODES_FILE = envValue('UPLINK_CODES_FILE', '');
 const REGION_FALLBACK = envValue('REGION_FALLBACK', '').trim().toLowerCase();
 const REGION_NAME_PROPERTY = envValue('REGION_NAME_PROPERTY', 'name');
@@ -998,6 +1012,10 @@ const messageToSession = new Map();
 const rateLimitBuckets = new Map();
 const turnstileAuthTokens = new Map();
 let observerNamesWriteTimer = null;
+let reseedInFlight = false;
+let reseedLastDayKey = null;
+let reseedLastResult = null;
+let reseedInterval = null;
 let observerActivityWriteTimer = null;
 let resultsWriteTimer = null;
 
@@ -1292,6 +1310,173 @@ function scheduleObserverNamesWrite() {
     observerNamesWriteTimer = null;
     writeObserverNamesFile();
   }, 250);
+}
+
+function localDayKey(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+// The script owns coordinates and confirmed hash widths: it merges without
+// overwriting an app-learned fix and deliberately drops a position outside the
+// region boundary or a width CoreScope no longer confirms, so the file wins for
+// those three fields. Names and uplink codes are learned here from adverts and
+// MQTT topics, so a value already in memory wins over the file's.
+function applyReseededProfiles(fresh) {
+  let changed = 0;
+  for (const [key, incoming] of fresh.entries()) {
+    if (!incoming) {
+      continue;
+    }
+    const live = observerProfiles.get(key) || {};
+    const merged = {
+      ...live,
+      name: String(live.name || '').trim() || String(incoming.name || '').trim() || '',
+      uplink: normalizeUplinkCode(live.uplink) || normalizeUplinkCode(incoming.uplink) || '',
+      lat: normalizeCoordinate(incoming.lat, 'lat'),
+      lon: normalizeCoordinate(incoming.lon, 'lon'),
+    };
+    const width = Number(incoming.hashBytes);
+    if (Number.isInteger(width) && width >= 1 && width <= 3) {
+      merged.hashBytes = width;
+    } else {
+      delete merged.hashBytes;
+    }
+    // Compare the five fields the store actually persists. Comparing whole
+    // objects counted every profile as changed, because the merge normalises
+    // absent values to '' / null where the file simply omits them.
+    const fields = ['name', 'uplink', 'lat', 'lon', 'hashBytes'];
+    const differs = fields.some((field) => (live[field] ?? null) !== (merged[field] ?? null));
+    observerProfiles.set(key, merged);
+    if (differs) {
+      changed += 1;
+    }
+  }
+  return changed;
+}
+
+function appendReseedLog(entry) {
+  try {
+    fs.mkdirSync(path.dirname(OBSERVER_RESEED_LOG_PATH), { recursive: true });
+    fs.appendFileSync(OBSERVER_RESEED_LOG_PATH, `${JSON.stringify(entry)}\n`, 'utf8');
+  } catch (error) {
+    logger.warn(`[reseed] could not append to ${OBSERVER_RESEED_LOG_PATH}: ${error.message}`);
+  }
+}
+
+// Restarts must not re-run a pass that already ran today, so the last day key
+// comes off the log rather than resetting to null on every boot.
+function loadLastReseedDayKey() {
+  try {
+    const lines = fs.readFileSync(OBSERVER_RESEED_LOG_PATH, 'utf8').trim().split('\n');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const entry = JSON.parse(lines[index]);
+      if (entry && entry.dayKey && entry.trigger === 'schedule') {
+        return String(entry.dayKey);
+      }
+    }
+  } catch {
+    // no log yet
+  }
+  return null;
+}
+
+function runSeedScript() {
+  return new Promise((resolve) => {
+    execFile(
+      OBSERVER_RESEED_PYTHON,
+      [OBSERVER_RESEED_SCRIPT, '--write', '--json'],
+      { cwd: APP_DIR, timeout: OBSERVER_RESEED_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, env: process.env },
+      (error, stdout, stderr) => resolve({ error, stdout: String(stdout || ''), stderr: String(stderr || '') }),
+    );
+  });
+}
+
+async function runObserverReseed(trigger = 'manual') {
+  if (reseedInFlight) {
+    return { ok: false, skipped: 'a reseed is already running' };
+  }
+  reseedInFlight = true;
+  const startedAt = Date.now();
+  const dayKey = localDayKey();
+  try {
+    // Land anything learned since the last debounce so the script reads a file
+    // that matches memory, and clear the pending timer that would otherwise
+    // fire mid-run and overwrite the script's output.
+    flushScheduledWrites();
+
+    const { error, stdout, stderr } = await runSeedScript();
+    const line = stdout.split('\n').reverse().find((row) => row.startsWith('SEED_JSON '));
+    const summary = line ? JSON.parse(line.slice('SEED_JSON '.length)) : null;
+
+    if (error || !summary || !summary.wrote) {
+      const detail = error ? error.message : (summary ? 'script reported no write' : 'no summary line');
+      const failure = {
+        ok: false, trigger, dayKey, at: new Date().toISOString(),
+        ms: Date.now() - startedAt, error: detail,
+        stderr: stderr.trim().split('\n').slice(-3).join(' | '),
+      };
+      logger.warn(`[reseed] ${trigger} failed: ${detail}`);
+      appendReseedLog(failure);
+      reseedLastResult = failure;
+      return failure;
+    }
+
+    const applied = applyReseededProfiles(parseObserversJson(OBSERVERS_FILE_PATH));
+    // Reconcile the file with the merge above (app-learned names and uplinks).
+    scheduleObserverNamesWrite();
+
+    const result = {
+      ok: true, trigger, dayKey, at: new Date().toISOString(),
+      ms: Date.now() - startedAt,
+      profilesChangedInMemory: applied,
+      profiles: summary.profiles || null,
+      uplinks: summary.uplinks || null,
+      hashWidth: summary.hashWidth || null,
+      backup: summary.backup || null,
+    };
+    const uplinks = summary.uplinks || {};
+    const widths = summary.hashWidth || {};
+    logger.info(
+      `[reseed] ${trigger} ok in ${result.ms}ms: located ${uplinks.locatedBefore ?? '?'}`
+      + ` -> ${uplinks.locatedAfter ?? '?'} of ${uplinks.total ?? '?'} uplinks,`
+      + ` hash width +${widths.newlyRecorded ?? 0}/~${(widths.changed || []).length}/-${widths.cleared ?? 0},`
+      + ` ${applied} profiles updated in memory`,
+    );
+    appendReseedLog(result);
+    reseedLastResult = result;
+    reseedLastDayKey = dayKey;
+    broadcastSnapshot(true);
+    return result;
+  } catch (error) {
+    const failure = {
+      ok: false, trigger, dayKey, at: new Date().toISOString(),
+      ms: Date.now() - startedAt, error: error.message,
+    };
+    logger.warn(`[reseed] ${trigger} threw: ${error.message}`);
+    appendReseedLog(failure);
+    reseedLastResult = failure;
+    return failure;
+  } finally {
+    reseedInFlight = false;
+  }
+}
+
+// Checked every ten minutes rather than fired on the minute, so a restart or a
+// slow host cannot make the day's pass silently skip.
+function maybeRunScheduledReseed() {
+  if (!OBSERVER_RESEED_ENABLED || reseedInFlight) {
+    return;
+  }
+  const now = new Date();
+  const dayKey = localDayKey(now);
+  if (reseedLastDayKey === dayKey || now.getHours() < OBSERVER_RESEED_HOUR) {
+    return;
+  }
+  reseedLastDayKey = dayKey;
+  runObserverReseed('schedule').catch((error) => {
+    logger.warn(`[reseed] scheduled run rejected: ${error.message}`);
+  });
 }
 
 function writeObserverActivityFile() {
@@ -3470,6 +3655,49 @@ app.get('/channel-qr.svg', (request, response) => {
   response.send(testChannelQrSvg);
 });
 
+function adminTokenOk(request) {
+  const supplied = String(request.get('x-admin-token') || '');
+  if (!ADMIN_TOKEN || supplied.length !== ADMIN_TOKEN.length) {
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(supplied), Buffer.from(ADMIN_TOKEN));
+}
+
+// Optional: lets an outside scheduler (host cron, a Workers cron trigger, CI)
+// drive the same refresh the internal timer runs. Disabled unless ADMIN_TOKEN
+// is set, so the route does not exist on a default deployment.
+app.post('/api/admin/reseed', async (request, response) => {
+  if (!ADMIN_TOKEN) {
+    response.status(404).json({ error: 'not enabled' });
+    return;
+  }
+  if (!adminTokenOk(request)) {
+    response.status(403).json({ error: 'forbidden' });
+    return;
+  }
+  const result = await runObserverReseed('api');
+  response.status(result.ok ? 200 : 500).json(result);
+});
+
+app.get('/api/admin/reseed', (request, response) => {
+  if (!ADMIN_TOKEN) {
+    response.status(404).json({ error: 'not enabled' });
+    return;
+  }
+  if (!adminTokenOk(request)) {
+    response.status(403).json({ error: 'forbidden' });
+    return;
+  }
+  response.json({
+    enabled: OBSERVER_RESEED_ENABLED,
+    hour: OBSERVER_RESEED_HOUR,
+    running: reseedInFlight,
+    lastDayKey: reseedLastDayKey,
+    last: reseedLastResult,
+    logPath: OBSERVER_RESEED_LOG_PATH,
+  });
+});
+
 app.get('/api/bootstrap', (request, response) => {
   response.json(serializeBootstrap(request));
 });
@@ -3700,6 +3928,14 @@ function startRuntime() {
       broadcastSnapshot(false);
     }
   }, 10000);
+  if (OBSERVER_RESEED_ENABLED) {
+    reseedLastDayKey = loadLastReseedDayKey();
+    reseedInterval = setInterval(maybeRunScheduledReseed, 600000);
+    logger.info(
+      `[reseed] self-refresh on, daily after ${String(OBSERVER_RESEED_HOUR).padStart(2, '0')}:00 local`
+      + `${reseedLastDayKey ? `, last scheduled pass ${reseedLastDayKey}` : ''}`,
+    );
+  }
   startMqtt();
 
   server.listen(PORT, () => {

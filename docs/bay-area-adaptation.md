@@ -1354,6 +1354,39 @@ The tokens were also a step too pale on their own and were darkened alongside it
 
 A new smoke test guards the lot: three counter markers with `border-radius: 999px`, no `Step N` left in any step's text, the channel and the code both emphasised, the three fields at `--`, and one shared paint across the four controls.
 
+### 6aa. The CoreScope refresh moved inside the app
+
+The daily seeding pass was the last piece of this deployment that cost money to keep running, and none of that spend bought judgement. The work is a fetch, a diff, a file write and a health check. The only reason it needed an agent was that the write happened *outside* the Node process that owns the profile store, so the process had to be stopped or it would clobber the file — which meant a supervisor kill, a child kill, a write, a restart and a re-verification of both the local port and the public hostname, with roughly 30 s of downtime every morning.
+
+Running the pass in-process removes the reason, not just the symptom.
+
+**Script, made portable and machine-readable.** `seed-observers.py` had four absolute sandbox paths baked in, which made it unusable on any other host. They now default to the repo the script sits in and honour the app's own variable names, so `server.js` can spawn it with its own environment and a relocated deployment needs no edits:
+
+```python
+CORESCOPE = (os.environ.get("CORESCOPE_URL", ...) or "https://corescope.stonekitty.net") + "/api/nodes?limit=5000"
+GEOJSON   = _app_path("REGIONS_FILE",   "regions/us-ca-bay-area.geojson")
+STORE     = _app_path("OBSERVERS_FILE", "data/observer.json")
+BOOTSTRAP = os.environ.get("SEED_BOOTSTRAP_URL") or f"http://localhost:{os.environ.get('PORT', '3090')}/api/bootstrap"
+```
+
+A `--json` flag adds one `SEED_JSON {...}` line after the human report: located before/after, the labels of any newly located uplink observers, hash widths recorded/changed/cleared with names, final profile counts, and the backup path. The app parses that instead of scraping prose. The script also prunes its own backups to the newest `SEED_BACKUPS_KEEP` (14) — a daily pass would otherwise leave one `observer.json.bak-*` per day forever.
+
+**Server side.** `runObserverReseed(trigger)` flushes the debounced write so the script reads a file that matches memory, spawns `python3 seed-observers.py --write --json`, then reloads the file into the same `Map` it would otherwise have fought:
+
+- **the file wins for `lat`, `lon` and `hashBytes`** — the three fields the script owns. That includes its deliberate erasures: a position outside the region boundary is purged, and a width CoreScope no longer confirms from the node's own advert is cleared.
+- **memory wins for `name` and `uplink`**, which are learned here from adverts and MQTT topics and are not CoreScope's to overwrite.
+- the merge is then written back once through the normal debounced path, and `broadcastSnapshot(true)` pushes the new directory to connected clients.
+
+One subtlety worth recording: the first implementation compared whole profile objects with `JSON.stringify` and reported **439 of 805 profiles changed** on a pass that changed nothing. The merge normalises absent values to `''`/`null` where the file simply omits the key, so almost every profile compared unequal. Comparing the five persisted fields individually fixed it — two consecutive passes now report `changed 0`.
+
+**Schedule.** `OBSERVER_RESEED_ENABLED=true` and `OBSERVER_RESEED_HOUR=4` (local). The check runs every ten minutes and fires once per calendar day, and the last completed day key is read back from `data/reseed-log.jsonl` at boot, so a restart after the hour neither re-runs the pass nor skips it. Never gate this kind of thing on exact-minute equality.
+
+**Optional external trigger.** With `ADMIN_TOKEN` set, `POST /api/admin/reseed` runs the same pass and `GET /api/admin/reseed` returns the last result; both authenticate on an `x-admin-token` header compared with `timingSafeEqual`, and both 404 while the token is blank, which is the default. That covers host cron, a CI schedule, or a Cloudflare Workers cron trigger — free-plan Workers allow 5 cron triggers per account at 10 ms CPU each ([limits](https://developers.cloudflare.com/workers/platform/limits/)). None of them earn their place here: a Worker can only make an HTTP request, so it still needs this endpoint, and an app that can be poked on a schedule can run its own timer instead of exposing an authenticated route to the internet.
+
+**Measured.** `POST` returns in **~800 ms**. The site answered `200` locally and publicly throughout, with no restart and no supervisor involvement. A second pass immediately after the first: `changed 0`, `located 24 -> 24 of 36`, `widths +0 ~0 -0`.
+
+**What replaced the daily task.** One weekly agent run (Mondays 08:00 America/New_York) that only reads. It confirms a scheduled pass landed on each of the last seven days, checks both hosts answer 200 and that the endpoint still reports `enabled: true`, looks for duplicate rendered hash prefixes, and notifies only when an observer newly appears on the map, a hash width moves, a day is missing, an entry failed, or a host is down. A quiet week ends silently. That is one seventh of the runs and none of the restart risk.
+
 ### 6z. Merging upstream v1.3.8 and giving the fork a version of its own
 
 Upstream cut **v1.3.8** on 27 August 2026 (commit `8bab150`); this fork branched from `b478e83`, which is tag `v1.3.7`. The delta is small — 12 files, +99/−11 — and fetching it anonymously works from a sandbox with no GitHub credentials:
@@ -1505,7 +1538,7 @@ One `[mqtt] subscribed` line, not nine — the single-topic grant replaced the p
 - [ ] Confirm `#healthcheck` isn't already used locally for something else, then announce it
 - [x] Set the real `SITE_URL` origin — `SITE_URL=https://healthcheck.sonomamesh.com`, the pinned named-tunnel hostname
 - [x] Regenerate `image1-3.png` screenshots from this deployment — `regen-readme-shots.py` captures them from archived session MHC-BDCA34 (100%, 31/31 observers, 8/8 regions): the result card, the receipt spread with two receipt cards and their estimated paths, and the coverage map with 22/22 mapped observers. Regenerating exposed a real defect, now fixed: upstream's decorative `.splash-scene__badge` pills sit at `z-index: 0` behind the translucent hero, so "Adaptive mesh" bled through underneath the header buttons as illegible ghost text. They are hidden in `theme-bayarea.css`
-- [x] Re-run `seed-observers.py` periodically as CoreScope learns new nodes — scheduled daily at 04:15 America/New_York (`15 8 * * *` UTC). The task dry-runs first and only writes when CoreScope has gained a position for a directory observer that lacks one, plus one unconditional refresh on Sundays.
+- [x] Re-run `seed-observers.py` periodically as CoreScope learns new nodes — now **in-process**: `OBSERVER_RESEED_ENABLED=true` runs the pass daily after `OBSERVER_RESEED_HOUR` with no restart, no outage and no credits (§6aa). The paid daily agent task is deleted; a weekly agent run reads `data/reseed-log.jsonl` and pages only on a real change or a missed day. Previously scheduled daily at 04:15 America/New_York (`15 8 * * *` UTC). The task dry-runs first and only writes when CoreScope has gained a position for a directory observer that lacks one, plus one unconditional refresh on Sundays.
 
   **Why a live per-request lookup is not worth it.** CoreScope has no per-key route: `/api/nodes/<pubkey>` 404s, and `?public_key=` / `?key=` are silently *ignored* — both return the default 50-node page, so a naive lookup would appear to work and hand back the wrong node. `?search=` matches the name field only; the full key, a 12-char prefix, and a 6-char prefix all return `total: 0`. The only usable query is the whole list, `/api/nodes?limit=5000` (799 nodes, 595 KB, ~0.45 s TTFB, `cache-control: no-store`), which is a bulk refresh rather than a lookup.
 
@@ -1520,7 +1553,9 @@ One `[mqtt] subscribed` line, not nine — the single-topic grant replaced the p
 
   Key formats are not the problem — both sides are 64-hex and all 22 located observers match a CoreScope node. These 13 are mostly MQTT bridge clients and logger bots: software uplinks that never advertise a position, which is exactly why they resolve through the uplink-code fallback (all 13 report `regionSource: "uplink-code"`). CoreScope has the same gap network-wide, with no usable position for 145 of its 799 nodes.
 
-  **Ordering hazard for the scheduled write.** `observer.json` is read once at boot into an in-memory `Map` (`server.js` ~line 894), and `writeObserverNamesFile()` serialises that Map back over the file, debounced 250 ms after any learned advert metadata. Writing the file while the server runs is therefore clobbered by the next advert. The task stops the app (killing exact PIDs from `ps -eo pid,args` — never `pkill -f server.js`), runs the script, then restarts and verifies both the local port and the pinned tunnel URL.
+  **Ordering hazard for an external write — since removed.** `observer.json` is read once at boot into an in-memory `Map` (`server.js` ~line 894), and `writeObserverNamesFile()` serialises that Map back over the file, debounced 250 ms after any learned advert metadata. Writing the file from outside is therefore clobbered by the next advert, which forced the whole stop-the-supervisor, kill-the-child, write, restart, re-verify sequence and a ~30 s outage every morning.
+
+  **The refresh now runs inside the app (§6aa),** which removes the hazard rather than working around it, and with it the daily agent task. `OBSERVER_RESEED_ENABLED=true` runs the pass once a day after `OBSERVER_RESEED_HOUR` (local time, checked every ten minutes so a restart cannot make the day skip): flush the debounced write, spawn `seed-observers.py --write --json`, reload the file into the same `Map`, reconcile. ~800 ms, no restart, no downtime, no credits. One weekly agent run reads `data/reseed-log.jsonl` and pages only when something user-visible moved.
 - [ ] Turnstile keys + DNS/reverse proxy
 - [ ] Leave `KNOWN_OBSERVERS` blank, curate later once always-on hilltop sites are known
 - [ ] Announce the channel on the Bay Area MeshCore Discord

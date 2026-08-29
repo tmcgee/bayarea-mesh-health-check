@@ -35,6 +35,14 @@ tile request URLs, so scope it to this project and its deployment hostnames.
 | `OBSERVERS_FILE` | `data/observer.json` | Persistent observer profile map with `name`, `lat`, and `lon`. |
 | `OBSERVER_ACTIVITY_FILE` | `data/observer-activity.json` | Rolling observer packet history for dynamic default observer ranking. |
 | `RESULTS_FILE` | `data/session-results.json` | Retained session result store for `/share/:sessionId` links. |
+| `OBSERVER_RESEED_ENABLED` | `false` | Run the CoreScope seeding pass in-process, once a day. Removes the need for an external scheduler and for stopping the app to write `OBSERVERS_FILE`. |
+| `OBSERVER_RESEED_HOUR` | `4` | Local-time hour after which the daily pass runs. Checked every ten minutes, once per calendar day, so a restart cannot make the day's pass skip. |
+| `OBSERVER_RESEED_SCRIPT` | `seed-observers.py` | Script the refresh runs, resolved against the app directory. |
+| `OBSERVER_RESEED_PYTHON` | `python3` | Interpreter used to run it. |
+| `OBSERVER_RESEED_LOG` | `data/reseed-log.jsonl` | One JSON line per pass: counts, newly located observers, hash-width moves, duration. |
+| `OBSERVER_RESEED_TIMEOUT_MS` | `240000` | Hard timeout for the script. |
+| `ADMIN_TOKEN` | blank | When set, exposes `POST /api/admin/reseed` and `GET /api/admin/reseed`, authenticated with an `x-admin-token` header, so an outside scheduler can drive or inspect the refresh. Both routes 404 while it is blank. |
+| `SEED_BACKUPS_KEEP` | `14` | Backups of `OBSERVERS_FILE` the script keeps; older `.bak-*` files are pruned after each write. |
 
 Keep these paths under the mounted `data/` directory if data should survive
 container rebuilds.
