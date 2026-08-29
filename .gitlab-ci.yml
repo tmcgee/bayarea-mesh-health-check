@@ -1,0 +1,69 @@
+# GitLab mirror of .github/workflows/ci.yml, which stays in place for the
+# upstream GitHub repository. Same three gates: syntax check, unit tests, and
+# the Playwright smoke run.
+#
+# The unit tests must never see a real .env. server.js fills in any variable it
+# finds there, so a live SITE_URL or REGIONS_FILE silently rewrites the app under
+# test. test/support/isolate-env.js sets MESH_HEALTH_SKIP_ENV_FILE to block that;
+# CI has no .env either way, which is exactly why the leak was invisible here.
+
+default:
+  image: node:22-bookworm
+  interruptible: true
+
+stages:
+  - verify
+  - browser
+
+variables:
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+
+.npm_cache: &npm_cache
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+    policy: pull-push
+
+syntax:
+  stage: verify
+  <<: *npm_cache
+  script:
+    - npm ci --prefer-offline --no-audit --fund=false
+    - npm run check
+
+unit:
+  stage: verify
+  <<: *npm_cache
+  script:
+    - npm ci --prefer-offline --no-audit --fund=false
+    - test ! -f .env || (echo "a .env in CI would leak into the tests" && exit 1)
+    - npm run test:ci
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: junit.xml
+    paths:
+      - junit.xml
+
+smoke:
+  stage: browser
+  # Pinned to the Playwright version in package.json; the image ships the
+  # matching browser build, so no `playwright install` step is needed.
+  image: mcr.microsoft.com/playwright:v1.62.1-noble
+  <<: *npm_cache
+  script:
+    - npm ci --prefer-offline --no-audit --fund=false
+    - npm run test:smoke
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - playwright-report/
+      - test-results/
+  # The smoke run boots the app and drives a real browser. Keep it advisory so a
+  # flaky headless run cannot block a docs-only commit.
+  allow_failure: true

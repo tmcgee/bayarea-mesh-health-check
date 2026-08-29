@@ -7,7 +7,8 @@
   "main": "server.js",
   "scripts": {
     "check": "node --check server.js && node --check public/app.js && node --check public/turnstile-landing.js",
-    "test": "node --test test/*.test.js",
+    "test": "MESH_HEALTH_SKIP_ENV_FILE=true node --test test/*.test.js",
+    "test:ci": "MESH_HEALTH_SKIP_ENV_FILE=true node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=junit.xml test/*.test.js",
     "test:smoke": "playwright test",
     "postinstall": "node scripts/patch-meshcore-decoder.js",
     "start": "node server.js",

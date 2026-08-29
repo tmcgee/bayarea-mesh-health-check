@@ -117,8 +117,16 @@ test('dashboard loads and creates a session code', async ({ page }) => {
   await expect(page.getByText('Where the observers are')).toBeVisible();
   await expect(page.locator('#map-observer-note')).toContainText('mapped observers reached.');
   await expect(page.locator('#observer-map')).toBeVisible();
-  await expect(page.getByText('When each observer saw it')).toBeVisible();
-  await expect(page.getByText('Timeline appears after the first observer report.')).toBeVisible();
+
+  // The observers and reports panels moved inside the collapsed "Show
+  // Additional Information" section. The coverage map deliberately stays
+  // outside it, so it is visible above without any interaction.
+  await expect(page.locator('#observer-reports')).not.toBeVisible();
+  await expect(page.locator('#additional-info-label')).toHaveText('Show Additional Information');
+  await page.locator('#additional-info-toggle').click();
+  await expect(page.locator('#additional-info-label')).toHaveText('Hide Additional Information');
+  await expect(page.getByText('Who saw the message')).toBeVisible();
+  await expect(page.getByText('No observer reports yet.')).toBeVisible();
 });
 
 test('share button uses the browser share API with the retained share link', async ({ page }) => {
@@ -141,22 +149,28 @@ test('share button uses the browser share API with the retained share link', asy
   expect(shareCalls[0].url).toMatch(/^http:\/\/127\.0\.0\.1:3091\/share\/[0-9a-f-]+$/i);
 });
 
-test('changing the observer selection updates the target and regenerates the unused code', async ({ page }) => {
+test('the observer list is read-only and the code survives opening it', async ({ page }) => {
   await page.goto('/app');
 
   const sessionCode = page.locator('#session-code');
   await expect(sessionCode).toContainText('MHC-', { timeout: 10000 });
   const initialCode = await sessionCode.textContent();
 
-  const observerOptions = page.locator('#observer-allowlist input[type="checkbox"]');
-  await expect(observerOptions.first()).toBeVisible();
-  const initialObserverCount = await observerOptions.count();
-  expect(initialObserverCount).toBeGreaterThan(1);
-  await observerOptions.nth(0).uncheck();
+  await page.locator('#additional-info-toggle').click();
+  await expect(page.locator('#observer-targets')).toBeVisible();
 
-  await expect(page.locator('#expected-observers .observer-pill')).toHaveCount(1);
-  await expect(sessionCode).not.toHaveText(initialCode || '', { timeout: 10000 });
-  await expect(page.locator('#expected-source')).toContainText('Custom set');
+  // The per-observer checkboxes were removed: every active observer is scored,
+  // so there is no selection to change and no reason to mint a new code. What
+  // is left is a read-only list of pills plus the region chips.
+  await expect(page.locator('#observer-targets input[type="checkbox"]')).toHaveCount(0);
+
+  const pills = page.locator('#expected-observers .observer-pill');
+  await expect(pills.first()).toBeVisible();
+  expect(await pills.count()).toBeGreaterThan(1);
+  await expect(page.locator('#observer-allowlist-note')).toContainText('observers');
+
+  await page.waitForTimeout(500);
+  await expect(sessionCode).toHaveText(initialCode || '');
 });
 
 test('coverage map only plots observers targeted by the selected region', async ({ page }) => {
@@ -319,10 +333,9 @@ test('escapes untrusted observer labels in timeline and map popups', async ({ pa
     'href',
     'https://analyzer.example.test/#/packets/abcdef1234567890',
   );
-  await expect(page.locator('#receipt-timeline')).toContainText('Evil Observer');
-  await expect(page.locator('#receipt-timeline img')).toHaveCount(0);
+  await expect(page.locator('#receipts')).toContainText('Evil Observer');
   await expect(page.locator('#receipts img')).toHaveCount(0);
-  await expect(page.locator('#observer-allowlist img')).toHaveCount(0);
+  await expect(page.locator('#observer-targets img')).toHaveCount(0);
 
   await page.locator('.leaflet-marker-icon').first().click();
   await expect(page.locator('.leaflet-popup-content')).toContainText('Evil Observer');

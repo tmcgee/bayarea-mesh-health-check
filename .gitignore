@@ -37,3 +37,4 @@ test-results/
 
 # Bay Area adaptation: CoreScope seeding backups
 data/observer.json.bak-*
+junit.xml

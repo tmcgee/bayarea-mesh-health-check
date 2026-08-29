@@ -69,7 +69,10 @@ function parseEnvFileLoose(filePath) {
 }
 
 const localEnvPath = path.join(APP_DIR, '.env');
-const localEnv = parseEnvFileLoose(localEnvPath);
+// Tests set MESH_HEALTH_SKIP_ENV_FILE so a developer's real .env cannot leak
+// into the app under test. Unset in normal operation.
+const skipEnvFile = process.env.MESH_HEALTH_SKIP_ENV_FILE === 'true';
+const localEnv = skipEnvFile ? {} : parseEnvFileLoose(localEnvPath);
 for (const [key, value] of Object.entries(localEnv)) {
   if (process.env[key] === undefined) {
     process.env[key] = value;
