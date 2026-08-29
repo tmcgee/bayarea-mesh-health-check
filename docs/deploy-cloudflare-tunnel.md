@@ -114,6 +114,7 @@ One thing that looks broken but isn't: region and group filters populate slowly.
 - Updates: `git pull && docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d --build`. Bump the `sw.js` cache name whenever you change front-end assets, or PWA installs keep serving stale files.
 - Cloudflare zone: leave the record proxied. Don't enable "Bot Fight Mode" on this hostname — it can kill the WebSocket upgrade. Turnstile is already doing the human check.
 - Rotate the GoMesh MQTT password; it has been shared in chat.
+- Monitoring: two respawn loops for repair, plus a Cloudflare Tunnel Health Alert and a 5-minute external keyword check for detection. See "Monitoring and alerting" in the appendix — including why the scheduled agent watchdog was retired.
 - If you'd rather not run hardware, the same tree deploys unchanged to Fly.io or Render with a persistent volume — the tunnel overlay is simply omitted.
 
 ## Appendix — the live test instance's named tunnel (built 2026-08-29)
@@ -181,6 +182,85 @@ ingress:
 
 Healthy startup registers four connections and `curl -s http://127.0.0.1:20242/ready` returns `{"status":200,"readyConnections":4,...}`.
 
-### Watchdog
+### Monitoring and alerting
 
-The hourly URL-rotation watchdog was retired. Its replacement checks `https://healthcheck.sonomamesh.com/api/bootstrap` and `localhost:3090` every two hours, restarts the app or the tunnel supervisor if either is down, and only notifies when the public hostname cannot be returned to 200. It is explicitly forbidden from minting quick tunnels or rewriting `SITE_URL`.
+The hourly URL-rotation watchdog is **gone**, and so is the daily one that replaced it. Across 27 runs, every one of its 8 recovery events was quick-tunnel hostname loss — a failure mode the named-tunnel cutover eliminated outright. It never once had to restart the app. An agent-driven watchdog also bills for a whole reasoning session every time it fires, to answer a question `curl` answers for free.
+
+What replaced it is three layers, none of which cost anything to run.
+
+**1. Local supervision — repairs.** Two bash respawn loops, one per process, restart the child 5 s after any exit:
+
+```bash
+# /tmp/app-supervise.sh   (and /tmp/named-tunnel.sh, same shape for cloudflared)
+while true; do
+  node server.js >> /tmp/mhc-supervised.log 2>&1
+  echo "$(date -u +%FT%TZ) exited $? - respawning in 5s" >> /tmp/mhc-supervised.log
+  sleep 5
+done
+```
+
+Verified by `kill -9` of the node child: back and answering 200 in under 12 s, MQTT reconnected on its own. On a real box use `restart: unless-stopped` in Compose, or a systemd unit with `Restart=always`, instead of this.
+
+The hazard this creates: **a supervisor will fight you.** `data/observer.json` is read once at boot into an in-memory `Map` and rewritten from that Map, debounced 250 ms after any learned advert. Editing the file while the app runs gets it clobbered, and killing only the node child is useless because the loop brings it straight back. Stop the *supervisor* first, then the child, confirm nothing respawned, then write. The daily CoreScope seeding task does exactly that.
+
+**2. UptimeRobot — external detection.** A **keyword** monitor, not a plain HTTP one:
+
+| Field | Value |
+| --- | --- |
+| Type | `KEYWORD` |
+| URL | `https://healthcheck.<your-domain>/api/bootstrap` |
+| Keyword | `observerDirectory`, `keywordType: ALERT_NOT_EXISTS` |
+| Accepted status codes | `2xx, 3xx, 4xx, 5xx` — deliberately all of them |
+| Interval | 300 s (the free plan's floor) |
+| Region | `na` |
+
+Accepting every status code and requiring a string from the payload catches what a status-code check misses: tunnel up, app up, but the edge serving an interstitial, a Cloudflare error page, or a stale cache. `observerDirectory` only appears if the real bootstrap JSON was generated. The free plan allows 50 monitors and 5 integrations at a 5-minute interval ([UptimeRobot pricing](https://uptimerobot.com/pricing/)).
+
+Created over the v3 API, which takes a bearer token — v2's `api_key`-in-the-body style is awkward to inject safely:
+
+```bash
+curl -s -X POST https://api.uptimerobot.com/v3/monitors \
+  -H "Authorization: Bearer $UR_KEY" -H 'Content-Type: application/json' \
+  -d '{"type":"KEYWORD","url":"https://healthcheck.<your-domain>/api/bootstrap",
+       "friendlyName":"healthcheck - Bay Area mesh health check","interval":300,
+       "keywordType":"ALERT_NOT_EXISTS","keywordValue":"observerDirectory",
+       "successHttpResponseCodes":["2xx","3xx","4xx","5xx"],"regionalData":"na",
+       "assignedAlertContacts":[{"alertContactId":<ID>,"threshold":0,"recurrence":0}]}'
+```
+
+Two API quirks worth knowing: `regionalData` must be the bare string `"na"` on create (`{"REGION":["na"]}` is rejected with `regionalData must be one of the following values: na, eu, as, oc`, even though that object shape is what `GET` returns), and a `threshold` above 0 is silently normalised to 0 — alerts fire on the first failed check.
+
+**3. Cloudflare Tunnel Health Alert — first-party detection.** Cloudflare itself knows when the connector deregisters, which is faster and more specific than any external prober. Included with all Zero Trust plans, free tier included ([Cloudflare tunnel notifications](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/monitor-tunnels/notifications/)).
+
+The alert type is `tunnel_health_event`, shown in the dashboard as **Tunnel Health Alert**. Do not confuse it with `tunnel_update_event` (tunnel created/deleted) or with the Magic WAN / IPsec / GRE tunnel alerts, which are a different product. Enumerate what your account actually offers before guessing:
+
+```bash
+curl -s "https://api.cloudflare.com/client/v4/accounts/$ACCT/alerting/v3/available_alerts" \
+  -H "Authorization: Bearer $CF_TOKEN"
+curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCT/alerting/v3/policies" \
+  -H "Authorization: Bearer $CF_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"Bay Area mesh health check tunnel","alert_type":"tunnel_health_event",
+       "enabled":true,"mechanisms":{"email":[{"id":"cloudflare@<your-domain>"}]},
+       "filters":{"tunnel_id":["<TUNNEL_ID>"]}}'
+```
+
+- **The `tunnel_id` filter matters.** Without it the policy alerts on every tunnel on the account. `available_alerts` reports the filter keys this alert type accepts: `tunnel_id` and `new_status`.
+- **Leaving `new_status` unset means you also hear about recovery**, which is what you want for something that flaps rather than dies. Add the filter if a chatty tunnel starts spamming you.
+- **This needs a permission the tunnel token doesn't have.** The three rows in the section above are enough to build and run a tunnel but not to touch alerting; add **Account → Notifications → Edit**. The symptom is the usual useless `10000 Authentication error`, while `GET /user/tokens/verify` cheerfully reports the token "valid and active" — because it is, just not for that endpoint. A quick tell: `GET /accounts` returning an empty list means the token holds no account-scoped rights at all.
+- Email destinations must be eligible before use — `GET /alerting/v3/destinations/eligible` should show `email: {eligible: true, ready: true}`. PagerDuty shows `eligible: false` until it is connected.
+
+**Test it for real.** A test that doesn't take the tunnel down proves nothing. Stop the tunnel supervisor first (not just `cloudflared`, or the loop restarts it), then watch the API:
+
+```bash
+ps -eo pid,args | grep -E '[n]amed-tunnel.sh|[c]loudflared --config'   # kill these exact PIDs
+curl -s "https://api.cloudflare.com/client/v4/accounts/$ACCT/cfd_tunnel/$TID" \
+  -H "Authorization: Bearer $CF_TOKEN" | python3 -c 'import sys,json;r=json.load(sys.stdin)["result"];print(r["status"],len(r["connections"]))'
+```
+
+Measured on 2026-08-29: supervisor and connector killed at **14:24:37Z**; the public hostname served `530` immediately; Cloudflare reported `status: down, connections: 0` at **14:24:48Z**, **11 seconds** later. Restarting the supervisor re-registered four connections by 14:25:00Z and the API read `healthy` again at 14:25:16Z. Total outage ≈ 30 s, and both the down and the recovery transition fire an email.
+
+The 5-minute prober saw none of it — no incident was recorded. That is the point of running both layers: Cloudflare catches seconds, UptimeRobot catches the failures Cloudflare cannot see, such as the connector staying happily registered while the app behind it serves garbage.
+
+One trap when testing from a sandbox: if the shell has an HTTPS credential proxy injected for some other host, `curl` to your own site through it can return `000` while the site is perfectly healthy. Re-check without the proxy before believing an outage.
+
+**What is deliberately not monitored.** MQTT connectivity to `mqtt.gomesh.dev` — `/api/bootstrap` reports `mqtt.connected`, so a keyword monitor on `"connected":true` would alert on broker-side outages you cannot fix. Left out on purpose; add it if you want the visibility.
