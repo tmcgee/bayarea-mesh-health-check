@@ -108,3 +108,12 @@ body[data-ui-theme="light"] {
     linear-gradient(180deg, #ffffff, #edf4ff);
   color: var(--text);
 }
+
+/* The footer note inherits .small-note's uppercase treatment, which rendered the
+   version as "VERSION: V1.3.8+BAYAREA.1". SemVer build metadata is
+   case-sensitive, so shouting it prints a string that is not the one in
+   package.json. Keep the footer verbatim; the repo slug reads better too. */
+.site-footer .small-note {
+  text-transform: none;
+  letter-spacing: 0.03em;
+}

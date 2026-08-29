@@ -243,11 +243,11 @@ The key is free, needs no CARTO account, and is emailed straight back; the form 
 
 Rather than paste a key into front-end source, the tile URLs are now server-side config:
 
-- `server.js` reads `CARTO_API_KEY`, `MAP_TILE_DARK_URL`, `MAP_TILE_LIGHT_URL` and publishes a `site.map` block in `/api/bootstrap` (`darkTileUrl`, `lightTileUrl`, per-theme attribution, `cartoKeyConfigured`).
+- `server.js` reads `CARTO_API_KEY` (renamed to `CARTO_BASEMAP_KEY` in §6z, old name still accepted), `MAP_TILE_DARK_URL`, `MAP_TILE_LIGHT_URL` and publishes a `site.map` block in `/api/bootstrap` (`darkTileUrl`, `lightTileUrl`, per-theme attribution, `cartoKeyConfigured`).
 - Default dark style is `rastertiles/dark_all` — visually identical to the legacy `dark_all` path, which is the older undocumented URL form.
 - Light mode previously hit `tile.openstreetmap.org` directly. With a CARTO key present it now uses CARTO `light_all` instead, which both matches the dark styling and keeps the app off OSM's community tile servers. With no key it falls back to OSM, since a keyless OSM tile has no watermark.
 - `public/app.js` builds the Leaflet layer from that config and rebuilds it if the config changes; the old hard-coded URLs remain as a fallback.
-- Startup now warns when no key is set: `[web] no CARTO_API_KEY set - basemap tiles carry an "API KEY REQUIRED" watermark`.
+- Startup now warns when no key is set: `[web] no CARTO_API_KEY set - basemap tiles carry an "API KEY REQUIRED" watermark`. Superseded in §6z: the message names `CARTO_BASEMAP_KEY` and the map falls back to OpenStreetMap instead of fetching a watermarked tile.
 
 Attribution is unchanged and still rendered by Leaflet, which the terms require — do not strip it, and do not try to mask the watermark instead of getting a key.
 
@@ -1355,6 +1355,53 @@ The green is a theme token, not a literal: `--step-ink` is `#4ade80` on the dark
 The tokens were also a step too pale on their own and were darkened alongside it: `--muted` `#5b6b82` → `#44515f`, which lifts labels and notes from 5.4:1 to 8.1:1 on white. One specificity bug surfaced while checking: `body[data-ui-theme="light"] .hash-link` (0,2,1) outranks `.hash-link.pending` (0,2,0), so an unfilled hash rendered in link blue while every other placeholder was ink.
 
 A new smoke test guards the lot: three counter markers with `border-radius: 999px`, no `Step N` left in any step's text, the channel and the code both emphasised, the three fields at `--`, and one shared paint across the four controls.
+
+### 6z. Merging upstream v1.3.8 and giving the fork a version of its own
+
+Upstream cut **v1.3.8** on 27 August 2026 (commit `8bab150`); this fork branched from `b478e83`, which is tag `v1.3.7`. The delta is small — 12 files, +99/−11 — and fetching it anonymously works from a sandbox with no GitHub credentials:
+
+```bash
+git fetch --no-tags https://github.com/yellowcooln/meshcore-health-check \
+  refs/tags/v1.3.8:refs/tags/upstream-v1.3.8
+```
+
+**Merged, not rebased, and the reason is the push path.** Commits reach GitLab here through the Commits API, not `git push` — the sandbox cannot authenticate a git transport. That API can only append commits to a branch: it cannot force-push and it cannot write a two-parent merge commit. A real rebase would rewrite every local SHA and the remote would then need a force-push it will never get. So local history has to stay linear and byte-identical to the remote, and the upstream delta lands as one ordinary commit that names its base in the message (`upstream base: v1.3.8 (8bab150)`). The provenance is in the history either way: the fork still contains upstream's `b478e83` with its original authorship.
+
+**Version scheme.** `package.json` now reads `1.3.8+bayarea.1`. That is SemVer *build metadata*, chosen over the two obvious alternatives:
+
+| Candidate | Why not |
+| --- | --- |
+| `1.3.8-bayarea.1` | A hyphen makes it a *pre-release*, which sorts **below** plain `1.3.8`. This build is upstream 1.3.8 plus work, not a release candidate for it. |
+| `2.0.0` | Collides with whatever upstream calls its own next major, and claims a lineage the fork does not have. |
+
+`+bayarea.1` states the two facts that matter — the upstream base, and which fork build sits on top of it — and the counter after the `+` increments independently of upstream. When the next upstream release is merged the base moves and the counter resets: `1.3.9+bayarea.1`.
+
+**Docker compatibility.** A Docker tag must match `[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`, so `+` is illegal and `docker build -t app:1.3.8+bayarea.1` fails outright. Rather than keep two hand-maintained version strings, a new `lib/version.js` derives one from the other:
+
+```js
+export function dockerTag(version) { /* 1.3.8+bayarea.1 -> 1.3.8-bayarea.1 */ }
+export function isLegalDockerTag(tag) { /* DOCKER_TAG_PATTERN.test(tag) */ }
+```
+
+`npm run docker:tag` prints it, `docker-compose.yml` pins `image: bayarea-mesh-health-check:${APP_IMAGE_TAG:-1.3.8-bayarea.1}`, and a unit test fails if the compose default ever drifts from `dockerTag(package.json.version)`. The hyphen form is only ever an image tag; nothing in the app reports it as its version.
+
+**`CARTO_API_KEY` → `CARTO_BASEMAP_KEY`.** Upstream added its own keyed-basemap support in 1.3.8 and named the variable `CARTO_BASEMAP_KEY`; this fork shipped the same feature first (§6h) under `CARTO_API_KEY`. Upstream's name wins as canonical — future merges are cheaper if the config surface matches — and the old name is kept as a read fallback so a `.env` written before the merge keeps working:
+
+```js
+const CARTO_BASEMAP_KEY = envValue('CARTO_BASEMAP_KEY', '') || envValue('CARTO_API_KEY', '');
+```
+
+The fork's richer implementation survives: the server still resolves per-theme tile URLs and keys `light_all` as well as `dark_all`, which upstream does not, and `MAP_TILE_DARK_URL` / `MAP_TILE_LIGHT_URL` still override both. What was adopted is upstream's **behaviour when no key is set** — both themes now fall back to OpenStreetMap rather than requesting a CARTO tile that comes back watermarked. The boot warning changed to match: `[web] no CARTO_BASEMAP_KEY set - the coverage map falls back to OpenStreetMap tiles`.
+
+`/api/bootstrap` publishes the basemap block twice: at the top level, where upstream put it, and under `site.map`, where this fork already had it and where the client reads it. It is a seven-field object built once per response and shared by reference, and having both shapes available means the next merge does not have to move a field the client depends on.
+
+**Node 26.** Upstream's `Dockerfile` moved to `node:26-slim`; `.gitlab-ci.yml` and `.github/workflows/ci.yml` follow it to `node:26-bookworm` and `node-version: 26`. The sandbox that produced this work runs Node 20, so CI is the only place the 26 toolchain is actually exercised — if a pipeline breaks on a syntax or API difference, the honest fix is to drop the CI images back to 22 and note it, not to guess.
+
+**Tests.** A new `test/basemap-key.test.js` boots two additional server instances in one file — cache-busting the `server.js` import URL so each picks up a different environment — and asserts that a legacy-only `CARTO_API_KEY` still keys both tile URLs, and that a keyless deployment serves OpenStreetMap for both themes with `darkBasemapAvailable: false`. It also pins the version scheme itself: the version must match `\d+\.\d+\.\d+\+bayarea\.\d+`, its base must be `1.3.8`, `dockerTag()` must produce a legal tag, and compose must pin exactly that tag. Two smoke tests adapted from upstream's watch the wire instead of the payload — one asserts the dark map requests `dark_all` with `key=`, the other that a keyless bootstrap produces OpenStreetMap requests and zero CARTO requests. Unit suite 61 passing, smoke 10.
+
+**One rendering consequence.** The footer note inherits `.small-note`, which is `text-transform: uppercase`, so the new version rendered as `VERSION: V1.3.8+BAYAREA.1`. SemVer build-metadata identifiers are case-sensitive, so that prints a string that is not the one in `package.json`. `.site-footer .small-note` now opts out of the transform; the repo slug beside it reads better in its own case too.
+
+**Still pointing upstream.** The footer's version link is `${REPO_URL}/blob/main/CHANGES.md` with `REPO_URL` hardcoded to upstream GitHub, so it now links to a changelog that does not contain a `v1.3.8+bayarea.1` section. Repointing it at this fork's GitLab copy only helps once that project is public — while it is private the link redirects visitors to a sign-in page, which is worse than an incomplete changelog. It is bundled with the visibility decision in §8.
 
 ## 7. Deployment
 

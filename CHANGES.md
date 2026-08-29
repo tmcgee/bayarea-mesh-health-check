@@ -1,5 +1,30 @@
 # Changes
 
+Versions of this fork carry the upstream release they are built on plus a
+Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
+adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
+
+## v1.3.8+bayarea.1
+
+- merged upstream `v1.3.8`
+- renamed the fork's `CARTO_API_KEY` to upstream's `CARTO_BASEMAP_KEY` and kept
+  the old name as a read-only alias so existing `.env` files keep working
+- adopted upstream's keyless behaviour: with no CARTO key the dark basemap now
+  falls back to OpenStreetMap instead of requesting a watermarked CARTO tile
+- published `map.cartoBasemapKey` and `map.darkBasemapAvailable` in
+  `/api/bootstrap` alongside the fork's existing per-theme tile URLs
+- moved the container runtime to Node `26-slim` and CI to `node:26-bookworm`
+- added `npm run docker:tag`, which maps the SemVer build metadata to a legal
+  Docker tag (`1.3.8+bayarea.1` -> `1.3.8-bayarea.1`)
+
+## v1.3.8
+
+- added `CARTO_BASEMAP_KEY` support for authenticated CARTO Dark Matter map
+  tiles and exposed the public project key through `/api/bootstrap`
+- changed dark-theme map rendering to fall back to OpenStreetMap when no CARTO
+  key is configured instead of requesting unavailable keyless CARTO tiles
+- updated the Docker runtime from Node `22-slim` to `26-slim`
+
 ## v1.3.7
 
 - changed the coverage map to follow the active session's expected observer set

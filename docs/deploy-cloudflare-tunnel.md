@@ -62,11 +62,11 @@ SITE_URL=https://healthcheck.bayareameshcore.org
 TURNSTILE_SITE_KEY=<from Cloudflare → Turnstile>
 TURNSTILE_SECRET_KEY=<from Cloudflare → Turnstile>
 TUNNEL_TOKEN=<connector token from step 1>
-CARTO_API_KEY=<free key from https://carto.com/basemaps/apikey/>
+CARTO_BASEMAP_KEY=<free key from https://carto.com/basemaps/apikey/>
 TRUST_PROXY=1
 ```
 
-`CARTO_API_KEY` is what stops the basemap tiles being stamped with CARTO's "API KEY REQUIRED" watermark. Free, no account, emailed back immediately; 5M tiles/month fair use. Without it the map still works, it just looks unfinished.
+`CARTO_BASEMAP_KEY` (accepted as `CARTO_API_KEY` too, for .env files written before upstream v1.3.8) is what stops the basemap tiles being stamped with CARTO's "API KEY REQUIRED" watermark. Free, no account, emailed back immediately; 5M tiles/month fair use. Without it the map falls back to OpenStreetMap tiles in both themes (upstream v1.3.8 behaviour) rather than requesting a watermarked CARTO tile.
 
 Turnstile: create a widget for domain `healthcheck.bayareameshcore.org`, Managed mode. Without keys you must set `TURNSTILE_ENABLED=false`, otherwise the gate fails with "Invalid input for parameter sitekey" — fine locally, not fine on a public URL where anyone can burn code generations.
 

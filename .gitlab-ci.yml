@@ -8,7 +8,7 @@
 # CI has no .env either way, which is exactly why the leak was invisible here.
 
 default:
-  image: node:22-bookworm
+  image: node:26-bookworm
   interruptible: true
 
 stages:

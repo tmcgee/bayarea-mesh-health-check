@@ -389,7 +389,9 @@ const REPO_URL = 'https://github.com/yellowcooln/meshcore-health-check';
 const MAP_OBSERVER_SCOPE = envValue('MAP_OBSERVER_SCOPE', 'expected').trim().toLowerCase() === 'directory'
   ? 'directory'
   : 'expected';
-const CARTO_API_KEY = envValue('CARTO_API_KEY', '');
+// Upstream v1.3.8 named this CARTO_BASEMAP_KEY. CARTO_API_KEY was the name this
+// fork shipped first and is still accepted so existing .env files keep working.
+const CARTO_BASEMAP_KEY = envValue('CARTO_BASEMAP_KEY', '') || envValue('CARTO_API_KEY', '');
 const MAP_TILE_DARK_URL = envValue('MAP_TILE_DARK_URL', '');
 const MAP_TILE_LIGHT_URL = envValue('MAP_TILE_LIGHT_URL', '');
 const OSM_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -398,23 +400,28 @@ const OSM_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 // stamped with an "API KEY REQUIRED" watermark. https://carto.com/basemaps/apikey/
 function cartoTileUrl(style) {
   const base = `https://{s}.basemaps.cartocdn.com/rastertiles/${style}/{z}/{x}/{y}{r}.png`;
-  return CARTO_API_KEY ? `${base}?key=${encodeURIComponent(CARTO_API_KEY)}` : base;
+  return CARTO_BASEMAP_KEY ? `${base}?key=${encodeURIComponent(CARTO_BASEMAP_KEY)}` : base;
 }
 
 const OSM_ATTRIBUTION = '&copy; OpenStreetMap contributors';
 const CARTO_ATTRIBUTION = '&copy; OpenStreetMap contributors &copy; CARTO';
 
 function mapTileConfig() {
-  const darkTileUrl = MAP_TILE_DARK_URL || cartoTileUrl('dark_all');
+  // Without a key CARTO serves a watermarked tile, so fall back to OSM in both
+  // themes rather than requesting one (upstream v1.3.8 behaviour).
+  const darkTileUrl = MAP_TILE_DARK_URL
+    || (CARTO_BASEMAP_KEY ? cartoTileUrl('dark_all') : OSM_TILE_URL);
   const lightTileUrl = MAP_TILE_LIGHT_URL
-    || (CARTO_API_KEY ? cartoTileUrl('light_all') : OSM_TILE_URL);
+    || (CARTO_BASEMAP_KEY ? cartoTileUrl('light_all') : OSM_TILE_URL);
   const attributionFor = (url) => (url.includes('cartocdn.com') ? CARTO_ATTRIBUTION : OSM_ATTRIBUTION);
   return {
     darkTileUrl,
     lightTileUrl,
     darkAttribution: attributionFor(darkTileUrl),
     lightAttribution: attributionFor(lightTileUrl),
-    cartoKeyConfigured: Boolean(CARTO_API_KEY),
+    cartoBasemapKey: CARTO_BASEMAP_KEY,
+    darkBasemapAvailable: Boolean(CARTO_BASEMAP_KEY),
+    cartoKeyConfigured: Boolean(CARTO_BASEMAP_KEY),
   };
 }
 
@@ -2816,8 +2823,15 @@ function snapshotPayload() {
   const dashboardBrokerHost = DASH_BROKER_HOST || brokerLabel(MQTT_URL);
   const regionHierarchy = buildRegionHierarchy(directory);
 
+  const mapTiles = mapTileConfig();
+
   return {
     serverTime: Date.now(),
+    // Upstream v1.3.8 publishes basemap configuration at the top level; this
+    // fork had already put the same object under site.map, which the client
+    // reads. Both are published so upstream's shape stays available and future
+    // merges do not have to move the field.
+    map: mapTiles,
     site: {
       title: APP_TITLE,
       version: APP_VERSION,
@@ -2829,7 +2843,7 @@ function snapshotPayload() {
       coreScopeUrl: CORESCOPE_URL,
       externalLinkUrl: EXTERNAL_LINK_URL,
       externalLinkLabel: EXTERNAL_LINK_LABEL,
-      map: mapTileConfig(),
+      map: mapTiles,
     },
     mqtt: {
       connected: mqttConnected,
@@ -3698,10 +3712,12 @@ function startRuntime() {
     if (!decoderKeyCandidates.length) {
       logger.warn('[web] no decoder key configured for the test channel');
     }
-    if (!CARTO_API_KEY && mapTileConfig().darkTileUrl.includes('cartocdn.com')) {
+    if (!CARTO_BASEMAP_KEY) {
       logger.warn(
-        '[web] no CARTO_API_KEY set - basemap tiles carry an "API KEY REQUIRED" watermark (free key: https://carto.com/basemaps/apikey/)',
+        '[web] no CARTO_BASEMAP_KEY set - the coverage map falls back to OpenStreetMap tiles (free key: https://carto.com/basemaps/apikey/)',
       );
+    } else if (mapTileConfig().darkTileUrl.includes('cartocdn.com') === false) {
+      logger.info('[web] CARTO key set but MAP_TILE_DARK_URL overrides the dark basemap');
     }
     logger.info(`[web] log level ${logger.level}`);
   });
