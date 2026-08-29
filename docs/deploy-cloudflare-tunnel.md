@@ -13,7 +13,75 @@ Worth recording, because it will come up again. The app is a single long-lived N
 
 Vercel functions cannot hold any of that. Instances are paused between requests and recycled, and the docs explicitly tell you to keep shared state in an external store rather than instance memory ([Vercel Services on Fluid compute](https://vercel.com/kb/guide/vercel-services-fluid-compute)). Execution is capped — 300 s on Hobby, 800 s max on Pro, 1800 s in extended beta ([function limits](https://vercel.com/docs/functions/limitations)). WebSockets do work now, but a socket is pinned to one instance and closes at the duration cap ([WebSockets on Vercel](https://vercel.com/docs/functions/websockets)). Running this on Vercel would mean splitting out a separate always-on MQTT→state service plus Redis/KV — a rewrite, not a config change. The repo already ships a `Dockerfile` and `docker-compose.yml`, so self-hosting takes it as-is.
 
-## What you need
+## Recommended host — a $6 DigitalOcean droplet
+
+The tunnel path below is the right answer when the box has no public IP: a Pi at home, anything behind CGNAT. It is the wrong answer when you can just have an IP, because the tunnel is a second daemon that can fail independently of the app — and did, twice, in ways recorded in the appendix.
+
+So the recommended production shape is a **DigitalOcean Basic droplet, 1 GiB / 1 vCPU / 25 GiB, in SFO3, $6/mo** ([Droplet pricing](https://www.digitalocean.com/pricing/droplets)). Billing is per-second since 1 January 2026 with a 672-hour monthly cap, so the bill never exceeds the monthly figure ([DigitalOcean](https://www.digitalocean.com/blog/dropletplans-persecbilling-byoip-natgateway)). The included 1,000 GiB of outbound transfer is far beyond anything this dashboard emits; overage would be $0.01/GiB ([Droplet pricing details](https://docs.digitalocean.com/products/droplets/details/pricing/)).
+
+**Do not take the $4 / 512 MiB plan.** Runtime is not the problem — steady-state RSS is under 200 MiB. `npm ci` is: dependency extraction gets OOM-killed on 512 MiB even with dev dependencies omitted. The extra $2 also brings 25 GiB of disk instead of 10 GiB.
+
+SFO3 rather than a New York or European region: it is a current region ([Droplet availability](https://docs.digitalocean.com/products/droplets/details/availability/)) and it puts the box a few milliseconds from the Bay Area operators actually loading the page.
+
+Two scripts in `scripts/` do the whole job:
+
+| File | Role |
+|---|---|
+| `scripts/provision-droplet.sh` | Idempotent bare-metal-to-serving setup. Swap, Node, service account, source, `npm ci --omit=dev`, systemd, Caddy, ufw, unattended upgrades, verification. |
+| `scripts/mesh-health-check.service` | The systemd unit. Installed by the script; `sed` rewrites `APP_DIR`/`User` if you override them. |
+| `scripts/update-app.sh` | Snapshot `data/`, deploy a new version, `npm run check`, restart, health-gate, print rollback commands. |
+
+```bash
+# on a fresh Ubuntu 24.04 droplet, as root
+DOMAIN=healthcheck.sonomamesh.com \
+SOURCE_MODE=archive ARCHIVE=/root/mhc-deploy.zip \
+TLS_MODE=origin-ca ADMIN_SSH_CIDR=<your.ip>/32 \
+  ./provision-droplet.sh
+```
+
+### What this deletes
+
+Every moving part the sandbox deployment needed in order to fake a public IP:
+
+| Retired | Replaced by |
+|---|---|
+| `/tmp/app-supervise.sh` | `Restart=always` in the unit — a supervisor the OS maintains |
+| `/tmp/named-tunnel.sh`, `/tmp/named-tunnel-b.sh` | a real public IPv4 |
+| `/tmp/tunnel-watchdog.sh` (`scripts/tunnel-watchdog.sh`) | nothing to watch; no tunnel to half-open |
+| `protocol: http2` and quoted `edge-ip-version: "4"` | Caddy, which has no equivalent trap |
+| two `cloudflared` replicas | one reverse proxy |
+
+`healthcheck.sonomamesh.com` does not change. You replace the tunnel `CNAME` with an `A` record at the droplet IP; the hostname, and therefore UptimeRobot monitor `803863215`, is untouched.
+
+### Four decisions worth knowing about
+
+**The unit must not use `EnvironmentFile=`.** `server.js` loads `.env` itself with `parseEnvFileLoose()`, which deliberately takes everything after the first `=` as the value, inline `#` included. systemd's parser strips inline comments and unescapes quotes. Point both at the same file and `APP_DESCRIPTION` and the MQTT comment blocks resolve differently depending on which one read it. The app owns its config file; the unit sets only `NODE_ENV`.
+
+**`ProtectSystem=strict` with one `ReadWritePaths`.** The whole filesystem is read-only to the service except `data/`. That is sufficient and was verified against every write path: `server.js:1026-1031` (write-temp-then-rename, which needs the *directory* writable, not just the file), `server.js:1360-1361` (`reseed-log.jsonl`), and `seed-observers.py:333-334` (`shutil.copy2` backup then rewrite). The daily reseed's `python3` child inherits the sandbox and stays inside it.
+
+**`StartLimitIntervalSec=0`.** systemd's default gives up permanently after 5 restarts in 10 seconds. For an unattended dashboard that converts a transient boot-time DNS failure into an indefinite outage — precisely the class of failure this move exists to eliminate. `RestartSec=5` still caps the loop at 12 attempts a minute.
+
+**`MemoryDenyWriteExecute` is deliberately absent.** The V8 JIT needs `W+X` pages; Node will not start with it set. Every other hardening directive is on.
+
+### Firewall
+
+`server.js` calls `listen(PORT)` with no host argument, so it binds `0.0.0.0`. The firewall is the only thing keeping `:3090` private, and the script never opens it. With `TLS_MODE=origin-ca` the script also fetches [Cloudflare's published ranges](https://www.cloudflare.com/ips-v4) and allows 443 only from them, so the origin IP is unreachable directly and 80 stays shut — Cloudflare handles the redirect at the edge.
+
+`TRUST_PROXY=1` must stay set. Behind a reverse proxy without it, every session arrives from `127.0.0.1` and the per-IP rate limiter throttles the entire internet as a single client. The script checks and warns.
+
+### TLS
+
+`TLS_MODE=origin-ca` keeps the orange cloud on: create a 15-year Cloudflare Origin CA certificate for the hostname, drop the pair at `/etc/caddy/origin.pem` and `/etc/caddy/origin.key`, set the zone to Full (strict). Note that `caddy validate` *provisions* the TLS loader, so a missing cert pair is a hard validation failure rather than a warning — the script detects this and says so instead of leaving Caddy dead silently.
+
+`TLS_MODE=letsencrypt` is the grey-cloud alternative and needs the record set to DNS only, or Cloudflare answers the ACME HTTP-01 challenge instead of Caddy.
+
+Both generated Caddyfiles were validated against Caddy 2.10.0. The script runs `caddy fmt --overwrite` first, because an unset `tls`/`email` line leaves a blank line inside a block that Caddy accepts but complains about on every start.
+
+### Automatic reboots at 04:30
+
+`unattended-upgrades` is configured to reboot for kernel updates at 04:30 local — after `OBSERVER_RESEED_HOUR=4` has finished its pass, so a restart never lands mid-write on `observer.json`.
+
+## What you need (tunnel path)
 
 - A box that stays up: Raspberry Pi 4/5, NUC, home server, or any small VPS. Docker + Docker Compose plugin. ~500 MB RAM is plenty.
 - Outbound 443 only. `cloudflared` dials Cloudflare; nothing is forwarded inward, so this works fine behind CGNAT or a locked-down router.

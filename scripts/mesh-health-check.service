@@ -1,0 +1,69 @@
+[Unit]
+Description=Bay Area MeshCore Health Check
+Documentation=https://gitlab.com/tmcgee/bayarea-mesh-health-check
+After=network-online.target
+Wants=network-online.target
+# Never give up. The default (5 starts / 10s then permanent failure) would leave
+# the dashboard dead after a transient boot-time DNS or broker hiccup, which is
+# exactly the unattended-outage class this deployment exists to eliminate.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=mesh
+Group=mesh
+WorkingDirectory=/opt/mesh-health-check
+ExecStart=/usr/bin/node server.js
+Environment=NODE_ENV=production
+
+# DO NOT add EnvironmentFile=/opt/mesh-health-check/.env
+#
+# server.js loads .env itself (parseEnvFileLoose + dotenv) and deliberately
+# takes *everything* after the first '=' as the value, inline '#' included.
+# systemd's EnvironmentFile parser strips inline comments and unescapes quotes,
+# so the same file would yield different values depending on who read it.
+# APP_DESCRIPTION and the MQTT comment blocks are where that would bite.
+# Let the app own its own config file.
+
+Restart=always
+RestartSec=5
+
+# --- Resource ceilings -------------------------------------------------------
+# Sized for the $6 / 1 GiB Basic droplet. The app's steady-state RSS is well
+# under 200 MiB; these exist so a leak or a runaway session cannot starve sshd
+# and lock you out of the box.
+MemoryHigh=600M
+MemoryMax=800M
+TasksMax=256
+
+# --- Hardening ---------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+# ProtectSystem=strict makes the whole filesystem read-only. The app writes
+# observer.json, session-results.json, observer-activity.json, reseed-log.jsonl
+# and the seed-observers.py backups -- all of them inside data/, and all via
+# write-temp-then-rename, which needs the directory writable, not just the file.
+ReadWritePaths=/opt/mesh-health-check/data
+
+# MemoryDenyWriteExecute is intentionally NOT set: the V8 JIT needs W+X pages
+# and Node will not start without them.
+
+[Install]
+WantedBy=multi-user.target
