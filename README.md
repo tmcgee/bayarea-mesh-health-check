@@ -7,6 +7,10 @@ observers reported the matching message hash.
 
 The idea for this app came from Nick D from Boston.
 
+This fork is the **Bay Area** deployment, live at
+https://healthcheck.sonomamesh.com. See [`docs/`](docs/) for how it was retargeted
+from the Boston original and how to self-host it behind a Cloudflare named tunnel.
+
 Other community Health Checks:
 
 - https://healthcheck.ukmesh.com/ - UK Mesh Health Check
