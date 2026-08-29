@@ -18,9 +18,9 @@ Other community Health Checks:
 
 - https://healthcheck.ukmesh.com/ - UK Mesh Health Check
 
-![Coverage example 1](image1.png)
-![Coverage example 2](image2.png)
-![Coverage example 3](image3.png)
+![A finished run: 100 percent, 31 of 31 observers, 8 of 8 regions](image1.png)
+![Receipt spread and per-observer receipts with estimated paths](image2.png)
+![Coverage map of the observers that heard the message](image3.png)
 
 ## What It Does
 

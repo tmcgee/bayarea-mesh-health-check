@@ -233,7 +233,7 @@ One deliberate difference: the stock status ramp used blue / amber / magenta. Ma
 
 Worth flagging: **bayareameshcore.org has no brand icon to copy.** Its `favicon.svg` is still Astro's default logo, and its `og:image` (`/baymc_avatar.png`) is an unrelated stock image of two robot faces. Rather than import either, I recoloured the health check's own radiating-signal mark to the site surface — background `#1f2937` → `#0b1220`, glyph white → `#d7e1ee` — and wrote it to `public/logo.png` (stock original preserved as `public/logo-stock.png`). That one file feeds the favicon, the apple-touch icon, both PWA manifest icon sizes, and the OG/Twitter card image.
 
-If the group ever commissions a real mark, replacing `public/logo.png` is the only change needed. The three `image1-3.png` screenshots in the repo still show Boston data and should be regenerated once this instance is live.
+If the group ever commissions a real mark, replacing `public/logo.png` is the only change needed. The three `image1-3.png` screenshots have been regenerated from this deployment; `regen-readme-shots.py` reshoots them from an archived session, so they can be refreshed after any layout change.
 
 ### Basemap — CARTO now needs a free API key
 
@@ -1183,9 +1183,7 @@ anchor href  : meshcore://channel/add?name=%23healthcheck&secret=3ae59c2cda86744
 FAILURES: none
 ```
 
-**One caveat I have not verified:** whether the companion app on your phone accepts a derived key for a hashtag channel it may prefer to derive itself. The URI matches the documented format and the key matches the documented derivation, but the only real test is scanning it. If the app balks, the fallback is *Add Channel → Join a Hashtag Channel* with `#healthcheck` typed in.
-
-**Also unverified:** the ≤720px layout puts the plate under the steps, which I checked at 390px, but I have not scanned the QR from a real phone camera at that rendered size (116px CSS).
+**Verified on a phone.** The open question was whether the companion app accepts a derived key for a hashtag channel it may prefer to derive itself. It does: the QR was scanned from a real handset and the channel was added, so the fallback path (*Add Channel → Join a Hashtag Channel* with `#healthcheck` typed in) is only a backstop. The ≤720px layout, which drops the plate under the steps at a rendered 116px CSS, was included in that test.
 
 `npm run check` clean, `npm test` **56/56**, layout audit **ALL CHECKS PASSED**, 21-width sweep clean, and the app was restarted (pid 10124) for the HTML template.
 
@@ -1464,7 +1462,7 @@ One `[mqtt] subscribed` line, not nine — the single-topic grant replaced the p
 - [x] Startup status shows `--` instead of a misleading `EXPIRED` for a restored, never-used code — §6t
 - [x] Instructions rewritten as three numbered steps; share page shows a saved-result line instead — §6t
 - [x] Scannable `meshcore://channel/add` QR served from `/channel-qr.svg`, key derived when `TEST_CHANNEL_SECRET` is blank; decode verified with OpenCV — §6t
-- [ ] Scan the channel QR with the companion app on a real phone to confirm it accepts a derived hashtag key — §6t
+- [x] Scan the channel QR with the companion app on a real phone — tested by Tim and it accepts the derived hashtag key, so no fallback to *Join a Hashtag Channel* is needed — §6t
 - [x] Session panel leads with the three steps and the QR; Active Code sits below — §6u
 - [x] Share button moved beside the sentence that explains sharing; Matched Message moved to the foot of the second column — §6u
 - [ ] `APP_DESCRIPTION` must be set by hand on any other deployment — it is not in the patch — §6u
@@ -1503,11 +1501,10 @@ One `[mqtt] subscribed` line, not nine — the single-topic grant replaced the p
 
 - [ ] Close the coordinate gap: 13 of 34 active observers still publish no position. They now land in a region *group* via their uplink code (§6c), but a group is not a county and never a map marker — the fix is to get those nodes advertising a position
 - [ ] Reclassify `regions/us-ca-uplink-codes.json` as codes are actually observed: 21 of the 31 in-area entries are still `"confidence": "anticipated"`, and any code in neither block is logged once rather than excluded
-- [ ] Rotate the shared credential and request an account issued to this deployment
-- [ ] Set `MQTT_PASSWORD` from a local secret, never committed
+- [x] Rotate the shared credential — closed as won't-do: Tim confirmed the shared GoMesh MQTT credential is fine for this deployment, so no separate account is being requested. `MQTT_PASSWORD` still lives only in the uncommitted `.env` (the repo carries placeholders)
 - [ ] Confirm `#healthcheck` isn't already used locally for something else, then announce it
-- [ ] Set the real `SITE_URL` origin
-- [ ] Regenerate `image1-3.png` screenshots (still Boston data)
+- [x] Set the real `SITE_URL` origin — `SITE_URL=https://healthcheck.sonomamesh.com`, the pinned named-tunnel hostname
+- [x] Regenerate `image1-3.png` screenshots from this deployment — `regen-readme-shots.py` captures them from archived session MHC-BDCA34 (100%, 31/31 observers, 8/8 regions): the result card, the receipt spread with two receipt cards and their estimated paths, and the coverage map with 22/22 mapped observers. Regenerating exposed a real defect, now fixed: upstream's decorative `.splash-scene__badge` pills sit at `z-index: 0` behind the translucent hero, so "Adaptive mesh" bled through underneath the header buttons as illegible ghost text. They are hidden in `theme-bayarea.css`
 - [x] Re-run `seed-observers.py` periodically as CoreScope learns new nodes — scheduled daily at 04:15 America/New_York (`15 8 * * *` UTC). The task dry-runs first and only writes when CoreScope has gained a position for a directory observer that lacks one, plus one unconditional refresh on Sundays.
 
   **Why a live per-request lookup is not worth it.** CoreScope has no per-key route: `/api/nodes/<pubkey>` 404s, and `?public_key=` / `?key=` are silently *ignored* — both return the default 50-node page, so a naive lookup would appear to work and hand back the wrong node. `?search=` matches the name field only; the full key, a 12-char prefix, and a 6-char prefix all return `total: 0`. The only usable query is the whole list, `/api/nodes?limit=5000` (799 nodes, 595 KB, ~0.45 s TTFB, `cache-control: no-store`), which is a bulk refresh rather than a lookup.

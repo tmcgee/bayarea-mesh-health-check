@@ -117,3 +117,13 @@ body[data-ui-theme="light"] {
   text-transform: none;
   letter-spacing: 0.03em;
 }
+
+/* Upstream's decorative backdrop parks two pill badges ("Adaptive mesh",
+   "Map + trace") at z-index 0, behind the workspace. In this theme the hero
+   panel is translucent, so badge--one bleeds through directly under the header
+   buttons as illegible ghost text — it reads as a rendering fault rather than
+   as chrome, and it showed up in the README screenshots. The gradients, grid,
+   rings and beam still do the atmospheric work; only the text pills go. */
+.splash-scene__badge {
+  display: none;
+}
