@@ -1296,6 +1296,44 @@ The `≤720px` override still flips `.session-steps` to a column, so on mobile t
 
 `npm run check` clean, `npm test` **56/56**, layout audit **ALL CHECKS PASSED**, 21-width sweep clean, QR decode clean. Verified in dark, light, 390px, and on the share page.
 
+### 6x. CI, and the `.env` leak it exposed
+
+The suite passed 56 of 56 on a clean checkout of the same commit and failed 9 of 56 in the live working tree. No code differed between the two runs.
+
+`server.js` reads `<APP_DIR>/.env` and fills in every variable that is not already in `process.env`:
+
+```js
+const localEnv = parseEnvFileLoose(localEnvPath);
+for (const [key, value] of Object.entries(localEnv)) {
+  if (process.env[key] === undefined) {
+    process.env[key] = value;
+  }
+}
+```
+
+Each test file assigns the handful of variables it cares about, so the live Bay Area `.env` quietly supplied everything else. `SITE_URL=https://healthcheck.sonomamesh.com` rewrote the `og:url` and `og:image` tags that `api.test.js` asserts are derived from the request host, and `REGIONS_FILE`, `UPLINK_CODES_FILE` and `MAP_OBSERVER_SCOPE=directory` fed real boundaries and the 786-entry observer store into the path-distance and observer-metadata tests. Upstream CI never saw any of this, because CI has no `.env` — the bug was invisible precisely where it would have been caught.
+
+The fix is a single opt-out honoured by the loader:
+
+```js
+const skipEnvFile = process.env.MESH_HEALTH_SKIP_ENV_FILE === 'true';
+const localEnv = skipEnvFile ? {} : parseEnvFileLoose(localEnvPath);
+```
+
+`test/support/isolate-env.js` sets that flag and, belt-and-braces, deletes the keys a live `.env` would otherwise inject. It is imported first by all eight test files, so a bare `node --test` behaves the same as `npm test`; both Playwright `webServer` commands set the flag too.
+
+Three smoke specs were asserting a UI that no longer exists — genuine drift from §6q and §6r, not flakes:
+
+| Was | Now |
+| --- | --- |
+| `When each observer saw it` visible on load | panel sits inside the collapsed section, so the spec opens it and asserts the label flips to `Hide Additional Information` |
+| `changing the observer selection...` unchecks a box and expects a new code | picker is gone; the spec asserts zero checkboxes, a read-only pill list, and that the code is **not** regenerated |
+| `#receipt-timeline`, `#observer-allowlist` | `#receipts`, `#observer-targets` |
+
+`.gitlab-ci.yml` mirrors `.github/workflows/ci.yml`, which stays in place for the GitHub upstream: `syntax` and `unit` run in parallel on `node:22-bookworm`, then `smoke` on `mcr.microsoft.com/playwright:v1.62.1-noble` pinned to the Playwright version in `package.json`, so no browser download step is needed. The unit job fails outright if a `.env` is ever present in CI, and emits a JUnit report via a new `npm run test:ci` so failures surface in the merge-request widget. Smoke is `allow_failure: true` — a flaky headless run should not block a docs-only commit.
+
+First pipeline on GitLab shared runners: **success in 111 s**, syntax 35 s, unit 45 s, smoke 67 s, with GitLab's test report reading 56 total, 56 passed.
+
 ## 7. Deployment
 
 Nothing region-specific here, but for your setup: Docker Compose on port 3090 behind Cloudflare, `TRUST_PROXY=1`, Turnstile keys set since it'll be internet-facing, and keep `./data` mounted so observer profiles, activity history, and share links survive rebuilds.
@@ -1368,6 +1406,7 @@ One `[mqtt] subscribed` line, not nine — the single-topic grant replaced the p
 - [ ] Confirm whether New Code / Copy should align to the page edge rather than the left column edge — §6v
 - [x] QR aligned to the column's right edge on Step 1's baseline, caption dropped — §6w
 - [x] Telemetry panel renamed "System Telemetry" on both pages — §6w
+- [x] Tests wired to GitLab CI and green on shared runners: 56 unit, 7 Playwright smoke, 111 s end to end. A live `.env` was leaking into the unit suite via server.js's env-file loader — 9 failures in the working tree, 0 on a clean checkout; fixed with `MESH_HEALTH_SKIP_ENV_FILE` — §6x
 - [x] Source pushed to GitLab as private `tmcgee/bayarea-mesh-health-check`, four commits: upstream import at `b478e83`, the 15 MB `us-places.geojson` split out to stay under the API payload limit, the Bay Area adaptation, then `docs/`. `git push` cannot authenticate through the sandbox proxy — it opens a raw CONNECT tunnel for the git smart-http endpoints, so no credential is injected; built via the Commits API with `gitlab-push.py` instead. Remote tree verified blob-for-blob against local HEAD, 69 files, no `.env`. Cloudflare account, zone and tunnel IDs appear only as placeholders, in every commit — the first attempt carried them verbatim and the project had to be purged and rebuilt, because the Commits API cannot force-push over history. **Safe to make public.**
 - [x] Broker endpoint identified: `wss://mqtt.gomesh.dev:443/mqtt` — WebSockets/TLS on 443, not 1883/8883
 - [x] Credentials verified: `example_user` returns CONNACK 0 and **SUBACK granted on `meshcore/#`**
