@@ -209,6 +209,23 @@ Two things follow. The daily agent task is gone, because nothing in that sequenc
 
 Scheduling it from outside is possible but earns nothing. With `ADMIN_TOKEN` set, `POST /api/admin/reseed` (header `x-admin-token`) drives the same pass, and `GET` on the same path returns the last result — enough for host cron, a Cloudflare Workers cron trigger, or a CI schedule. Cron Triggers are on the Workers free plan, capped at 5 per account with 10 ms CPU per invocation ([limits](https://developers.cloudflare.com/workers/platform/limits/)), and since a Worker can only make an HTTP request it would still need this endpoint. An app that can be poked on a schedule can equally run its own timer, so the external scheduler is one more moving part and one more authenticated route facing the internet. Both routes 404 while `ADMIN_TOKEN` is blank, which is the default.
 
+**1b. Two connector replicas — the 1033 gap.** One `cloudflared` is not enough on a host with unreliable egress. Measured over the first 5h40m of this deployment, the connector lost **all four** edge connections at once eight times: 12:22:31Z, 13:50:55Z, 16:10:16Z and 16:53:57Z were spontaneous, and each burst dropped every `connIndex` within the same second. Recovery is fast — 1 to 20 s, backoff starts at 1 s — but while the count is zero the tunnel has no connector, so Cloudflare serves **HTTP 530 with `error code: 1033`** even though the app on `localhost:3090` is answering 200 the whole time. That is what a user reports as "the host is down". The 16:53 burst was preceded by `Failed to refresh DNS local resolver error="lookup region1.v2.argotunnel.com: i/o timeout"`, which points at the sandbox's egress rather than at any Cloudflare colo. `protocol: http2` makes it more likely, since long-lived HTTP/2 streams are exactly what an idle NAT timeout collects, and QUIC is not an option where UDP is blocked.
+
+The fix is redundancy at the tunnel, not a faster restart: run a **second `cloudflared` replica of the same tunnel**, with its own supervisor loop, its own log, and its own metrics port. Same `tunnel:` ID, same credentials file, same ingress — nothing about DNS, the hostname or the tunnel ID changes. Cloudflare registers it as a separate connector and load-balances across every connection either one holds, so one replica flapping no longer takes the count to zero:
+
+```bash
+sed 's#20242#20243#' /tmp/cf-tunnel-config.yml > /tmp/cf-tunnel-config-b.yml
+# then a second respawn loop running: cloudflared --config /tmp/cf-tunnel-config-b.yml tunnel run
+```
+
+```
+GET /accounts/<acct>/cfd_tunnel/<id>  ->  status healthy | total conns 8
+  connector 8830a7ab  4 connections
+  connector 99f60057  4 connections
+```
+
+Proven by killing one outright — supervisor first, then the connector, so nothing respawned — and polling the public hostname every 3 s for 30 s: **ten consecutive 200s**. The same test against a single connector on 2026-08-29 at 14:24 produced 530s for about 30 s. On a real box this is two systemd units, or `deploy: replicas: 2` in Compose, and it is worth having even on a stable network: it also makes `cloudflared` upgrades and config changes zero-downtime, one replica at a time.
+
 **2. UptimeRobot — external detection.** A **keyword** monitor, not a plain HTTP one:
 
 | Field | Value |
