@@ -33,6 +33,9 @@
   --text: #d7e1ee;
   --muted: #9db0cd;
   --muted-strong: #f8fafc;
+  --step-ink: #4ade80;
+  --step-fill: rgba(45, 212, 191, 0.14);
+  --step-ring: rgba(74, 222, 128, 0.4);
 
   /* Accent — site dark-mode link blue #58a6ff (light mode: #0d6efd) */
   --accent: #58a6ff;
@@ -70,10 +73,20 @@ body[data-ui-theme="light"] {
   --panel: rgba(255, 255, 255, 0.88);
   --panel-strong: #ffffff;
   --panel-soft: rgba(13, 110, 253, 0.07);
+  /* The panel gloss is drawn by an absolutely positioned ::before, which paints
+     OVER the in-flow text rather than under it. At the stock light-mode alpha of
+     0.6 white it veiled every word in the panel - that, not the grey tokens, is
+     what made light mode look washed out. The panel is already near-white, so
+     the sheen has nothing to add here and is dialled back to a hairline. */
+  --panel-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.01));
   --line: #dbe4f0;
   --line-strong: #c3d3e8;
   --text: #1f2937;
-  --muted: #5b6b82;
+  /* #5b6b82 was the site's own muted grey, and at 13px on white it measured
+     5.4:1 - legal, but it read as a placeholder rather than as copy. Two steps
+     darker puts labels and notes at 8.1:1 while staying clearly secondary to
+     --text. */
+  --muted: #44515f;
   --muted-strong: #0f172a;
   --accent: #0d6efd;
   --accent-strong: #1d4ed8;
@@ -86,6 +99,9 @@ body[data-ui-theme="light"] {
   --shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
   --ring-color: #0d6efd;
   --hero-blue: #0d6efd;
+  --step-ink: #146c43;
+  --step-fill: rgba(25, 135, 84, 0.1);
+  --step-ring: rgba(20, 108, 67, 0.34);
   background:
     radial-gradient(circle at top right, rgba(13, 110, 253, 0.12), transparent 35%),
     radial-gradient(circle at left center, rgba(25, 135, 84, 0.1), transparent 35%),

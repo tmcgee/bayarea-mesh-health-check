@@ -1334,6 +1334,28 @@ Three smoke specs were asserting a UI that no longer exists — genuine drift fr
 
 First pipeline on GitLab shared runners: **success in 111 s**, syntax 35 s, unit 45 s, smoke 67 s, with GitLab's test report reading 56 total, 56 passed.
 
+### 6y. One button coat, counter markers, and the veil over light mode — `step-markers.patch`
+
+Six changes to the session panel, one of which turned out to be a rendering bug rather than a taste call.
+
+**Buttons.** `New Code` was the only control wearing `.primary-button`; Share, Copy, the theme toggle, the external link and the drawer's Close all wore `.ghost-button`, a near-transparent 1px outline that read as decoration. Rather than reclassing eleven elements across two pages, `.ghost-button` now shares the `.primary-button` declaration blocks in both themes, and `.panel-lens` keeps the quiet paint on its own. The header utilities keep their smaller `5px 12px` padding from §6t on purpose — the paint matches, the footprint stays subordinate to a real action.
+
+**Placeholders.** `Message Hash` and `Sender` rendered the word `Pending` while `Observers Reached`, `Regions Reached`, `Repeaters Found` and `Longest Packet` rendered `--`. All four now render `--`, including in the drawer. `Status` is the interesting one: it showed `WAITING`, which merely repeats the headline sitting directly above it, so the rule that suppressed a stale `EXPIRED` on arrival is now the general one — a status is shown once the code has actually been used, and reads `--` before that.
+
+**Steps.** The numbering lived in the sentences as literal `Step 1.` / `Step 2.` / `Step 3.` text, with step 2's prefix baked into the `instructions` string the API returns. A CSS counter on `.session-steps__list` draws the markers instead, as a 1.6rem disc with `border-radius: 999px`, so the copy carries no numbering to keep in sync and the marker is a target the eye can land on. Each step gets `padding-left: 2.35rem` with the marker absolutely positioned in the gutter, which also gives wrapped lines a hanging indent.
+
+The green is a theme token, not a literal: `--step-ink` is `#4ade80` on the dark palette and `#146c43` — the site's own success green, darkened for contrast — on the light one, over a `--step-fill` tinted from `#198754`.
+
+**Emphasis.** The channel in step 1 was already `<strong>`; the code in step 2 was not, because that sentence is assigned with `textContent`. `renderInstruction()` escapes the sentence and the code separately, then wraps the code in `<strong>` — both halves are escaped before anything reaches `innerHTML`, since the sentence comes from the server and the code from the session.
+
+**Copy.** "You can share your final results" → "Share your final results."
+
+**And the actual reason light mode looked washed out.** The muted greys were a suspect but not the culprit. `.panel::before` draws the panel's gloss as an absolutely positioned pseudo-element with `inset: 0` and no `z-index`, and a positioned pseudo-element paints *after* its parent's in-flow text. In dark mode that overlay is `rgba(255, 255, 255, 0.045)` and invisible; the stock light theme sets it to `rgba(255, 255, 255, 0.6)`, so every word inside every panel was sitting under a 60% white scrim. The Bay Area light palette now overrides `--panel-overlay` to a hairline — the panel is already near-white, so the sheen had nothing to add.
+
+The tokens were also a step too pale on their own and were darkened alongside it: `--muted` `#5b6b82` → `#44515f`, which lifts labels and notes from 5.4:1 to 8.1:1 on white. One specificity bug surfaced while checking: `body[data-ui-theme="light"] .hash-link` (0,2,1) outranks `.hash-link.pending` (0,2,0), so an unfilled hash rendered in link blue while every other placeholder was ink.
+
+A new smoke test guards the lot: three counter markers with `border-radius: 999px`, no `Step N` left in any step's text, the channel and the code both emphasised, the three fields at `--`, and one shared paint across the four controls.
+
 ## 7. Deployment
 
 Nothing region-specific here, but for your setup: Docker Compose on port 3090 behind Cloudflare, `TRUST_PROXY=1`, Turnstile keys set since it'll be internet-facing, and keep `./data` mounted so observer profiles, activity history, and share links survive rebuilds.

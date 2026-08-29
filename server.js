@@ -2757,7 +2757,7 @@ function serializeSession(session, request = null) {
     expiresAt: session.expiresAt,
     resultExpiresAt: sessionRetentionDeadline(session),
     status: session.status,
-    instructions: `Step 2. Send the code ${session.code} to the ${testChannelLabel} channel.`,
+    instructions: `Send the code ${session.code} to the ${testChannelLabel} channel.`,
     useCount: session.useCount,
     maxUses: session.maxUses,
     usesRemaining: Math.max(0, session.maxUses - session.useCount),

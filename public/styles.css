@@ -88,6 +88,12 @@ input,
 label,
 .dock-nav__item,
 .panel-lens,
+:root {
+  --step-ink: #4ade80;
+  --step-fill: rgba(45, 212, 191, 0.14);
+  --step-ring: rgba(74, 222, 128, 0.42);
+}
+
 .ghost-button,
 .primary-button {
   min-height: 44px;
@@ -364,9 +370,39 @@ code {
   gap: 8px;
 }
 
+.session-steps__list {
+  counter-reset: session-step;
+}
+
+/* The numbers used to live in the sentence as "Step 1." text. A counter draws
+   them instead, so the copy carries no numbering to keep in sync and the marker
+   can be a real disc the eye can land on. */
 .session-step {
+  position: relative;
+  padding-left: 2.35rem;
+  counter-increment: session-step;
   color: var(--muted-strong);
   line-height: 1.6;
+}
+
+.session-step::before {
+  content: counter(session-step);
+  position: absolute;
+  top: 0.1rem;
+  left: 0;
+  display: inline-flex;
+  width: 1.6rem;
+  height: 1.6rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--step-ring);
+  border-radius: 999px;
+  background: var(--step-fill);
+  color: var(--step-ink);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .session-step strong {
@@ -666,7 +702,6 @@ body[data-page-mode="share"] .status-pill::before {
     opacity 180ms ease;
 }
 
-.ghost-button,
 .panel-lens {
   padding: 0.74rem 0.95rem;
   border: 1px solid rgba(255, 255, 255, 0.06);
@@ -675,7 +710,10 @@ body[data-page-mode="share"] .status-pill::before {
   text-decoration: none;
 }
 
-.primary-button {
+/* Every control wears the same coat. The quieter ghost treatment read as
+   decoration next to New Code, so the visible one won. */
+.primary-button,
+.ghost-button {
   padding: 0.82rem 1.08rem;
   border: 1px solid rgba(141, 182, 255, 0.16);
   background:
@@ -703,8 +741,6 @@ body[data-page-mode="share"] .status-pill::before {
   outline: none;
 }
 
-.ghost-button:hover,
-.ghost-button:focus-visible,
 .panel-lens:hover,
 .panel-lens:focus-visible {
   border-color: rgba(141, 182, 255, 0.14);
@@ -713,7 +749,9 @@ body[data-page-mode="share"] .status-pill::before {
 }
 
 .primary-button:hover,
-.primary-button:focus-visible {
+.primary-button:focus-visible,
+.ghost-button:hover,
+.ghost-button:focus-visible {
   border-color: rgba(141, 182, 255, 0.24);
   box-shadow: 0 14px 30px rgba(4, 10, 18, 0.3);
 }
@@ -2617,8 +2655,10 @@ body[data-ui-theme="light"] {
   --line: rgba(32, 52, 84, 0.1);
   --line-strong: rgba(32, 52, 84, 0.18);
   --text: #182235;
-  --muted: #5f6f86;
-  --muted-strong: #33425b;
+  /* Both greys were a step too pale on #f3f7fc - body copy sat near 4.4:1.
+     Darkened to clear 7:1 so the muted text reads as text, not as a hint. */
+  --muted: #4a5769;
+  --muted-strong: #28344a;
   --accent: #2762d2;
   --accent-strong: #163a87;
   --good: #216dcf;
@@ -2633,6 +2673,9 @@ body[data-ui-theme="light"] {
   --hero-coral: #d9b1b6;
   --hero-lime: #d7e4c0;
   --hero-blue: #2762d2;
+  --step-ink: #0b6b4f;
+  --step-fill: rgba(11, 107, 79, 0.1);
+  --step-ring: rgba(11, 107, 79, 0.34);
   background:
     radial-gradient(circle at 10% 0%, rgba(113, 153, 220, 0.18), transparent 30%),
     radial-gradient(circle at 100% 12%, rgba(189, 210, 239, 0.22), transparent 24%),
@@ -2803,6 +2846,12 @@ body[data-ui-theme="light"] .hash-link {
   color: #2762d2;
 }
 
+/* The pending rule above it is one specificity point short of this one, so an
+   unfilled hash rendered in link blue while every other placeholder was ink. */
+body[data-ui-theme="light"] .hash-link.pending {
+  color: var(--muted-strong);
+}
+
 body[data-ui-theme="light"] .hero-stage::before {
   background:
     linear-gradient(125deg, rgba(255, 255, 255, 0.4), transparent 28%),
@@ -2896,22 +2945,20 @@ body[data-ui-theme="light"] .panel-divider {
   border-color: rgba(43, 76, 124, 0.12);
 }
 
-body[data-ui-theme="light"] .ghost-button,
 body[data-ui-theme="light"] .panel-lens {
   border-color: rgba(39, 98, 210, 0.12);
   background: rgba(255, 255, 255, 0.82);
   color: #2b3950;
 }
 
-body[data-ui-theme="light"] .primary-button {
+body[data-ui-theme="light"] .primary-button,
+body[data-ui-theme="light"] .ghost-button {
   border-color: rgba(39, 98, 210, 0.2);
   background: linear-gradient(135deg, #2e6fe0, #2458bd);
   color: #ffffff;
   box-shadow: 0 12px 28px rgba(39, 98, 210, 0.22);
 }
 
-body[data-ui-theme="light"] .ghost-button:hover,
-body[data-ui-theme="light"] .ghost-button:focus-visible,
 body[data-ui-theme="light"] .panel-lens:hover,
 body[data-ui-theme="light"] .panel-lens:focus-visible {
   border-color: rgba(39, 98, 210, 0.2);
@@ -2920,7 +2967,9 @@ body[data-ui-theme="light"] .panel-lens:focus-visible {
 }
 
 body[data-ui-theme="light"] .primary-button:hover,
-body[data-ui-theme="light"] .primary-button:focus-visible {
+body[data-ui-theme="light"] .primary-button:focus-visible,
+body[data-ui-theme="light"] .ghost-button:hover,
+body[data-ui-theme="light"] .ghost-button:focus-visible {
   border-color: rgba(39, 98, 210, 0.28);
   box-shadow: 0 16px 34px rgba(39, 98, 210, 0.26);
 }

@@ -179,6 +179,22 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+// The step-2 sentence is the one place a visitor has to copy something by hand,
+// so the code inside it is emphasised. Built as markup rather than assigned as
+// text, which means both halves are escaped before they go anywhere near
+// innerHTML - the sentence comes from the server and the code from the session.
+function renderInstruction(element, text, code) {
+  if (!element) {
+    return;
+  }
+  const safeText = escapeHtml(String(text || ''));
+  const safeCode = escapeHtml(String(code || ''));
+  element.innerHTML = safeCode
+    ? safeText.split(safeCode).join(`<strong>${safeCode}</strong>`)
+    : safeText;
+}
+
+
 function sharedSessionIdFromLocation() {
   const path = window.location.pathname || '';
   if (!path.startsWith(SHARE_ROUTE_PREFIX)) {
@@ -713,7 +729,7 @@ function packetHashLink(hash) {
 function setSessionHash(hash) {
   const value = String(hash || '').trim();
   if (!value) {
-    ui.sessionHash.textContent = 'Pending';
+    ui.sessionHash.textContent = '--';
     ui.sessionHash.href = '#';
     ui.sessionHash.classList.add('pending');
     ui.sessionHash.removeAttribute('target');
@@ -1724,7 +1740,7 @@ function buildDrawerContent() {
               ${drawerStat('Status', session?.status?.toUpperCase() || 'IDLE')}
               ${drawerStat('Share Window', session ? formatDateTime(session.resultExpiresAt) : retentionNote())}
               ${drawerStat('Uses Remaining', session ? String(session.usesRemaining) : '--')}
-              ${drawerStat('Hash', session?.messageHash || 'Pending')}
+              ${drawerStat('Hash', session?.messageHash || '--')}
             </div>
           </section>
           <section class="drawer-card">
@@ -1842,7 +1858,7 @@ function buildDrawerContent() {
                 ${drawerStat('Spread', latency.value)}
                 ${drawerStat('Observer Reports', String(receipts.length))}
                 ${drawerStat('Longest Packet', session?.longestPacketDistanceText || '--')}
-                ${drawerStat('Sender', session?.sender || 'Pending')}
+                ${drawerStat('Sender', session?.sender || '--')}
               </div>
             </section>
             <section class="drawer-card">
@@ -1903,7 +1919,7 @@ function buildDrawerContent() {
             <h3>Receipt Metrics</h3>
             <div class="drawer-stat-grid">
               ${drawerStat('First Seen', formatTime(receipt.firstSeenAt))}
-              ${drawerStat('Message Hash', receipt.messageHash || 'Pending')}
+              ${drawerStat('Message Hash', receipt.messageHash || '--')}
               ${drawerStat('RSSI', receipt.rssi != null ? String(receipt.rssi) : 'n/a')}
               ${drawerStat('SNR', receipt.snr != null ? String(receipt.snr) : 'n/a')}
               ${drawerStat('Duration', receipt.duration != null ? `${receipt.duration} ms` : 'n/a')}
@@ -2026,7 +2042,7 @@ function render() {
     if (ui.longestPacketDistance) {
       ui.longestPacketDistance.textContent = '--';
     }
-    ui.senderName.textContent = 'Pending';
+    ui.senderName.textContent = '--';
     ui.channelName.textContent = channelLabel;
     ui.messagePreview.textContent = `Waiting for your ${channelLabel} message.`;
     ui.messagePreview.title = '';
@@ -2046,18 +2062,20 @@ function render() {
   }
 
   ui.sessionCode.textContent = session.code;
-  ui.sessionInstructions.textContent = state.sharedSessionId
-    ? `This is a saved result for code ${session.code}.`
-    : session.instructions;
+  renderInstruction(
+    ui.sessionInstructions,
+    state.sharedSessionId
+      ? `This is a saved result for code ${session.code}.`
+      : session.instructions,
+    session.code,
+  );
   ui.sessionShareNote.textContent = `Share link available until ${formatDateTime(session.resultExpiresAt)}.`;
-  // An expired code that was never used carries no information: it is the
-  // leftover of an earlier visit, and rendering EXPIRED on arrival reads as a
-  // fault report. Withhold it until there is a real status to show. An expired
-  // code that DID run keeps its status, because then it means something.
+  // A status only means something once the code has been used. Before that,
+  // EXPIRED is the leftover of an earlier visit and reads as a fault report, and
+  // WAITING just repeats the headline above it. Both render as the same '--' the
+  // other unfilled fields use. A code that DID run keeps its real status.
   const sessionRan = Boolean(session.matchedAt) || Number(session.useCount) > 0;
-  ui.sessionStatus.textContent = session.status === 'expired' && !sessionRan
-    ? '--'
-    : session.status.toUpperCase();
+  ui.sessionStatus.textContent = sessionRan ? session.status.toUpperCase() : '--';
   setSessionHash(session.messageHash);
   // healthMeasured is absent on cached payloads from an older server; fall back to
   // the label so the placeholder still shows instead of a red zero.
@@ -2096,7 +2114,7 @@ function render() {
       ui.longestPacketDistance.removeAttribute('title');
     }
   }
-  ui.senderName.textContent = session.sender || 'Pending';
+  ui.senderName.textContent = session.sender || '--';
   ui.channelName.textContent = session.channelName ? `#${session.channelName}` : channelLabel;
   ui.messagePreview.textContent = session.messageBody || `Waiting for your ${channelLabel} message.`;
   ui.messagePreview.title = session.messageBody || '';

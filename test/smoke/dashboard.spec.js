@@ -129,6 +129,55 @@ test('dashboard loads and creates a session code', async ({ page }) => {
   await expect(page.getByText('No observer reports yet.')).toBeVisible();
 });
 
+test('the steps carry counter markers and every control wears one coat', async ({ page }) => {
+  await page.goto('/app');
+  await expect(page.locator('#session-code')).toContainText('MHC-', { timeout: 10000 });
+
+  // The numbering is drawn by a CSS counter, so the copy must not repeat it.
+  const steps = page.locator('.session-step');
+  await expect(steps).toHaveCount(3);
+  for (const text of await steps.allInnerTexts()) {
+    expect(text).not.toMatch(/Step \d/);
+  }
+  const markers = await page.evaluate(() =>
+    [...document.querySelectorAll('.session-step')].map((el) => {
+      const before = getComputedStyle(el, '::before');
+      return { content: before.content, radius: before.borderRadius, colour: before.color };
+    }));
+  expect(markers.map((m) => m.content)).toEqual(['counter(session-step)', 'counter(session-step)', 'counter(session-step)']);
+  markers.forEach((m) => expect(m.radius).toBe('999px'));
+
+  // The channel in step 1 and the code in step 2 are the two things a visitor
+  // has to carry to another app, so both are emphasised.
+  // The channel name comes from the deployment's own config, so match the shape
+  // and the panel's own copy of it rather than pinning the Bay Area value.
+  await expect(page.locator('#session-step-channel')).toHaveText(/^#\S+$/);
+  const channel = await page.locator('#session-step-channel').innerText();
+  await expect(page.locator('#channel-name')).toHaveText(channel);
+  const code = await page.locator('#session-code').innerText();
+  await expect(page.locator('#session-instructions strong')).toHaveText(code);
+
+  // Nothing is filled in until a message lands.
+  await expect(page.locator('#session-status')).toHaveText('--');
+  await expect(page.locator('#session-hash')).toHaveText('--');
+  await expect(page.locator('#sender-name')).toHaveText('--');
+
+  // One button style across the page: the New Code treatment won. The header
+  // utilities keep their smaller padding on purpose - it is the paint that has
+  // to match, not the footprint.
+  const paint = await page.evaluate(() =>
+    ['#new-session-button', '#copy-session-code', '#share-session', '#ui-theme-toggle'].map((sel) => {
+      const cs = getComputedStyle(document.querySelector(sel));
+      return `${cs.backgroundImage}|${cs.color}|${cs.fontWeight}|${cs.borderRadius}`;
+    }));
+  expect(new Set(paint).size).toBe(1);
+
+  const box = await page.evaluate(() =>
+    ['#new-session-button', '#copy-session-code', '#share-session'].map(
+      (sel) => getComputedStyle(document.querySelector(sel)).padding));
+  expect(new Set(box).size).toBe(1);
+});
+
 test('share button uses the browser share API with the retained share link', async ({ page }) => {
   await page.addInitScript(() => {
     window.__shareCalls = [];
