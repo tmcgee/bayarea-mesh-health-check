@@ -49,7 +49,9 @@ if [[ -n "$ARCHIVE" ]]; then
   esac
   src="$tmp"
   if [[ ! -f "$tmp/package.json" ]]; then
-    src="$(find "$tmp" -maxdepth 2 -name package.json -printf '%h\n' | head -1)"
+    # `-quit` rather than `| head -1`: head would exit early, find would take
+    # SIGPIPE, and `pipefail` would turn that into a failed assignment.
+    src="$(find "$tmp" -maxdepth 2 -name package.json -printf '%h\n' -quit)"
     [[ -n "$src" ]] || die "no package.json inside $ARCHIVE"
   fi
   rsync -a --delete --exclude '.env' --exclude 'data/' --exclude 'node_modules/' \

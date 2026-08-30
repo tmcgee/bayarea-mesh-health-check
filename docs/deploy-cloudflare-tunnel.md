@@ -81,6 +81,20 @@ Both generated Caddyfiles were validated against Caddy 2.10.0. The script runs `
 
 `unattended-upgrades` is configured to reboot for kernel updates at 04:30 local — after `OBSERVER_RESEED_HOUR=4` has finished its pass, so a restart never lands mid-write on `observer.json`.
 
+"Local" is the load-bearing word. `OBSERVER_RESEED_HOUR` is read against the process's local time, and a fresh droplet is UTC, so leaving the timezone alone would quietly move the "04:00" reseed pass to 21:00 Pacific the day before. The script sets `TIMEZONE=America/Los_Angeles` before anything schedules itself against the wall clock. Override it if you host the box elsewhere and would rather the pass ran overnight where the hardware is.
+
+### Node 24, not 20
+
+Node 20 reached end-of-life on 30 April 2026 and receives no further security patches; 24.x is Active LTS through 30 April 2028 ([nodejs/Release](https://github.com/nodejs/Release)). `NODE_MAJOR` therefore defaults to `24`. This was checked rather than assumed: on 24.20.0, `npm ci --omit=dev` installs all 123 packages cleanly, `npm run check` passes, and the app boots, loads all 23 region boundaries, and reaches `mqtt.gomesh.dev`. Every runtime dependency is pure JavaScript, so there is nothing to rebuild.
+
+The version check accepts anything at or above `NODE_MAJOR` rather than requiring an exact match, so re-running the script on a box you have already moved to a newer LTS does not downgrade it.
+
+### The one way to lock yourself out
+
+`ADMIN_SSH_CIDR` restricts inbound 22 to a single CIDR, and section 10 ends with `ufw --force enable`. A typo in the CIDR — or an SSH session that arrived over IPv6 while the CIDR is IPv4-only — makes the droplet unreachable the moment the firewall comes up. The preflight now parses `SSH_CONNECTION`, checks the client address against the CIDR with `ipaddress`, and refuses to continue if it falls outside, naming the address you actually arrived from. `ALLOW_SSH_LOCKOUT=1` overrides it; the DigitalOcean web console is the way back in either way.
+
+One caveat on calling the script idempotent: `ufw --force reset` is how the firewall converges instead of stacking duplicate rules on every run, but it also discards rules you added to ufw by hand. Add extra rules to the script, not to ufw directly. The script keeps the three most recent `/etc/ufw/*.rules.*` backups and prunes the rest.
+
 ## What you need (tunnel path)
 
 - A box that stays up: Raspberry Pi 4/5, NUC, home server, or any small VPS. Docker + Docker Compose plugin. ~500 MB RAM is plenty.
