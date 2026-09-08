@@ -4,6 +4,28 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.2
+
+- merged the observer roster into Observer Reports: heard observers keep their
+  receipt cards and not-heard observers are appended to the same list, behind an
+  `All` / `Heard` / `Not heard` filter
+- deleted the standalone Observers panel from `index.html` and `share.html` and
+  moved its roster note into Observer Reports
+- moved the region filter above the coverage map and extended it to filter the
+  map markers as well as the report list
+- added named repeater paths and per-leg distances to receipt cards, and fixed
+  the leg attribution that credited the wrong hop as the farthest observer
+- changed region status dots to true green/yellow/red from `theme-bayarea.css`
+  instead of reusing the score palette
+- changed observer wording from `seen` to `heard` throughout the interface
+- fixed a `share.html` layout regression: the page's `dashboard-grid` carries no
+  section class, so it kept the two-column template and stranded 528px in an
+  empty observers column at 1440px, plus a zero-height phantom row that doubled
+  the panel gap below 1240px
+- removed the dead observer CSS left by the panel deletion, 31 rules deleted and
+  13 trimmed, and the inert `grid-template-areas` and `grid-template-columns`
+  declarations that still referenced the removed `observers` area
+
 ## v1.3.8+bayarea.1
 
 - merged upstream `v1.3.8`

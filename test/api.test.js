@@ -119,7 +119,7 @@ test('GET /api/bootstrap returns site and channel configuration', async () => {
 
   const payload = await response.json();
   assert.equal(payload.site.title, 'MeshCore Observer Coverage');
-  assert.equal(payload.site.version, '1.3.8+bayarea.1');
+  assert.equal(payload.site.version, '1.3.8+bayarea.2');
   assert.equal(payload.site.coreScopeUrl, 'https://analyzer.example.test');
   assert.equal(payload.site.externalLinkUrl, '');
   assert.equal(payload.testChannel.name, 'health-check');
@@ -592,7 +592,7 @@ test('packet path distance estimates across unknown or unlocated path hops', asy
   assert.ok(receipt.pathDistance < 210);
 });
 
-test('longest packet distance falls back to observer span when path hops are unknown', async () => {
+test('session distance falls back to observer span, but a receipt reports its own path only', async () => {
   const observerKeys = [
     '1111111111111111111111111111111111111111111111111111111111111111',
     '2222222222222222222222222222222222222222222222222222222222222222',
@@ -653,9 +653,34 @@ test('longest packet distance falls back to observer span when path hops are unk
   assert.equal(session.longestPacketDistanceSource, 'observer-span');
   assert.equal(session.longestPacketDistancePair.fromLabel, 'Span Observer One');
   assert.equal(session.longestPacketDistancePair.toLabel, 'Span Observer Two');
-  assert.equal(session.receipts[0].displayDistanceSource, 'observer-span');
-  assert.match(session.receipts[0].displayDistanceText, / mi$/);
-  assert.match(session.receipts[0].displayDistanceLabel, /^farthest observer:/);
+  // The session-wide span above is a legitimate aggregate. A single receipt must
+  // NOT borrow it: the distance to the farthest other observer that also heard
+  // the packet is a property of the observer set, not of this receipt's path, and
+  // it named the same outlier node on nearly every card.
+  const receipt = session.receipts[0];
+  assert.equal(receipt.displayDistanceSource, '');
+  assert.equal(receipt.displayDistanceText, '');
+  assert.equal(receipt.displayDistanceLabel, '');
+  assert.equal(receipt.pathDistance, null);
+  // Says why there is no number instead of substituting an unrelated one.
+  assert.equal(
+    receipt.pathDistanceNote,
+    'Distance not estimated: 2 of 3 hops have no known position.',
+  );
+  // Hops are resolved to names once, server side, so every view agrees.
+  assert.equal(receipt.pathHops.length, 3);
+  assert.deepEqual(
+    receipt.pathHops.map((hop) => hop.hash),
+    ['AAAA', 'BBBB', observerKeys[0].slice(0, 4).toUpperCase()],
+  );
+  assert.deepEqual(
+    receipt.pathHops.map((hop) => hop.resolved),
+    [false, false, true],
+  );
+  assert.equal(receipt.pathHops[0].label, 'AAAA');
+  assert.equal(receipt.pathHops[2].label, 'Span Observer One');
+  assert.equal(receipt.pathHops[2].hasLocation, true);
+  assert.equal(receipt.pathHops[2].isTerminal, true);
   assert.match(session.longestPacketDistanceText, / mi$/);
   assert.ok(session.longestPacketDistance > 200);
   assert.ok(session.longestPacketDistance < 210);

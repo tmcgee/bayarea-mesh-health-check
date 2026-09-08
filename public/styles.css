@@ -19,6 +19,13 @@
   --fair-glow: rgba(226, 171, 69, 0.3);
   --poor: #d87adf;
   --poor-glow: rgba(216, 122, 223, 0.3);
+  --region-status-all: #2dbf6e;
+  --region-status-all-glow: rgba(45, 191, 110, 0.34);
+  --region-status-some: #e2ab45;
+  --region-status-some-glow: rgba(226, 171, 69, 0.3);
+  --region-status-none: #e0546f;
+  --region-status-none-glow: rgba(224, 84, 111, 0.3);
+  --region-status-unknown: #5b6b85;
   --shadow: 0 24px 90px rgba(0, 0, 0, 0.34);
   --radius-xl: 26px;
   --radius-lg: 20px;
@@ -232,7 +239,6 @@ code {
 .panel-header,
 .receipt-head,
 .history-item,
-.observer-pill,
 .drawer-head {
   display: flex;
   justify-content: space-between;
@@ -289,7 +295,6 @@ code {
 .dock-note,
 .dock-meta__item,
 .panel-header > div,
-.observer-main,
 .receipt-head > div,
 .drawer-head > div {
   min-width: 0;
@@ -470,7 +475,6 @@ code {
 .dashboard-grid,
 .score-grid,
 .session-meta,
-.observer-badges,
 .history-list,
 .receipts,
 .session-code-actions,
@@ -839,12 +843,12 @@ body[data-page-mode="share"] .status-pill::before {
   gap: 16px;
 }
 
+/* Only gap and align-items are read from here. The columns and areas this rule
+   used to declare (a "score map" / "observers map" / "reports history" layout)
+   were shadowed by the .dashboard-grid rule further down the file, which every
+   grid on both pages resolves to, so they were removed with the Observers panel
+   rather than left as a misleading description of the layout. */
 .dashboard-grid {
-  grid-template-columns: minmax(320px, 0.78fr) minmax(0, 1.22fr);
-  grid-template-areas:
-    "score map"
-    "observers map"
-    "reports history";
   gap: 16px;
   align-items: start;
 }
@@ -877,34 +881,14 @@ body[data-page-mode="share"] .status-pill::before {
     linear-gradient(180deg, rgba(14, 21, 33, 0.96), rgba(9, 14, 22, 0.98));
 }
 
-.observer-panel {
-  grid-area: observers;
-  display: grid;
-  align-content: start;
-  gap: 16px;
-}
-
-.observer-panel .panel-header.slim {
-  align-items: flex-start;
-  row-gap: 10px;
-}
-
-.observer-panel .panel-actions {
-  justify-content: flex-start;
-}
-
-.observer-panel .panel-header > div {
-  display: grid;
-  gap: 6px;
-}
-
-.observer-panel .allowlist-note,
-.observer-panel #expected-source {
-  margin: -2px 0 0;
-}
-
-.observer-panel .observer-badges {
-  margin-top: 2px;
+/* Re-scoped from .observer-panel when that panel was deleted. The original rule
+   was margin: -2px 0 0, tuned for a header with nothing on its right. The reports
+   header carries #active-observer-note in .panel-actions, which wraps onto its
+   own line below ~430px, and the negative margin pulled this note up against it.
+   Positive top margin instead. (#expected-source was dropped from the selector:
+   that element went with the Observers panel.) */
+.reports-panel .allowlist-note {
+  margin: 6px 0 0;
 }
 
 .reports-panel {
@@ -932,10 +916,6 @@ body[data-page-mode="share"] .status-pill::before {
   height: 1px;
   margin: 18px 0;
   background: linear-gradient(90deg, transparent, rgba(194, 245, 255, 0.22), transparent);
-}
-
-.observer-panel .panel-divider {
-  margin: 6px 0 2px;
 }
 
 .session-code-row {
@@ -1150,7 +1130,6 @@ body[data-page-mode="share"] .status-pill::before {
 .metric-card,
 .history-item,
 .receipt-card,
-.observer-pill,
 .empty-state,
 .drawer-card {
   min-width: 0;
@@ -1178,7 +1157,6 @@ body[data-page-mode="share"] .status-pill::before {
 
 .metric-card strong,
 .history-item strong,
-.observer-label,
 .receipt-title {
   display: block;
   font-size: 1.02rem;
@@ -1206,6 +1184,17 @@ body[data-page-mode="share"] .status-pill::before {
   align-items: stretch;
   gap: 8px;
   margin-top: 12px;
+}
+
+/* In the coverage map panel the filter is a global control - it scopes the map,
+   the observer list and the reports list at once - so it sits directly under the
+   panel header with a rule beneath it to separate control from result. */
+.region-filter--map {
+  margin-top: 10px;
+  padding-bottom: 12px;
+  /* --line is the existing theme border token and has a light-mode value, so
+     this needs no separate rule under [data-theme="light"]. */
+  border-bottom: 1px solid var(--line);
 }
 
 .region-filter__row {
@@ -1274,153 +1263,52 @@ body[data-page-mode="share"] .status-pill::before {
   color: var(--good);
 }
 
-/* Uplink-inferred members of a group: dashed to read as "not mapped". */
-.region-btn__count--inferred {
-  background: transparent;
-  border: 1px dashed color-mix(in srgb, var(--text) 32%, transparent);
-  font-weight: 600;
-  opacity: 0.72;
-  padding: 2px 4px;
-}
-
-.region-btn.active .region-btn__count--inferred {
-  background: transparent;
-  border-color: color-mix(in srgb, var(--good) 45%, transparent);
-  color: var(--good);
-}
-
-.observer-panel {
-  display: grid;
-  align-content: start;
-  min-width: 0;
-}
-
-.observer-badges {
-  min-width: 0;
-}
-
-.observer-badges {
-  display: grid;
-  gap: 12px;
-  align-content: start;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
-
-.observer-pill {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  min-height: 92px;
-  padding: 16px;
-}
-
-.observer-main {
-  display: grid;
-  min-width: 0;
-  align-content: start;
-  gap: 8px;
-}
-
-.observer-label {
-  line-height: 1.34;
-  overflow-wrap: anywhere;
-}
-
-.observer-pill .status {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  padding: 0.45rem 0.75rem;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.035);
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  align-self: start;
-  justify-self: start;
-  margin-top: 0;
-  white-space: nowrap;
-}
-
-.observer-pill .status::before {
-  content: "";
-  width: 0.5rem;
-  height: 0.5rem;
+/* Region/group match status: filled dot before the label. Green/yellow/red
+   are literal (not the brand good/fair/poor ramp) per the health-check
+   semantics; gray is the muted placeholder before any session has results. */
+.region-btn__status {
   border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 12px currentColor;
-  flex: 0 0 auto;
+  flex: none;
+  height: 0.5rem;
+  width: 0.5rem;
 }
 
-.observer-pill.seen {
-  border-color: color-mix(in srgb, var(--good) 24%, transparent);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--good) 12%, transparent), color-mix(in srgb, var(--good) 3%, transparent)),
-    rgba(255, 255, 255, 0.03);
+.region-btn__status--all {
+  background: var(--region-status-all);
+  box-shadow: 0 0 8px var(--region-status-all-glow);
 }
 
-.observer-pill.seen .status {
-  color: var(--good);
+.region-btn__status--some {
+  background: var(--region-status-some);
+  box-shadow: 0 0 8px var(--region-status-some-glow);
 }
 
-.observer-pill.waiting {
-  border-color: color-mix(in srgb, var(--poor) 22%, transparent);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--poor) 9%, transparent), color-mix(in srgb, var(--poor) 2%, transparent)),
-    rgba(255, 255, 255, 0.03);
-  border-style: dashed;
+.region-btn__status--none {
+  background: var(--region-status-none);
+  box-shadow: 0 0 8px var(--region-status-none-glow);
 }
 
-.observer-pill.waiting .status {
-  color: var(--poor);
-  border-style: dashed;
+.region-btn__status--unknown {
+  background: var(--region-status-unknown);
 }
 
-.observer-pill.waiting .status::before {
-  background: transparent;
-  border: 2px solid currentColor;
-  box-shadow: none;
+/* Same dot, reused inline before a receipt card's title (always green there,
+   since only heard observers produce a receipt at all). */
+.receipt-title .region-btn__status {
+  display: inline-block;
+  margin-right: 0.4em;
+  vertical-align: middle;
+  margin-top: -0.15em;
 }
 
-/* Known to the directory but not heard inside the active window, so this code is
-   not scored against it. Neutral, not red: it is not a failure, it is not in the
-   measurement at all. Muted so the scored block reads first. */
-.observer-pill.untargeted {
-  border-style: dashed;
-  opacity: 0.72;
-}
-
-.observer-pill.untargeted .status {
-  color: var(--muted-strong);
-  border-style: dashed;
-}
-
-.observer-pill.untargeted .status::before {
-  background: transparent;
-  border: 2px solid currentColor;
-  box-shadow: none;
-}
-
-/* Publishes no position, so its region group came from the uplink code. Marked,
-   never dimmed - it is a full scoring target. */
-.observer-pill.unlocated {
-  border-style: dashed;
-}
-
-.observer-hash,
 .receipt-hash,
 .history-code,
 .drawer-mono,
 .console-line code,
-.receipt-path,
 .dock-nav__item span {
   font-family: var(--font-mono);
 }
 
-.observer-hash,
 .observer-detail,
 .receipt-hash {
   color: var(--muted);
@@ -1520,8 +1408,8 @@ body[data-page-mode="share"] .status-pill::before {
 }
 
 .observer-map-icon.seen {
-  background: color-mix(in srgb, var(--good) 90%, white 10%);
-  box-shadow: 0 0 16px var(--good-glow);
+  background: color-mix(in srgb, var(--region-status-all) 90%, white 10%);
+  box-shadow: 0 0 16px var(--region-status-all-glow);
 }
 
 .observer-map-icon.seen::before {
@@ -1533,19 +1421,19 @@ body[data-page-mode="share"] .status-pill::before {
 }
 
 .observer-map-icon.missed {
-  border-color: color-mix(in srgb, var(--poor) 62%, white 38%);
+  border-color: color-mix(in srgb, var(--region-status-none) 62%, white 38%);
   background: rgba(8, 16, 28, 0.98);
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--poor) 18%, transparent),
-    0 0 12px color-mix(in srgb, var(--poor) 26%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, var(--region-status-none) 18%, transparent),
+    0 0 12px color-mix(in srgb, var(--region-status-none) 26%, transparent);
 }
 
 .observer-map-icon.missed::before {
   width: 2px;
   height: 12px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--poor) 82%, white 18%);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--poor) 36%, transparent);
+  background: color-mix(in srgb, var(--region-status-none) 82%, white 18%);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--region-status-none) 36%, transparent);
   transform: translate(-50%, -50%) rotate(42deg);
 }
 
@@ -1622,6 +1510,12 @@ body[data-page-mode="share"] .status-pill::before {
   margin-top: 16px;
 }
 
+/* Full row, or the auto-fit grid would seat this note in the first card slot. */
+.receipts-filter-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .receipt-card,
 .history-item {
   padding: 16px;
@@ -1647,6 +1541,46 @@ body[data-page-mode="share"] .status-pill::before {
 .receipt-head {
   align-items: flex-start;
   flex-wrap: wrap;
+}
+
+.receipts-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+/* A not-heard observer has nothing to measure, so its card is head-only.
+   Dashed and flattened so it reads as a gap in coverage rather than a report,
+   and not interactive because there is no packet detail to open. */
+.receipt-card--quiet {
+  background: color-mix(in srgb, var(--panel-soft) 55%, transparent);
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--line) 85%, transparent);
+  cursor: default;
+}
+
+.receipt-card--quiet .receipt-title {
+  color: var(--muted-strong);
+}
+
+/* .receipt-head wraps so a heard card can drop its long arrival label to its
+   own line. On a head-only card that wrap made the state label land bottom-left
+   on some cards and top-right on others depending on how wide the detail line
+   was, so the quiet card pins both columns with a grid instead. Do not put
+   flex-wrap back here. */
+.receipt-card--quiet .receipt-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.receipt-ident {
+  min-width: 0;
+}
+
+.receipt-state {
+  white-space: nowrap;
 }
 
 .receipt-title {
@@ -1702,15 +1636,49 @@ body[data-page-mode="share"] .status-pill::before {
   margin-top: 12px;
 }
 
-.receipt-path span {
+/* Direct child only: the chip now holds an inner name and hash span, which must
+   not each render as their own pill. */
+.receipt-path > span {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
+  gap: 0.42rem;
+  max-width: 100%;
+  min-width: 0;
   padding: 0.46rem 0.66rem;
   border-radius: 999px;
   border: 1px solid rgba(194, 245, 255, 0.12);
   background: rgba(194, 245, 255, 0.05);
   color: var(--accent-strong);
   font-size: 0.74rem;
+  /* break-word, not anywhere: a named hop must never be split into a
+     one-character-per-line column when the card is narrow. */
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.receipt-path__name {
+  min-width: 0;
+}
+
+/* The hash stays visible next to the name so the raw trace is still verifiable. */
+.receipt-path__hash {
+  flex: 0 0 auto;
+  color: var(--muted-strong);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+}
+
+/* An unresolved hop is only a hash, so show it as mono and visually quieter
+   rather than implying it is a node name. */
+.receipt-path__hop--unresolved,
+.receipt-path__hop--empty {
+  color: var(--muted-strong);
+  font-family: var(--font-mono);
+}
+
+.receipt-distance--unknown strong {
+  display: none;
 }
 
 .receipt-distance {
@@ -1734,15 +1702,24 @@ body[data-page-mode="share"] .status-pill::before {
    held together on the right so the numbers read as a column. */
 .receipt-distance__leg {
   display: flex;
+  /* Wraps so a long distance value drops to its own line. Without this the
+     non-shrinking value squeezed the route to nothing in a narrow card. */
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: baseline;
-  gap: 12px;
+  gap: 2px 12px;
 }
 
 .receipt-distance__leg-route {
+  /* Basis keeps the route readable instead of collapsing to a sliver. */
+  flex: 1 1 16ch;
   min-width: 0;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  /* break-word, NOT anywhere: `anywhere` drops min-content width to a single
+     character, so a flex row could crush "Mount Tamalpais East to Oakland Hills
+     North" into a one-letter-per-line column. break-word only splits a word
+     that cannot fit on its own line. */
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .receipt-distance__leg-value {
@@ -2024,9 +2001,9 @@ body[data-page-mode="share"] .share-hidden {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .dashboard-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  /* No .dashboard-grid override here: the later non-media .dashboard-grid rule
+     wins on source order at every width, so a two-column declaration in this
+     block never resolves. Measured 1241-1320px: always a single column. */
 }
 
 @media (max-width: 980px) {
@@ -2053,14 +2030,9 @@ body[data-page-mode="share"] .share-hidden {
     grid-template-columns: 1fr;
   }
 
-  .dashboard-grid {
-    grid-template-areas:
-      "score"
-      "map"
-      "observers"
-      "reports"
-      "history";
-  }
+  /* The stacked "score/map/observers/reports/history" areas that used to sit here
+     never applied: the later .dashboard-grid rule outranks this one on source
+     order at every width. The single column above is what actually takes effect. */
 
   .spotlight-panel .observer-map {
     min-height: 420px;
@@ -2165,14 +2137,9 @@ body[data-page-mode="share"] .share-hidden {
     order: 3;
   }
 
+  /* order is live here; the areas were not - same shadowing as above. */
   .dashboard-grid {
     order: 3;
-    grid-template-areas:
-      "score"
-      "map"
-      "observers"
-      "reports"
-      "history";
   }
 
   .site-footer {
@@ -2218,7 +2185,7 @@ body[data-page-mode="share"] .share-hidden {
     grid-template-columns: 1fr;
   }
 
-  .observer-badges,
+  
   .receipts {
     grid-template-columns: 1fr;
   }
@@ -2430,11 +2397,16 @@ body[data-page-mode="share"] .share-hidden {
   border-bottom: 0;
 }
 
+/* The rule every .dashboard-grid actually resolves to. share.html's grid carries
+   no section class, so this is its layout: map above the reports ledger, one full
+   width column. It was "map observers" / "ledger observers" over two columns,
+   which left the 0.74fr second column empty once the Observers panel went - on
+   share.html at 1440 that stranded 528px and squeezed both panels into 872px. */
 .dashboard-grid {
-  grid-template-columns: minmax(0, 1.26fr) minmax(300px, 0.74fr);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
-    "map observers"
-    "ledger observers";
+    "map"
+    "ledger";
   align-items: stretch;
 }
 
@@ -2451,15 +2423,6 @@ body[data-page-mode="share"] .share-hidden {
   min-height: 560px;
   margin-top: 14px;
   border-radius: 24px;
-}
-
-.observer-panel {
-  grid-area: observers;
-  align-self: stretch;
-  min-height: 100%;
-  background:
-    radial-gradient(circle at 84% 12%, rgba(94, 217, 255, 0.08), transparent 20%),
-    linear-gradient(180deg, rgba(18, 24, 36, 0.96), rgba(10, 15, 24, 0.98));
 }
 
 .ledger-panel {
@@ -2523,10 +2486,12 @@ body[data-page-mode="share"] .ledger-panel .history-list {
     border-top: 1px solid rgba(173, 196, 228, 0.12);
   }
 
+  /* Dropping the empty "observers" row here too: an unoccupied row is 0px tall but
+     still takes a 16px row gap on each side, which showed up as a 32px gap between
+     the map and the reports panel on share.html below this breakpoint. */
   .dashboard-grid {
     grid-template-areas:
       "map"
-      "observers"
       "ledger";
   }
 
@@ -2667,6 +2632,13 @@ body[data-ui-theme="light"] {
   --fair-glow: rgba(155, 108, 13, 0.16);
   --poor: #a14bac;
   --poor-glow: rgba(161, 75, 172, 0.16);
+  --region-status-all: #1a8f4f;
+  --region-status-all-glow: rgba(26, 143, 79, 0.2);
+  --region-status-some: #9b6c0d;
+  --region-status-some-glow: rgba(155, 108, 13, 0.16);
+  --region-status-none: #b8324a;
+  --region-status-none-glow: rgba(184, 50, 74, 0.16);
+  --region-status-unknown: #7c8aa0;
   --shadow: 0 20px 54px rgba(52, 80, 121, 0.12);
   --ring-color: #2762d2;
   --hero-violet: #cad8ef;
@@ -2765,7 +2737,6 @@ body[data-ui-theme="light"] .hero-stage {
 
 body[data-ui-theme="light"] .pill,
 body[data-ui-theme="light"] .dock-meta__item,
-body[data-ui-theme="light"] .observer-pill .status,
 body[data-ui-theme="light"] .receipt-arrival__track,
 body[data-ui-theme="light"] .meter-track,
 body[data-ui-theme="light"] .score-ring,
@@ -2777,7 +2748,6 @@ body[data-ui-theme="light"] .drawer-scrim {
 
 body[data-ui-theme="light"] .pill,
 body[data-ui-theme="light"] .dock-meta__item,
-body[data-ui-theme="light"] .observer-pill .status,
 body[data-ui-theme="light"] .action-menu__panel,
 body[data-ui-theme="light"] .drawer-head {
   background: rgba(255, 255, 255, 0.86);
@@ -2865,7 +2835,6 @@ body[data-ui-theme="light"] .hero-stage::after {
 body[data-ui-theme="light"] .hero-stage__action-rail,
 body[data-ui-theme="light"] .marquee-panel,
 body[data-ui-theme="light"] .spotlight-panel,
-body[data-ui-theme="light"] .observer-panel,
 body[data-ui-theme="light"] .ledger-panel,
 body[data-ui-theme="light"] .panel,
 body[data-ui-theme="light"] .hero-panel,
@@ -2898,7 +2867,6 @@ body[data-ui-theme="light"] .panel {
 
 body[data-ui-theme="light"] .marquee-panel,
 body[data-ui-theme="light"] .spotlight-panel,
-body[data-ui-theme="light"] .observer-panel,
 body[data-ui-theme="light"] .ledger-panel {
   box-shadow: 0 18px 46px rgba(52, 80, 121, 0.1);
 }
@@ -2917,14 +2885,6 @@ body[data-ui-theme="light"] .spotlight-panel {
   box-shadow:
     0 18px 46px rgba(52, 80, 121, 0.1),
     inset 0 4px 0 rgba(39, 98, 210, 0.42);
-}
-
-body[data-ui-theme="light"] .observer-panel {
-  background:
-    linear-gradient(180deg, rgba(252, 253, 255, 0.92), rgba(243, 248, 253, 0.84));
-  box-shadow:
-    0 18px 46px rgba(52, 80, 121, 0.1),
-    inset 0 4px 0 rgba(114, 149, 198, 0.38);
 }
 
 body[data-ui-theme="light"] .ledger-panel {
@@ -2977,7 +2937,6 @@ body[data-ui-theme="light"] .ghost-button:focus-visible {
 body[data-ui-theme="light"] .metric-card,
 body[data-ui-theme="light"] .history-item,
 body[data-ui-theme="light"] .receipt-card,
-body[data-ui-theme="light"] .observer-pill,
 body[data-ui-theme="light"] .empty-state,
 body[data-ui-theme="light"] .drawer-card,
 body[data-ui-theme="light"] .drawer-stat,
@@ -2988,40 +2947,6 @@ body[data-ui-theme="light"] .receipt-arrival {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(246, 249, 253, 0.52)),
     rgba(255, 255, 255, 0.42);
-}
-
-/* The rule above repaints every .observer-pill white, and the dark-theme state
-   tints it overrides mix their colour into transparent before layering it on
-   rgba(255, 255, 255, 0.03) - a no-op over a white card. Same trap the .targeted
-   row hit. Now that this panel is the only place observer state is shown, all
-   three states have to read here, so mix into #ffffff explicitly. */
-body[data-ui-theme="light"] .observer-pill.seen {
-  border-color: color-mix(in srgb, var(--good) 38%, var(--line));
-  background: color-mix(in srgb, var(--good) 8%, #ffffff);
-}
-
-body[data-ui-theme="light"] .observer-pill.waiting {
-  border-color: color-mix(in srgb, var(--poor) 32%, var(--line));
-  background: color-mix(in srgb, var(--poor) 6%, #ffffff);
-}
-
-body[data-ui-theme="light"] .observer-pill.untargeted {
-  border-color: rgba(32, 52, 84, 0.14);
-  background: color-mix(in srgb, #60728a 7%, #ffffff);
-}
-
-/* Light mode flattens .status to var(--text) for every pill, which erases the
-   seen/not-seen/not-scored distinction the merged panel now carries alone. */
-body[data-ui-theme="light"] .observer-pill.seen .status {
-  color: var(--good);
-}
-
-body[data-ui-theme="light"] .observer-pill.waiting .status {
-  color: var(--poor);
-}
-
-body[data-ui-theme="light"] .observer-pill.untargeted .status {
-  color: var(--muted-strong);
 }
 
 body[data-ui-theme="light"] .session-code {
@@ -3158,8 +3083,12 @@ body[data-ui-theme="light"] .additional-info[open] > .additional-info__summary {
   grid-template-areas: "map";
 }
 
+/* One panel since the Observers chip list was deleted. Single explicit column,
+   same trick as .map-section, so the surrounding grid did not need rewriting and
+   the reports panel does not render beside an empty second column. */
 .additional-info__grid {
-  grid-template-areas: "ledger observers";
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "ledger";
 }
 
 /* System telemetry sits last, full width, on its own row - it describes
@@ -3203,13 +3132,8 @@ body[data-ui-theme="light"] .additional-info[open] > .additional-info__summary {
   max-width: 100%;
 }
 
-@media (max-width: 1240px) {
-  .additional-info__grid {
-    grid-template-areas:
-      "observers"
-      "ledger";
-  }
-}
+/* The 1240px restack that used to reorder "observers" above "ledger" is gone:
+   a single-area grid has nothing to restack. */
 
 /* The score grid is two columns, so an odd number of metric cards leaves a
    half-width orphan on the last row. Let the final card span instead. This is

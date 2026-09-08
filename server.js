@@ -2719,6 +2719,30 @@ function formatDistance(value) {
   return `${rounded.toLocaleString('en-US')} ${DISTANCE_UNIT}`;
 }
 
+// One entry per hop in the packet's recorded path, resolved to a name where the
+// hash unambiguously identifies a known node. Serialized so every view - card,
+// drawer, share page - names the same repeaters instead of each one re-deriving
+// them from bare hashes, or showing the hash alone.
+function receiptPathHops(report) {
+  const path = Array.isArray(report?.path)
+    ? report.path.map(normalizePathHop).filter(Boolean)
+    : [];
+  const terminalKey = normalizeKey(report?.observerKey);
+  return path.map((hop, index) => {
+    const observer = observerForPathHop(hop, report?.observerKey);
+    const isTerminal = index === path.length - 1 && Boolean(terminalKey) && terminalKey.startsWith(hop);
+    return {
+      hash: hop,
+      // Falls back to the hash itself, so an unresolved hop still reads as the
+      // only thing actually known about it rather than as a blank chip.
+      label: observerDisplayLabel(observer, observer?.key || '') || hop,
+      resolved: Boolean(observer),
+      hasLocation: observer?.lat != null && observer?.lon != null,
+      isTerminal,
+    };
+  });
+}
+
 function receiptDistanceEstimate(report) {
   const path = Array.isArray(report?.path)
     ? report.path.map(normalizePathHop).filter(Boolean)
@@ -2799,35 +2823,6 @@ function observerSpanDistanceEstimate(reports) {
   return best;
 }
 
-function receiptObserverSpanDistanceEstimate(report, reports) {
-  const sourceObserver = observerState.get(report?.observerKey);
-  if (sourceObserver?.lat == null || sourceObserver?.lon == null) {
-    return null;
-  }
-  let best = null;
-  for (const otherReport of reports) {
-    if (otherReport.observerKey === report.observerKey) {
-      continue;
-    }
-    const otherObserver = observerState.get(otherReport.observerKey);
-    if (otherObserver?.lat == null || otherObserver?.lon == null) {
-      continue;
-    }
-    const distance = convertDistance(distanceKmBetween(sourceObserver, otherObserver));
-    if (!Number.isFinite(distance) || distance <= 0) {
-      continue;
-    }
-    if (!best || distance > best.distance) {
-      best = {
-        distance,
-        distanceText: formatDistance(distance),
-        toLabel: observerDisplayLabel(otherObserver, otherReport.observerKey),
-      };
-    }
-  }
-  return best;
-}
-
 function serializeSession(session, request = null) {
   const allReports = [...session.receipts.values()]
     .sort((left, right) => left.firstSeenAt - right.firstSeenAt)
@@ -2859,6 +2854,7 @@ function serializeSession(session, request = null) {
         snr: report.snr,
         duration: report.duration,
         path: report.path,
+        pathHops: receiptPathHops(report),
         pathDistance: distanceEstimate.distance,
         pathDistanceText: distanceEstimate.distanceText,
         pathDistanceSegments: distanceEstimate.segments,
@@ -2877,17 +2873,28 @@ function serializeSession(session, request = null) {
       report.displayDistanceSource = 'path';
       continue;
     }
-    const observerSpan = receiptObserverSpanDistanceEstimate(report, reports);
-    if (observerSpan) {
-      report.displayDistance = observerSpan.distance;
-      report.displayDistanceText = observerSpan.distanceText;
-      report.displayDistanceSource = 'observer-span';
-      report.displayDistanceLabel = `farthest observer: ${observerSpan.toLabel}`;
+    // No observer-span fallback. It reported the distance to the farthest OTHER
+    // observer that also heard the packet, which is a property of the observer
+    // set, not of this receipt's path - so it read as this packet's travel
+    // distance while naming the same outlier node on nearly every card. When the
+    // path cannot be measured, say which hops are missing position instead of
+    // substituting an unrelated number.
+    report.displayDistance = null;
+    report.displayDistanceText = '';
+    report.displayDistanceSource = '';
+    report.displayDistanceLabel = '';
+    const hops = receiptPathHops(report);
+    const unlocated = hops.filter((hop) => !hop.hasLocation).length;
+    if (hops.length === 0) {
+      report.pathDistanceNote = 'No path recorded, so distance cannot be estimated.';
+    } else if (hops.length === 1) {
+      // A one-element path is the receiving observer itself: the packet arrived
+      // with no repeater hop, and the sender's position is not carried in the
+      // path, so there is no leg to measure even though the hop is located.
+      report.pathDistanceNote = 'Heard with no repeater hop, so there is no leg to measure.';
     } else {
-      report.displayDistance = null;
-      report.displayDistanceText = '';
-      report.displayDistanceSource = '';
-      report.displayDistanceLabel = '';
+      report.pathDistanceNote = `Distance not estimated: ${unlocated} of ${hops.length} hops `
+        + `${unlocated === 1 ? 'has' : 'have'} no known position.`;
     }
   }
   const seen = dedupe(reports.map((report) => normalizeKey(report.observerKey)));

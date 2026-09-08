@@ -130,10 +130,6 @@
                       <strong id="session-status">--</strong>
                     </div>
                     <div class="metric-card">
-                      <span class="metric-label">Message Hash</span>
-                      <strong><a class="hash-link pending" id="session-hash" href="#" rel="noopener noreferrer" target="_blank">--</a></strong>
-                    </div>
-                    <div class="metric-card">
                       <span class="metric-label">Observers Reached</span>
                       <strong id="observed-count">--</strong>
                     </div>
@@ -154,12 +150,8 @@
                       <strong id="longest-packet-distance">--</strong>
                     </div>
                     <div class="metric-card">
-                      <span class="metric-label">Channel</span>
-                      <strong id="channel-name">#health-check</strong>
-                    </div>
-                    <div class="metric-card">
-                      <span class="metric-label">Broker</span>
-                      <strong id="broker-name">Loading</strong>
+                      <span class="metric-label">Message Packet</span>
+                      <strong><a class="hash-link pending" id="session-hash" href="#" rel="noopener noreferrer" target="_blank">--</a></strong>
                     </div>
                     <div class="metric-card message-card">
                       <span class="metric-label">Matched Message</span>
@@ -181,6 +173,7 @@
                 <h2>Where the observers are</h2>
               </div>
             </div>
+            <div class="region-filter region-filter--map hidden" id="region-filter"></div>
             <p class="small-note" id="map-observer-note">Waiting for observer coordinates.</p>
             <div class="empty-state compact hidden" id="map-empty">
               No saved observer coordinates yet. The app will learn them from MQTT metadata and store them in <code>data/observer.json</code>.
@@ -188,29 +181,22 @@
             <div class="observer-map" id="observer-map"></div>
           </article>
 
-          <article class="panel observer-panel share-hidden" id="observer-targets">
-            <div class="panel-header slim">
-              <div>
-                <h2>Observers</h2>
-              </div>
-            </div>
-            <p class="small-note allowlist-note" id="observer-allowlist-note">
-              0 observers.
-            </p>
-            <div class="region-filter hidden" id="region-filter"></div>
-            <div class="observer-badges" id="expected-observers"></div>
-          </article>
-
           <article class="panel reports-panel ledger-panel" id="observer-reports">
             <div class="panel-header slim">
               <div>
                 <p class="panel-label">Observer Reports</p>
-                <h2>Who saw the message</h2>
+                <h2>Heard and not heard</h2>
               </div>
               <div class="panel-actions">
                 <p class="small-note" id="active-observer-note">0 active observers</p>
                 </div>
             </div>
+            <!-- Roster framing moved here when the Observers panel was removed.
+                 It states what this code is scored against; the narrowing note
+                 at the end of the list states what is currently shown. -->
+            <p class="small-note allowlist-note" id="observer-allowlist-note">
+              0 observers.
+            </p>
             <article class="glance-card receipt-spread-card">
               <div class="glance-card__head">
                 <span class="panel-label">Receipt Spread</span>
@@ -219,6 +205,7 @@
               <div class="sparkline" id="latency-sparkline" aria-hidden="true"></div>
               <p class="small-note" id="latency-label">Awaiting receipt spread.</p>
             </article>
+            <div class="receipts-filter hidden" id="receipts-filter"></div>
             <div class="empty-state" id="receipts-empty">
               No observer reports yet.
             </div>
@@ -250,6 +237,14 @@
               <div class="dock-note">
                 <span class="meta-label">Share Mode</span>
                 <strong id="network-window">Read-only diagnostics</strong>
+              </div>
+              <div class="dock-note">
+                <span class="meta-label">Channel</span>
+                <strong id="channel-name">#health-check</strong>
+              </div>
+              <div class="dock-note">
+                <span class="meta-label">Broker</span>
+                <strong id="broker-name">Loading</strong>
               </div>
             </div>
             <div class="glance-grid metrics-panel__grid">

@@ -38,7 +38,6 @@ const ui = {
   repoNoteLink: document.querySelector('#repo-note-link'),
   siteVersionNote: document.querySelector('#site-version-note'),
   messagePreview: document.querySelector('#message-preview'),
-  expectedObservers: document.querySelector('#expected-observers'),
   observerAllowlistNote: document.querySelector('#observer-allowlist-note'),
   regionFilter: document.querySelector('#region-filter'),
   uiThemeToggle: document.querySelector('#ui-theme-toggle'),
@@ -50,6 +49,7 @@ const ui = {
   observerMap: document.querySelector('#observer-map'),
   activeObserverNote: document.querySelector('#active-observer-note'),
   receiptsEmpty: document.querySelector('#receipts-empty'),
+  receiptsFilter: document.querySelector('#receipts-filter'),
   receipts: document.querySelector('#receipts'),
   sessionHistory: document.querySelector('#session-history'),
   networkWindow: document.querySelector('#network-window'),
@@ -89,6 +89,9 @@ const state = {
   trackedSessionIds: loadTrackedSessionIds(),
   selectedRegionGroup: null,
   selectedRegion: null,
+  // 'all' | 'heard' | 'unheard'. Visibility only, like the region chips: it
+  // never changes what this code is scored against.
+  receiptHeardFilter: 'all',
   uiTheme: loadUiTheme(),
   sessions: new Map(),
   socket: null,
@@ -958,7 +961,61 @@ function currentSession() {
   return state.sessions.get(sessionId) || null;
 }
 
-function renderRegionFilter() {
+// Builds { byGroup: Map<group, {seen,total}>, byRegion: Map<name, {seen,total}> }
+// from the observer directory (which knows each observer's region/regionGroup)
+// cross-referenced against the current session's expectedObservers (which
+// knows which of those observers actually saw this message). Regions with no
+// expected observers are left out of the maps entirely, which createStatus
+// below treats as 'unknown' — there is nothing to report on yet, not a zero.
+function regionSeenTallies(session) {
+  const byGroup = new Map();
+  const byRegion = new Map();
+  const allTally = { seen: 0, total: 0 };
+  // Same gate the Current Health score uses: healthMeasured means a message
+  // actually landed for this session. Before that, expectedObservers may
+  // already be populated (the target set) but every seen flag is a stale
+  // 'not yet' rather than a real result, so region dots must read as the
+  // gray placeholder, not red.
+  const healthMeasured = session && (session.healthMeasured != null
+    ? Boolean(session.healthMeasured)
+    : !isHealthPending(session.healthLabel));
+  const expected = Array.isArray(session?.expectedObservers) ? session.expectedObservers : [];
+  if (!healthMeasured || expected.length === 0) {
+    return { byGroup, byRegion, allTally };
+  }
+  const seenByKey = new Map(expected.map((observer) => [observer.key, Boolean(observer.seen)]));
+  const directory = observerDirectory();
+  const bump = (map, name, seen) => {
+    if (!name) return;
+    const entry = map.get(name) || { seen: 0, total: 0 };
+    entry.total += 1;
+    if (seen) entry.seen += 1;
+    map.set(name, entry);
+  };
+  for (const observer of directory) {
+    if (!seenByKey.has(observer.key)) continue;
+    // Only observers that resolve to a region at all feed the region chips, so
+    // only those count toward the "All regions" tally too — otherwise an
+    // out-of-region observer being seen/not-seen would shift a status the
+    // region chips themselves never reflect.
+    if (!observer.region && !observer.regionGroup) continue;
+    const seen = seenByKey.get(observer.key);
+    allTally.total += 1;
+    if (seen) allTally.seen += 1;
+    bump(byGroup, observer.regionGroup, seen);
+    bump(byRegion, observer.region, seen);
+  }
+  return { byGroup, byRegion, allTally };
+}
+
+function regionStatusFromTally(tally) {
+  if (!tally || tally.total === 0) return 'unknown';
+  if (tally.seen === 0) return 'none';
+  if (tally.seen === tally.total) return 'all';
+  return 'some';
+}
+
+function renderRegionFilter(session = currentSession()) {
   if (!ui.regionFilter) return;
   const { hasGroups, regions } = regionFilterOptions();
 
@@ -969,6 +1026,8 @@ function renderRegionFilter() {
   }
   ui.regionFilter.classList.remove('hidden');
   ui.regionFilter.innerHTML = '';
+
+  const { byGroup, byRegion, allTally } = regionSeenTallies(session);
 
   const groupRow = document.createElement('div');
   groupRow.className = 'region-filter__row';
@@ -981,6 +1040,7 @@ function renderRegionFilter() {
     label: hasGroups ? 'All regions' : 'All',
     count: locatedObserverCount,
     inferredCount: inferredObserverCount,
+    status: regionStatusFromTally(allTally),
     onClick: () => {
       state.selectedRegionGroup = null;
       state.selectedRegion = null;
@@ -996,6 +1056,7 @@ function renderRegionFilter() {
         label: entry.group,
         count: entry.count,
         inferredCount: entry.inferredCount || 0,
+        status: regionStatusFromTally(byGroup.get(entry.group)),
         onClick: () => {
           state.selectedRegionGroup = entry.group;
           state.selectedRegion = null;
@@ -1024,6 +1085,7 @@ function renderRegionFilter() {
         label: `All ${selectedGroup.group}`,
         count: selectedGroup.count,
         inferredCount: selectedGroup.inferredCount || 0,
+        status: regionStatusFromTally(byGroup.get(selectedGroup.group)),
         onClick: () => {
           state.selectedRegion = null;
           applyRegionSelection();
@@ -1037,6 +1099,7 @@ function renderRegionFilter() {
         active: state.selectedRegion === region.name,
         label: region.name,
         count: region.count,
+        status: regionStatusFromTally(byRegion.get(region.name)),
         onClick: () => {
           state.selectedRegion = region.name;
           if (!state.selectedRegionGroup && hasGroups) {
@@ -1068,30 +1131,43 @@ function regionFilterOptions(snapshot = state.snapshot) {
   return { hasGroups, regions };
 }
 
-function createRegionButton({ className, active, label, count, inferredCount = 0, onClick }) {
+function createRegionButton({
+  className, active, label, count, inferredCount = 0, status = 'unknown', onClick,
+}) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = `region-btn ${className}${active ? ' active' : ''}`;
+
+  const total = (Number.isFinite(count) ? count : 0) + (Number.isFinite(inferredCount) ? inferredCount : 0);
+
+  if (total > 0) {
+    const dotEl = document.createElement('span');
+    dotEl.className = `region-btn__status region-btn__status--${status}`;
+    dotEl.setAttribute('aria-hidden', 'true');
+    dotEl.title = {
+      all: 'All observers in this region heard the message.',
+      some: 'Some observers in this region heard the message.',
+      none: 'No observers in this region heard the message.',
+      unknown: 'No results yet.',
+    }[status];
+    btn.appendChild(dotEl);
+  }
 
   const labelEl = document.createElement('span');
   labelEl.textContent = label;
   btn.appendChild(labelEl);
 
-  if (Number.isFinite(count) && count > 0) {
+  // The mapped/uplink-inferred split is an implementation detail (whether an
+  // observer has coordinates), not something meaningful to a region count, so
+  // both fold into one total. The title still discloses the split on hover.
+  if (total > 0) {
     const countEl = document.createElement('span');
     countEl.className = 'region-btn__count';
-    countEl.textContent = String(count);
+    countEl.textContent = String(total);
+    if (inferredCount > 0) {
+      countEl.title = `${total} observer${total === 1 ? '' : 's'} total: ${count} mapped by coordinates, ${inferredCount} grouped by uplink code only (no map marker, no Regions Reached credit, but scored the same).`;
+    }
     btn.appendChild(countEl);
-  }
-
-  // Observers placed in this group by their uplink code rather than by
-  // coordinates. Shown as a separate +N so the mapped count stays honest.
-  if (Number.isFinite(inferredCount) && inferredCount > 0) {
-    const inferredEl = document.createElement('span');
-    inferredEl.className = 'region-btn__count region-btn__count--inferred';
-    inferredEl.textContent = `+${inferredCount}`;
-    inferredEl.title = `${inferredCount} observer${inferredCount === 1 ? '' : 's'} grouped by uplink code - scored like any other, but no coordinates so no map marker and no Regions Reached credit`;
-    btn.appendChild(inferredEl);
   }
 
   btn.addEventListener('click', onClick);
@@ -1136,6 +1212,19 @@ function reconcileRegionSelection(snapshot) {
 // single receipt. Nothing in the UI can narrow the target now.
 function applyRegionSelection() {
   render();
+}
+
+// Human label for the active region filter, or null when nothing is filtered.
+// Used to word the map note and empty state so a narrowed view never reads as
+// missing data. Scoring is server-side and unaffected.
+function activeRegionScopeLabel() {
+  if (state.selectedRegion) {
+    return state.selectedRegion;
+  }
+  if (state.selectedRegionGroup) {
+    return state.selectedRegionGroup;
+  }
+  return null;
 }
 
 // Visibility only. Uplink-inferred observers have a regionGroup but no county, so
@@ -1191,15 +1280,22 @@ function observerHashModeNote(observer) {
   return `${observerHashBytes(observer)}-byte path`;
 }
 
-function renderObservers(session) {
-  renderRegionFilter();
-
+// The one roster the reports list is built from, and the only one now: the
+// Observers chip panel that used to be the second view of this set has been
+// deleted. It previously lived inside renderObservers while renderReceipts built
+// its list from session.receipts instead, so the two could disagree on both
+// membership and per-observer detail. A receipt is now an attribute of a roster
+// row, not the thing that creates the row.
+//
+// Every row carries its own region and position, so nothing downstream needs to
+// re-look-up observerDirectory() to work out what an observer is.
+function mergedObserverRoster(session) {
   const expected = Array.isArray(session?.expectedObservers)
     ? session.expectedObservers.filter((observer) => observer?.key)
     : [];
   const seenByKey = new Map(expected.map((observer) => [observer.key, Boolean(observer.seen)]));
-  // With no session yet the panel previews what the next code will target, so a
-  // cold load shows the roster instead of an empty box.
+  // With no session yet this previews what the next code will target, so a cold
+  // load shows the roster instead of an empty box.
   const targeted = new Set(
     expected.length > 0 ? expected.map((observer) => observer.key) : defaultObserverKeys(),
   );
@@ -1220,55 +1316,16 @@ function renderObservers(session) {
     }
     return observerDisplayLabel(left).localeCompare(observerDisplayLabel(right));
   });
+  return { all, targeted, seenByKey };
+}
 
-  if (all.length === 0) {
-    ui.observerAllowlistNote.textContent = 'No observers yet.';
-    ui.expectedObservers.innerHTML =
-      '<div class="empty-state compact">Observers appear as metadata and packets arrive.</div>';
-    return;
+// Heard / not heard / not scored, decided from the roster alone so both lists
+// answer the question the same way.
+function observerHeardState(observer, targeted, seenByKey) {
+  if (!targeted.has(observer.key)) {
+    return 'unscored';
   }
-
-  const rows = observersMatchingRegionFilter(all);
-  const baseNote = observerTargetSummary();
-  ui.observerAllowlistNote.textContent = rows.length === all.length
-    ? baseNote
-    // "of N listed" rather than a bare N, because the sentence above counts the
-    // scoring target and the list also carries observers that are not in it.
-    : `${baseNote} Region filter showing ${rows.length} of ${all.length} listed.`;
-
-  if (rows.length === 0) {
-    ui.expectedObservers.innerHTML =
-      '<div class="empty-state compact">No observers in this region. The region chips change what is listed here; they do not change what this code is scored against.</div>';
-    return;
-  }
-
-  ui.expectedObservers.innerHTML = '';
-  for (const observer of rows) {
-    const inTarget = targeted.has(observer.key);
-    const seen = Boolean(seenByKey.get(observer.key));
-    const status = !inTarget ? 'Not Scored' : (seen ? 'Seen' : 'Not Seen');
-    const item = document.createElement('div');
-    item.className = `observer-pill ${inTarget ? (seen ? 'seen' : 'waiting') : 'untargeted'}`
-      + `${observer.regionInferred ? ' unlocated' : ''}`;
-    if (!inTarget) {
-      item.title = 'Not heard inside the active window, so this code is not scored against it.';
-    } else if (observer.regionInferred) {
-      item.title = 'Group inferred from the uplink gateway code because this observer publishes no position. It is scored like any other observer, but it cannot appear on the coverage map and does not count toward Regions Reached.';
-    }
-    item.innerHTML = `
-      <div class="observer-main">
-        <strong class="observer-label">${escapeHtml(observerDisplayLabel(observer))}</strong>
-        <div class="small-note observer-hash">${escapeHtml(observer.hash || '--')}</div>
-        <div class="small-note observer-detail">${escapeHtml(observerDetailLine(observer))}${
-          observerHashModeNote(observer)
-            ? ` \u00b7 <span class="observer-detail__mode">${escapeHtml(observerHashModeNote(observer))}</span>`
-            : ''
-        }</div>
-      </div>
-      <span class="status">${status}</span>
-    `;
-    ui.expectedObservers.appendChild(item);
-  }
+  return seenByKey.get(observer.key) ? 'heard' : 'unheard';
 }
 
 function applySiteBranding(snapshot) {
@@ -1355,7 +1412,15 @@ function mapKnownObservers(session) {
   const seenKeys = new Set(
     Array.isArray(session?.receipts) ? session.receipts.map((receipt) => receipt.observerKey) : [],
   );
+  // The region filter now governs the map as well as the lists. Region is read
+  // from the merged directory record rather than from `observer`, because the
+  // 'expected' scope above spreads session.expectedObservers last and those
+  // entries can carry a null region that would shadow the directory value.
   return source
+    .filter((observer) => {
+      const regionRecord = mergedDirectory.get(observer.key) || observer;
+      return observersMatchingRegionFilter([regionRecord]).length > 0;
+    })
     .filter((observer) => {
       const lat = Number(observer.lat);
       const lon = Number(observer.lon);
@@ -1432,13 +1497,29 @@ function markerIcon(observer) {
 }
 
 function renderObserverMap(session) {
+  // The region filter sits above this map and scopes the map, the observer list
+  // and the reports list together, so it renders here rather than inside any one
+  // of the panels it governs.
+  renderRegionFilter(session);
+
   const locatedObservers = mapKnownObservers(session);
   const mapInstance = ensureObserverMap();
+  const regionScope = activeRegionScopeLabel();
 
-  ui.mapObserverNote.textContent = locatedObservers.length > 0
-    ? `${locatedObservers.filter((observer) => observer.seen).length}/${locatedObservers.length} mapped observers reached.`
-    : 'No observer coordinates yet. The map stays live and will populate as coordinates arrive.';
-  ui.mapEmpty.classList.toggle('hidden', locatedObservers.length > 0);
+  if (locatedObservers.length > 0) {
+    const reached = locatedObservers.filter((observer) => observer.seen).length;
+    ui.mapObserverNote.textContent = regionScope
+      ? `${reached}/${locatedObservers.length} mapped observers reached in ${regionScope}.`
+      : `${reached}/${locatedObservers.length} mapped observers reached.`;
+  } else if (regionScope) {
+    ui.mapObserverNote.textContent = `No mapped observers in ${regionScope}.`;
+  } else {
+    ui.mapObserverNote.textContent =
+      'No observer coordinates yet. The map stays live and will populate as coordinates arrive.';
+  }
+  // A region with no located observers is a filter result, not missing data, so
+  // it must not show the "we have not learned coordinates yet" explainer.
+  ui.mapEmpty.classList.toggle('hidden', locatedObservers.length > 0 || Boolean(regionScope));
 
   if (!mapInstance || !window.L) {
     return;
@@ -1478,16 +1559,21 @@ function renderObserverMap(session) {
     }
     marker.bindPopup(`
       <strong>${escapeHtml(observer.label)}</strong><br>
-      ${observer.seen ? 'Seen by this check' : 'Not seen by this check'}<br>
+      ${observer.seen ? 'Heard by this check' : 'Not heard by this check'}<br>
       ${escapeHtml(observer.hash || '--')} · ${escapeHtml(observer.shortKey)}
     `);
   }
 
+  // boundsKey is the observer key list, so narrowing the region filter changes it
+  // and the map refits to the filtered subset for free.
   const boundsKey = locatedObservers.map((observer) => observer.key).join('|');
   if (bounds.length > 0 && boundsKey !== state.map.boundsKey) {
     mapInstance.fitBounds(bounds, { padding: [26, 26], maxZoom: 10 });
     state.map.boundsKey = boundsKey;
-  } else if (bounds.length === 0 && state.map.boundsKey !== '__empty__') {
+  } else if (bounds.length === 0 && !regionScope && state.map.boundsKey !== '__empty__') {
+    // Only reset to the world view when there is genuinely nothing to show.
+    // Filtering to a region with no coordinates must not yank the viewport out
+    // to zoom 2 - the user is still looking at the area they selected.
     mapInstance.setView([20, 0], 2);
     state.map.boundsKey = '__empty__';
   }
@@ -1572,17 +1658,315 @@ function receiptArrivalMarkup(arrival) {
   `;
 }
 
+// Hops for one receipt, newest serialization first. Older cached or shared
+// payloads predate pathHops and carry only the raw hashes, so fall back to those
+// rather than rendering an empty path.
+function receiptPathHopList(receipt) {
+  if (Array.isArray(receipt?.pathHops) && receipt.pathHops.length > 0) {
+    return receipt.pathHops;
+  }
+  return (Array.isArray(receipt?.path) ? receipt.path : [])
+    .filter(Boolean)
+    .map((hash) => ({
+      hash: String(hash), label: String(hash), resolved: false, hasLocation: false, isTerminal: false,
+    }));
+}
+
+function receiptHopIsNamed(hop) {
+  return Boolean(hop?.resolved) && hop.label !== hop.hash;
+}
+
+// Shared by the card and the drawer so both name the same repeaters.
+function receiptPathMarkup(receipt) {
+  const hops = receiptPathHopList(receipt);
+  if (hops.length === 0) {
+    return '<span class="receipt-path__hop receipt-path__hop--empty">No path data</span>';
+  }
+  return hops
+    .map((hop) => {
+      const named = receiptHopIsNamed(hop);
+      return `<span class="receipt-path__hop${named ? '' : ' receipt-path__hop--unresolved'}"${
+        named ? ` title="${escapeHtml(`${hop.label} \u00b7 ${hop.hash}`)}"` : ' title="This hash does not match exactly one known node, so the repeater cannot be named."'
+      }><span class="receipt-path__name">${escapeHtml(hop.label)}</span>${
+        named ? `<span class="receipt-path__hash">${escapeHtml(hop.hash)}</span>` : ''
+      }</span>`;
+    })
+    .join('');
+}
+
+// Plain-text form for the drawer's monospace blocks.
+function receiptPathText(receipt) {
+  const hops = receiptPathHopList(receipt);
+  if (hops.length === 0) {
+    return 'No path data';
+  }
+  return hops
+    .map((hop) => (receiptHopIsNamed(hop) ? `${hop.label} (${hop.hash})` : hop.hash))
+    .join(' \u2192 ');
+}
+
+// One leg per line, so a multi-hop estimate can be read hop by hop instead of as
+// one wrapped paragraph.
+function receiptDistanceMarkup(receipt) {
+  const distanceText = String(receipt?.pathDistanceText || '').trim();
+  const segments = Array.isArray(receipt?.pathDistanceSegments) ? receipt.pathDistanceSegments : [];
+  const note = String(receipt?.pathDistanceNote || '').trim();
+  if (!distanceText) {
+    // State why there is no number rather than borrowing an unrelated one.
+    return note
+      ? `<div class="receipt-distance receipt-distance--unknown"><span>${escapeHtml(note)}</span></div>`
+      : '';
+  }
+  const legs = segments
+    .map((segment) => `
+        <span class="receipt-distance__leg">
+          <span class="receipt-distance__leg-route">${escapeHtml(`${segment.fromLabel} to ${segment.toLabel}`)}</span>
+          <span class="receipt-distance__leg-value">${escapeHtml(String(segment.distanceText || ''))}${
+      segment.estimated
+        ? escapeHtml(` estimated over ${segment.skippedHopCount} unknown hop${segment.skippedHopCount === 1 ? '' : 's'}`)
+        : ''
+    }</span>
+        </span>
+      `)
+    .join('');
+  return `
+        <div class="receipt-distance">
+          <strong>Estimated path ${escapeHtml(distanceText)}</strong>
+          ${legs || '<span>Distance estimated from known node positions.</span>'}
+        </div>
+      `;
+}
+
+// The count on this control is the point of it: "Not heard 12" answers "who is
+// missing" without scrolling to the end of the list, which is the one thing the
+// observer chips did better than a list ordered by arrival.
+function renderReceiptHeardFilter(heardCount, unheardCount) {
+  if (!ui.receiptsFilter) {
+    return;
+  }
+  const total = heardCount + unheardCount;
+  if (total === 0) {
+    ui.receiptsFilter.classList.add('hidden');
+    ui.receiptsFilter.innerHTML = '';
+    return;
+  }
+  ui.receiptsFilter.classList.remove('hidden');
+  ui.receiptsFilter.innerHTML = '';
+
+  const options = [
+    {
+      key: 'all',
+      label: 'All',
+      count: total,
+      status: unheardCount === 0 ? 'all' : (heardCount === 0 ? 'none' : 'some'),
+      title: 'Every observer in this view, heard or not.',
+    },
+    {
+      key: 'heard',
+      label: 'Heard',
+      count: heardCount,
+      status: 'all',
+      title: 'Only observers that reported this message.',
+    },
+    {
+      key: 'unheard',
+      label: 'Not heard',
+      count: unheardCount,
+      status: 'none',
+      title: 'Only observers that did not report this message.',
+    },
+  ];
+
+  for (const option of options) {
+    const active = state.receiptHeardFilter === option.key;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `region-btn receipts-filter__btn${active ? ' active' : ''}`;
+    btn.setAttribute('aria-pressed', String(active));
+    btn.title = option.title;
+
+    const dot = document.createElement('span');
+    // A zero count has no status to report, so it goes gray rather than claiming
+    // green for "nothing was heard".
+    dot.className = `region-btn__status region-btn__status--${option.count === 0 ? 'unknown' : option.status}`;
+    dot.setAttribute('aria-hidden', 'true');
+    btn.appendChild(dot);
+
+    const label = document.createElement('span');
+    label.textContent = option.label;
+    btn.appendChild(label);
+
+    const count = document.createElement('span');
+    count.className = 'region-btn__count';
+    count.textContent = String(option.count);
+    btn.appendChild(count);
+
+    btn.addEventListener('click', () => {
+      state.receiptHeardFilter = option.key;
+      render();
+    });
+    ui.receiptsFilter.appendChild(btn);
+  }
+}
+
 function renderReceipts(session) {
-  const receipts = Array.isArray(session?.receipts) ? session.receipts : [];
+  const allReceipts = Array.isArray(session?.receipts) ? session.receipts : [];
   ui.receipts.innerHTML = '';
-  ui.receiptsEmpty.classList.toggle('hidden', receipts.length > 0);
 
-  const arrivals = receiptArrivalIndex(receipts);
+  // Roster framing, inherited from the deleted Observers panel. Set before the
+  // no-session guard so it is populated on a cold load: this sentence describes
+  // the scoring target, which exists whether or not a code has been sent. The
+  // "Region filter showing N of M listed" suffix it used to carry is gone - the
+  // narrowing note at the end of the list already says that, and saying it twice
+  // in one panel was the redundancy that made merging worth doing.
+  ui.observerAllowlistNote.textContent = observerTargetSummary();
 
-  for (const receipt of receipts) {
+  // With no session there is nothing to report on yet. The roster could be
+  // rendered as all-not-heard here, but a wall of empty cards before a code has
+  // even been sent is noise.
+  if (!session) {
+    renderReceiptHeardFilter(0, 0);
+    ui.receiptsEmpty.classList.remove('hidden');
+    ui.receiptsEmpty.textContent = 'No observer reports yet.';
+    return;
+  }
+
+  // One row per rostered observer with its receipt attached when there is one,
+  // rather than one row per receipt. This is what lets the list say "not heard"
+  // at all, and it means a row can no longer vanish because its observer fell
+  // out of observerDirectory(): the roster row carries its own region.
+  const receiptByKey = new Map(allReceipts.map((receipt) => [receipt.observerKey, receipt]));
+  const { all, targeted, seenByKey } = mergedObserverRoster(session);
+  const heardStateOf = (observer) => observerHeardState(observer, targeted, seenByKey);
+
+  // Arrival order is a fact about the session, so it stays computed over every
+  // receipt - a filtered view still says "2nd of 26", not "1st of 4".
+  const arrivals = receiptArrivalIndex(allReceipts);
+
+  // Visibility only, and now tested against the roster record itself rather than
+  // a directory entry that may be missing.
+  const inRegion = observersMatchingRegionFilter(all);
+  const heardCount = inRegion.filter((observer) => heardStateOf(observer) === 'heard').length;
+  renderReceiptHeardFilter(heardCount, inRegion.length - heardCount);
+
+  const groupRank = { heard: 0, unheard: 1, unscored: 2 };
+  const rows = inRegion
+    .filter((observer) => {
+      if (state.receiptHeardFilter === 'heard') {
+        return heardStateOf(observer) === 'heard';
+      }
+      if (state.receiptHeardFilter === 'unheard') {
+        return heardStateOf(observer) !== 'heard';
+      }
+      return true;
+    })
+    // Heard first in arrival order, because that ordering is the story of the
+    // packet spreading outwards. Not heard next, then not scored, each
+    // alphabetical: neither group has an arrival time to sort on.
+    .sort((left, right) => {
+      const leftState = heardStateOf(left);
+      const byGroup = groupRank[leftState] - groupRank[heardStateOf(right)];
+      if (byGroup !== 0) {
+        return byGroup;
+      }
+      if (leftState === 'heard') {
+        return (arrivals.byKey.get(left.key)?.order || 0) - (arrivals.byKey.get(right.key)?.order || 0);
+      }
+      return observerDisplayLabel(left).localeCompare(observerDisplayLabel(right));
+    });
+
+  ui.receiptsEmpty.classList.toggle('hidden', rows.length > 0);
+  // Distinguish "nothing arrived" from "nothing arrived here" from "the toggle
+  // is hiding everything", otherwise an empty list reads as a failed session.
+  if (all.length === 0) {
+    ui.receiptsEmpty.textContent = 'No observers yet.';
+  } else if (inRegion.length === 0) {
+    ui.receiptsEmpty.textContent = 'No observers in this region. The region chips change what is listed here; they do not change what this code is scored against.';
+  } else if (state.receiptHeardFilter === 'unheard') {
+    ui.receiptsEmpty.textContent = 'Every observer in this view heard the message.';
+  } else {
+    ui.receiptsEmpty.textContent = 'No observer in this view heard the message.';
+  }
+
+  // Say so when the list is narrowed, otherwise four cards out of thirty-eight
+  // reads as a session that only ever targeted four observers.
+  //
+  // The heard count needs its own denominator and scope. "Showing 12 of 38
+  // observers, 26 heard" was wrong in the Not heard view: it put 26 next to 12
+  // rows of which none were heard, reading as though 26 of the 12 shown had
+  // heard. The heard tally describes the region, not the rows on screen.
+  if (rows.length > 0 && rows.length < all.length) {
+    const scope = activeRegionScopeLabel();
+    const note = document.createElement('p');
+    note.className = 'small-note receipts-filter-note';
+    note.textContent = `Showing ${rows.length} of ${all.length} observers. `
+      + `${heardCount} of ${inRegion.length} heard${scope ? ` in ${scope}` : ''}.`;
+    ui.receipts.appendChild(note);
+  }
+
+  for (const observer of rows) {
+    const receipt = receiptByKey.get(observer.key) || null;
+    const heardState = heardStateOf(observer);
     const card = document.createElement('article');
-    card.className = 'receipt-card';
-    card.dataset.observerKey = receipt.observerKey;
+    card.className = `receipt-card${receipt ? '' : ' receipt-card--quiet'}`;
+    // Only a receipt-backed card has a drawer to open - without a receipt the
+    // drawer lookup resolves to null. Leaving the attribute off keeps the click
+    // handler's `.receipt-card[data-observer-key]` selector from matching, so a
+    // quiet card is not falsely clickable.
+    if (receipt) {
+      card.dataset.observerKey = observer.key;
+    }
+
+    const statusTone = heardState === 'heard' ? 'all' : (heardState === 'unheard' ? 'none' : 'unknown');
+    const statusTitle = {
+      heard: 'Heard by this check',
+      unheard: 'Not heard by this check',
+      unscored: 'Not heard inside the active window, so this code is not scored against it.',
+    }[heardState];
+    // Textual, not just a coloured dot, so the state is available to a screen
+    // reader. The heard card keeps its arrival label in the same slot.
+    const stateLabel = heardState === 'heard'
+      ? (arrivals.byKey.get(observer.key)?.orderLabel || '')
+      : (heardState === 'unheard' ? 'Not heard' : 'Not scored');
+    // Prefer the receipt's own hash width where there is a receipt, so heard
+    // cards render exactly as before; fall back to the roster otherwise.
+    const labelText = receipt ? receipt.observerLabel : observerDisplayLabel(observer);
+    const hashText = receipt ? receiptHashPrefix(receipt) : (observer.hash || '--');
+    const shortText = receipt ? receipt.observerShortKey : (observer.shortKey || '--');
+    // From the roster, not from a directory lookup, so this line can no longer
+    // silently disappear for an observer the directory has dropped.
+    const detailLine = observerDetailLine(observer);
+    const modeNote = observerHashModeNote(observer);
+
+    const head = `
+      <div class="receipt-head">
+        <div class="receipt-ident">
+          <h3 class="receipt-title">
+            <span class="region-btn__status region-btn__status--${statusTone}" aria-hidden="true" title="${escapeHtml(statusTitle)}"></span>
+            ${escapeHtml(labelText)}
+          </h3>
+          <div class="receipt-hash">${escapeHtml(hashText)} · ${escapeHtml(shortText)}</div>
+          ${detailLine
+            ? `<div class="small-note observer-detail">${escapeHtml(detailLine)}${
+              modeNote
+                ? ` \u00b7 <span class="observer-detail__mode">${escapeHtml(modeNote)}</span>`
+                : ''
+            }</div>`
+            : ''}
+        </div>
+        <div class="small-note receipt-state">${escapeHtml(stateLabel)}</div>
+      </div>
+    `;
+
+    // A not-heard observer has no arrival time, no RSSI/SNR, no latency and no
+    // path. Rendering those as 0% or n/a would invent measurements that do not
+    // exist, so the quiet card stops after the head.
+    if (!receipt) {
+      card.innerHTML = head;
+      ui.receipts.appendChild(card);
+      continue;
+    }
+
     const arrival = arrivals.byKey.get(receipt.observerKey) || {
       orderLabel: '',
       offsetLabel: 'Time not recorded',
@@ -1593,59 +1977,22 @@ function renderReceipts(session) {
     const arrivalMarkup = receiptArrivalMarkup(arrival);
     const signal = receiptSignalScore(receipt);
     const signalTone = scoreTone(signal);
-    const pathMarkup = receipt.path.length > 0
-      ? receipt.path.map((hop) => `<span>${escapeHtml(hop)}</span>`).join('')
-      : '<span>No path data</span>';
-    const distanceText = String(receipt.displayDistanceText || receipt.pathDistanceText || '').trim();
-    const distanceSource = String(receipt.displayDistanceSource || '').trim();
-    const distanceLabel = String(receipt.displayDistanceLabel || '').trim();
-    const distanceSegments = Array.isArray(receipt.pathDistanceSegments)
-      ? receipt.pathDistanceSegments
-      : [];
-    // One leg per line. Joining them with a middle dot ran a four-hop estimate
-    // into a single wrapped paragraph that could not be read hop by hop.
-    const segmentLines = distanceSegments
-      .map((segment) => `
-        <span class="receipt-distance__leg">
-          <span class="receipt-distance__leg-route">${escapeHtml(`${segment.fromLabel} to ${segment.toLabel}`)}</span>
-          <span class="receipt-distance__leg-value">${escapeHtml(String(segment.distanceText || ''))}${
-            segment.estimated
-              ? escapeHtml(` estimated over ${segment.skippedHopCount} unknown hop${segment.skippedHopCount === 1 ? '' : 's'}`)
-              : ''
-          }</span>
-        </span>
-      `)
-      .join('');
-    const distanceMarkup = distanceText
-      ? `
-        <div class="receipt-distance">
-          <strong>${distanceSource === 'observer-span' ? 'Observer span' : 'Estimated path'} ${escapeHtml(distanceText)}</strong>
-          ${distanceSource === 'observer-span'
-            ? `<span>${escapeHtml(distanceLabel || 'Estimated from receipt observer coordinates.')}</span>`
-            : segmentLines
-            || '<span>Distance estimated from known observer coordinates.</span>'}
-        </div>
-      `
-      : '';
+    const pathMarkup = receiptPathMarkup(receipt);
+    const distanceMarkup = receiptDistanceMarkup(receipt);
+    const distanceText = String(receipt.pathDistanceText || '').trim();
     const metrics = [
       receipt.rssi != null ? `RSSI ${receipt.rssi}` : '',
       receipt.snr != null ? `SNR ${receipt.snr}` : '',
       receipt.duration != null ? `${receipt.duration} ms` : '',
-      distanceText ? `${distanceSource === 'observer-span' ? 'Span' : 'Path'} ${distanceText}` : '',
+      distanceText ? `Path ${distanceText}` : '',
     ]
       .filter(Boolean)
       .join(' · ');
 
     card.innerHTML = `
-      <div class="receipt-head">
-        <div>
-          <h3 class="receipt-title">${escapeHtml(receipt.observerLabel)}</h3>
-          <div class="receipt-hash">${escapeHtml(receiptHashPrefix(receipt))} · ${escapeHtml(receipt.observerShortKey)}</div>
-        </div>
-        <div class="small-note">${escapeHtml(arrival.orderLabel)}</div>
-      </div>
+      ${head}
       <p class="receipt-meta">
-        Seen ${receipt.count} time${receipt.count === 1 ? '' : 's'}${metrics ? ` · ${metrics}` : ''}
+        Heard ${receipt.count} time${receipt.count === 1 ? '' : 's'}${metrics ? ` · ${metrics}` : ''}
       </p>
       ${arrivalMarkup}
       <div class="receipt-meter-grid">
@@ -1833,7 +2180,7 @@ function buildDrawerContent() {
                 ${mappedObservers.map((observer) => drawerListItem(
                   observer.label,
                   `${observer.lat}, ${observer.lon}`,
-                  `${observer.seen ? 'Seen by this check' : 'Not seen by this check'} · ${observer.hash || '--'}`,
+                  `${observer.seen ? 'Heard by this check' : 'Not heard by this check'} · ${observer.hash || '--'}`,
                 )).join('')}
               </div>
             </section>
@@ -1869,7 +2216,7 @@ function buildDrawerContent() {
                     <strong>${escapeHtml(receipt.observerLabel)}</strong>
                     <span>${escapeHtml(formatTime(receipt.firstSeenAt))}</span>
                     <code>${escapeHtml(receipt.messageHash || 'no-hash')}</code>
-                    <span>${escapeHtml((receipt.path || []).join(' -> ') || 'No path data')}</span>
+                    <span>${escapeHtml(receiptPathText(receipt))}</span>
                   </div>
                 `).join('')}
               </div>
@@ -1918,18 +2265,20 @@ function buildDrawerContent() {
           <section class="drawer-card">
             <h3>Receipt Metrics</h3>
             <div class="drawer-stat-grid">
-              ${drawerStat('First Seen', formatTime(receipt.firstSeenAt))}
-              ${drawerStat('Message Hash', receipt.messageHash || '--')}
+              ${drawerStat('First Heard', formatTime(receipt.firstSeenAt))}
+              ${drawerStat('Message Packet', receipt.messageHash || '--')}
               ${drawerStat('RSSI', receipt.rssi != null ? String(receipt.rssi) : 'n/a')}
               ${drawerStat('SNR', receipt.snr != null ? String(receipt.snr) : 'n/a')}
               ${drawerStat('Duration', receipt.duration != null ? `${receipt.duration} ms` : 'n/a')}
-              ${drawerStat('Distance', receipt.displayDistanceText || receipt.pathDistanceText || 'n/a')}
+              ${drawerStat('Path Distance', receipt.pathDistanceText || 'not estimated')}
               ${drawerStat('Packets', String(receipt.count))}
             </div>
           </section>
           <section class="drawer-card">
             <h3>Path Trace</h3>
-            <pre class="drawer-codeblock">${escapeHtml((receipt.path || []).join(' -> ') || 'No path data')}</pre>
+            <div class="receipt-path">${receiptPathMarkup(receipt)}</div>
+            ${receiptDistanceMarkup(receipt)}
+            <pre class="drawer-codeblock">${escapeHtml(receiptPathText(receipt))}</pre>
           </section>
         `,
       };
@@ -2046,7 +2395,6 @@ function render() {
     ui.channelName.textContent = channelLabel;
     ui.messagePreview.textContent = `Waiting for your ${channelLabel} message.`;
     ui.messagePreview.title = '';
-    renderObservers(null);
     renderObserverMap(null);
     renderReceipts(null);
     renderHistory(historySessions);
@@ -2120,7 +2468,6 @@ function render() {
   ui.messagePreview.title = session.messageBody || '';
 
   updateRing(healthRated ? session.healthPercent : 0, healthRated ? session.healthLabel : 'Waiting');
-  renderObservers(session);
   renderObserverMap(session);
   renderReceipts(session);
   renderHistory(historySessions);

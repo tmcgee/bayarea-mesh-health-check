@@ -50,6 +50,17 @@
   --poor: #f0708a;
   --poor-glow: rgba(240, 112, 138, 0.3);
 
+  /* Region status dot: literal green/yellow/red/gray, independent of the
+     good/fair/poor brand ramp above. Green is the site's own accent-2
+     (#198754, see header note) rather than a generic web green. */
+  --region-status-all: #198754;
+  --region-status-all-glow: rgba(25, 135, 84, 0.34);
+  --region-status-some: #e0a626;
+  --region-status-some-glow: rgba(224, 166, 38, 0.34);
+  --region-status-none: #dc3545;
+  --region-status-none-glow: rgba(220, 53, 69, 0.34);
+  --region-status-unknown: #5b6b85;
+
   --shadow: 0 24px 90px rgba(2, 6, 23, 0.45);
   --ring-color: var(--accent);
 }
