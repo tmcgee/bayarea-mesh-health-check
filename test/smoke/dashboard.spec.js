@@ -154,8 +154,17 @@ test('dashboard loads and creates a session code', async ({ page }) => {
   await expect(page.locator('#additional-info-label')).toHaveText('Show Additional Information');
   await page.locator('#additional-info-toggle').click();
   await expect(page.locator('#additional-info-label')).toHaveText('Hide Additional Information');
-  await expect(page.getByText('Who saw the message')).toBeVisible();
-  await expect(page.getByText('No observer reports yet.')).toBeVisible();
+  await expect(page.getByText('Observer Reports')).toBeVisible();
+  await expect(page.getByText('Heard and not heard')).toBeVisible();
+
+  // The roster is the list now, so a session that has heard nothing yet shows
+  // one not-heard row per rostered observer instead of the old "No observer
+  // reports yet." empty state. That string only survives for the no-session
+  // case. The counts come from the two observers this project pins.
+  await expect(page.locator('#receipts-empty')).toBeHidden();
+  await expect(page.locator('#receipts .receipt-card--quiet')).toHaveCount(2);
+  await expect(page.locator('#observer-allowlist-note')).toHaveText('2 observers.');
+  await expect(page.locator('#receipts-filter .region-btn')).toHaveCount(3);
 });
 
 test('the steps carry counter markers and every control wears one coat', async ({ page }) => {
@@ -227,7 +236,7 @@ test('share button uses the browser share API with the retained share link', asy
   expect(shareCalls[0].url).toMatch(/^http:\/\/127\.0\.0\.1:3091\/share\/[0-9a-f-]+$/i);
 });
 
-test('the observer list is read-only and the code survives opening it', async ({ page }) => {
+test('the merged report list is read-only and the code survives opening it', async ({ page }) => {
   await page.goto('/app');
 
   const sessionCode = page.locator('#session-code');
@@ -235,16 +244,13 @@ test('the observer list is read-only and the code survives opening it', async ({
   const initialCode = await sessionCode.textContent();
 
   await page.locator('#additional-info-toggle').click();
-  await expect(page.locator('#observer-targets')).toBeVisible();
+  await expect(page.locator('#observer-reports')).toBeVisible();
 
-  // The per-observer checkboxes were removed: every active observer is scored,
-  // so there is no selection to change and no reason to mint a new code. What
-  // is left is a read-only list of pills plus the region chips.
-  await expect(page.locator('#observer-targets input[type="checkbox"]')).toHaveCount(0);
-
-  const pills = page.locator('#expected-observers .observer-pill');
-  await expect(pills.first()).toBeVisible();
-  expect(await pills.count()).toBeGreaterThan(1);
+  // The standalone Observers panel is gone; its roster is now the tail of this
+  // list. There were never any per-observer checkboxes to change here, so
+  // opening the section must not mint a new code. What is left is a read-only
+  // list plus the heard filter and the roster note.
+  await expect(page.locator('#observer-reports input[type="checkbox"]')).toHaveCount(0);
   await expect(page.locator('#observer-allowlist-note')).toContainText('observers');
 
   await page.waitForTimeout(500);
@@ -447,7 +453,7 @@ test('escapes untrusted observer labels in timeline and map popups', async ({ pa
   );
   await expect(page.locator('#receipts')).toContainText('Evil Observer');
   await expect(page.locator('#receipts img')).toHaveCount(0);
-  await expect(page.locator('#observer-targets img')).toHaveCount(0);
+  await expect(page.locator('#observer-reports img')).toHaveCount(0);
 
   await page.locator('.leaflet-marker-icon').first().click();
   await expect(page.locator('.leaflet-popup-content')).toContainText('Evil Observer');
