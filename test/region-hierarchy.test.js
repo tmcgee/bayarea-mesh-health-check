@@ -47,8 +47,15 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
     features: [
       squareFeature('Alpha', 'North', 0, 0, 1, 1),
       squareFeature('Beta', 'North', 1, 0, 2, 1),
-      squareFeature('Gamma', 'South', 0, -1, 1, 0),
+      // Deliberately long decimals: the boundary endpoint rounds drawing
+      // geometry, while region detection keeps using the full precision.
+      squareFeature('Gamma', 'South', 0.1234567891, -1, 1, 0),
       squareFeature('Outside Census places', 'North', 0, 0, 3, 1),
+      // No observer ever falls inside Delta, but it belongs to a group that has
+      // one, so it forms part of that region's outline.
+      squareFeature('Delta', 'South', 5, 5, 6, 6),
+      // Epsilon's whole group is observerless, so none of it is ever served.
+      squareFeature('Epsilon', 'West', 9, 9, 10, 10),
     ],
   })}\n`, 'utf8');
 
@@ -152,6 +159,70 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
     const fallbackObserver = payload.observerDirectory.find((entry) => entry.key === observerKeys[3]);
     assert.equal(fallbackObserver?.region, 'Outside Census places');
     assert.equal(fallbackObserver?.regionGroup, 'North');
+
+    const boundaryResponse = await fetch(`${baseUrl}/api/region-boundaries`);
+    assert.equal(boundaryResponse.status, 200);
+    const boundaries = await boundaryResponse.json();
+    assert.equal(boundaries.type, 'FeatureCollection');
+
+    // One outline per region group, not per subregion. Only groups that hold
+    // observers are served, so West - a real group in the file with nobody
+    // inside it - is absent. This is what keeps a 32,656-feature regions file
+    // from being shipped to the browser.
+    assert.deepEqual(
+      boundaries.features.map((feature) => feature.properties.group),
+      ['North', 'South'],
+    );
+    // Properties carry the group only; nothing else from the source file reaches
+    // the client, and the subregion names are deliberately not exposed here
+    // because the outlines no longer represent subregions.
+    for (const feature of boundaries.features) {
+      assert.equal(feature.type, 'Feature');
+      assert.deepEqual(Object.keys(feature.properties), ['group']);
+      assert.equal(feature.geometry.type, 'MultiPolygon');
+    }
+
+    const ringsOf = (group) => boundaries.features
+      .find((feature) => feature.properties.group === group)
+      .geometry.coordinates.flat();
+
+    // Alpha (0,0)-(1,1) and Beta (1,0)-(2,1) are neighbours in North, so the
+    // border they share is dissolved away and they draw as one 0..2 rectangle.
+    const north = ringsOf('North');
+    const merged = north.find((ring) => ring.length === 7);
+    assert.ok(merged, 'the two adjacent North subregions merge into a single ring');
+    assert.deepEqual(
+      [...new Set(merged.map((point) => point.join(',')))].sort(),
+      ['0,0', '0,1', '1,0', '1,1', '2,0', '2,1'],
+    );
+    for (const ring of north) {
+      for (let i = 0; i < ring.length - 1; i += 1) {
+        const segment = [ring[i].join(','), ring[i + 1].join(',')].sort().join('>');
+        assert.notEqual(segment, '1,0>1,1', 'the shared Alpha/Beta border is not drawn');
+      }
+    }
+    // 'Outside Census places' overlaps rather than abuts its neighbours, so it
+    // has no border to cancel and stays a ring of its own.
+    assert.equal(north.length, 2);
+
+    // Delta holds no observers, but its group does, so the South outline covers
+    // it: an outline describes the region, not the coverage inside it.
+    const south = ringsOf('South');
+    assert.equal(south.length, 2);
+    assert.ok(
+      south.some((ring) => ring.every(([longitude]) => longitude >= 5)),
+      'an observerless subregion still forms part of its region outline',
+    );
+
+    const gammaRing = south.find((ring) => ring.some(([longitude]) => longitude < 5));
+    const gammaLongitudes = gammaRing.map(([longitude]) => longitude);
+    assert.ok(gammaLongitudes.includes(0.12346), 'drawing geometry is rounded to five decimals');
+    assert.ok(!gammaLongitudes.includes(0.1234567891), 'full precision is not shipped to the client');
+
+    // Region detection still uses the unrounded boundary: the Gamma observer at
+    // longitude 0.5 stays inside Gamma.
+    const gammaObserver = payload.observerDirectory.find((entry) => entry.key === observerKeys[2]);
+    assert.equal(gammaObserver?.region, 'Gamma');
   } finally {
     flushScheduledWrites();
     await new Promise((resolve, reject) => {

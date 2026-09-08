@@ -4,9 +4,10 @@ const MAP_TEST_KEYS = {
   target: '1111111111111111111111111111111111111111111111111111111111111111',
   outside: '2222222222222222222222222222222222222222222222222222222222222222',
   zero: '3333333333333333333333333333333333333333333333333333333333333333',
+  neighbour: '4444444444444444444444444444444444444444444444444444444444444444',
 };
 
-function mapObserver(key, label, lat, lon, region) {
+function mapObserver(key, label, lat, lon, region, regionGroup = null) {
   return {
     key,
     hash: key.slice(0, 2),
@@ -17,7 +18,7 @@ function mapObserver(key, label, lat, lon, region) {
     lon,
     hasLocation: true,
     region,
-    regionGroup: null,
+    regionGroup,
     isActive: true,
     isRetained: true,
     packetCount: 1,
@@ -44,6 +45,30 @@ function mapTiles(cartoBasemapKey = 'test-carto-key') {
     darkBasemapAvailable: Boolean(cartoBasemapKey),
     cartoKeyConfigured: Boolean(cartoBasemapKey),
   };
+}
+
+// Mirrors the grouped hierarchy the server derives from the directory. Observers
+// without a regionGroup produce no hierarchy at all, which is what the older
+// map tests below rely on.
+function regionHierarchy(observerDirectory) {
+  const groups = new Map();
+  observerDirectory.forEach((observer) => {
+    if (!observer.regionGroup) {
+      return;
+    }
+    if (!groups.has(observer.regionGroup)) {
+      groups.set(observer.regionGroup, { group: observer.regionGroup, count: 0, inferredCount: 0, regions: [] });
+    }
+    const entry = groups.get(observer.regionGroup);
+    entry.count += 1;
+    const region = entry.regions.find((item) => item.name === observer.region);
+    if (region) {
+      region.count += 1;
+    } else if (observer.region) {
+      entry.regions.push({ name: observer.region, count: 1, packetCount: 1 });
+    }
+  });
+  return [...groups.values()];
 }
 
 function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key') {
@@ -78,12 +103,33 @@ function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key') {
       distanceUnit: 'mi',
     },
     availableRegions: [...new Set(observerDirectory.map((observer) => observer.region).filter(Boolean))],
-    regionHierarchy: [],
+    regionHierarchy: regionHierarchy(observerDirectory),
     results: { retentionSeconds: 604800 },
   };
 }
 
-function mapSession(expectedObservers) {
+// A square boundary for the region outline layer, shaped like the payload
+// /api/region-boundaries serves: one feature per region group, carrying the
+// group name and nothing else.
+function boundaryFeature(group, west, south, east, north) {
+  return {
+    type: 'Feature',
+    properties: { group },
+    geometry: {
+      type: 'MultiPolygon',
+      coordinates: [[[
+        [west, south],
+        [east, south],
+        [east, north],
+        [west, north],
+        [west, south],
+      ]]],
+    },
+  };
+}
+
+function mapSession(expectedObservers, seenKeys = []) {
+  const seen = new Set(seenKeys);
   const now = Date.now();
   return {
     id: 'map-session',
@@ -105,7 +151,7 @@ function mapSession(expectedObservers) {
       key: observer.key,
       hash: observer.hash,
       label: observer.label,
-      seen: false,
+      seen: seen.has(observer.key),
     })),
     receipts: [],
   };
@@ -116,6 +162,7 @@ async function openMockMapSession(
   observerDirectory,
   expectedObservers,
   cartoBasemapKey = 'test-carto-key',
+  { seenKeys = [], boundaries = null } = {},
 ) {
   await page.addInitScript(() => {
     window.WebSocket = class {
@@ -129,7 +176,11 @@ async function openMockMapSession(
   }));
   await page.route('**/api/sessions/map-session', (route) => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify(mapSession(expectedObservers)),
+    body: JSON.stringify(mapSession(expectedObservers, seenKeys)),
+  }));
+  await page.route('**/api/region-boundaries', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ type: 'FeatureCollection', features: boundaries || [] }),
   }));
   await page.goto('/share/map-session');
 }
@@ -265,6 +316,69 @@ test('coverage map only plots observers targeted by the selected region', async 
 
   await expect(page.locator('#map-observer-note')).toHaveText('0/1 mapped observers reached.');
   await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
+});
+
+test('region outlines draw under the markers, colour by status, and follow the region filter', async ({ page }) => {
+  // Two regions, and the first has two subregions so the drill-down below has
+  // something to narrow to.
+  const heard = mapObserver(MAP_TEST_KEYS.target, 'Heard Observer', 42.3601, -71.0589, 'Boston', 'North America');
+  const quietNear = mapObserver(MAP_TEST_KEYS.neighbour, 'Quiet Neighbour', 42.65, -71.3, 'Lowell', 'North America');
+  const quietFar = mapObserver(MAP_TEST_KEYS.outside, 'Quiet Observer', 48.8566, 2.3522, 'Paris', 'Europe');
+  const observers = [heard, quietNear, quietFar];
+
+  await openMockMapSession(page, observers, observers, 'test-carto-key', {
+    seenKeys: [heard.key],
+    boundaries: [
+      boundaryFeature('North America', -71.5, 42, -70.5, 42.7),
+      boundaryFeature('Europe', 2, 48.5, 2.7, 49.2),
+    ],
+  });
+
+  const outlines = page.locator('#observer-map path.region-shape');
+  await expect(outlines).toHaveCount(2);
+
+  // One outline per region, matching the region chip dots: the region where
+  // something was heard is part-green, the silent region is red.
+  await expect(page.locator('#observer-map path[data-region-group="North America"]')).toHaveClass(/region-shape--some/);
+  await expect(page.locator('#observer-map path[data-region-group="Europe"]')).toHaveClass(/region-shape--none/);
+
+  // Fill is off, so the interior of a region never paints over the basemap or
+  // becomes a hit target.
+  await expect(outlines.first()).toHaveCSS('fill', 'none');
+
+  // The outlines live in their own pane between the tiles (200) and the markers
+  // (600), and that pane takes no pointer events, so observer taps are untouched.
+  const panes = await page.evaluate(() => ({
+    regions: getComputedStyle(document.querySelector('.leaflet-observerRegions-pane')).zIndex,
+    regionsPointerEvents: getComputedStyle(document.querySelector('.leaflet-observerRegions-pane')).pointerEvents,
+    markers: getComputedStyle(document.querySelector('.leaflet-marker-pane')).zIndex,
+    tiles: getComputedStyle(document.querySelector('.leaflet-tile-pane')).zIndex,
+  }));
+  expect(Number(panes.tiles)).toBeLessThan(Number(panes.regions));
+  expect(Number(panes.regions)).toBeLessThan(Number(panes.markers));
+  expect(panes.regionsPointerEvents).toBe('none');
+
+  // A marker still opens its popup with outlines on the map.
+  await page.locator('#observer-map .leaflet-marker-icon').first().click();
+  await expect(page.locator('.leaflet-popup-content')).toContainText('Heard Observer');
+
+  // Selecting a region leaves only that region's outline on the map.
+  await page.locator('.region-btn--group', { hasText: 'Europe' }).first().click();
+  await expect(outlines).toHaveCount(1);
+  await expect(page.locator('#observer-map path[data-region-group="Europe"]')).toHaveCount(1);
+  await expect(page.locator('#observer-map path[data-region-group="North America"]')).toHaveCount(0);
+
+  // Drilling into a subregion narrows the plotted observers but keeps the whole
+  // region outlined - the outline describes the region, not the selection.
+  await page.locator('.region-btn--group', { hasText: 'North America' }).first().click();
+  await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(2);
+  await page.locator('.region-btn--child', { hasText: 'Lowell' }).first().click();
+  await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
+  await expect(outlines).toHaveCount(1);
+  await expect(page.locator('#observer-map path[data-region-group="North America"]')).toHaveClass(/region-shape--some/);
+
+  await page.locator('.region-btn--all').first().click();
+  await expect(outlines).toHaveCount(2);
 });
 
 test('coverage map omits observers with 0,0 coordinates', async ({ page }) => {

@@ -105,6 +105,14 @@ const state = {
     tileSignature: '',
     markers: new Map(),
     boundsKey: '',
+    // Region boundary outlines: the fetched features, the region-name key they
+    // were fetched for, an in-flight key so a slow fetch is not repeated on
+    // every poll, and the drawn shapes with the status they were built for.
+    regionFeatures: [],
+    regionKey: '',
+    regionPendingKey: '',
+    regionPane: '',
+    regionShapes: new Map(),
   },
   drawer: {
     kind: '',
@@ -1496,6 +1504,120 @@ function markerIcon(observer) {
   });
 }
 
+// The set of regions whose outlines belong on the map, as a stable key. Outlines
+// are drawn per region group, so this keys off the groups the chips offer and
+// geometry is refetched exactly when a new region gains its first observer. A
+// directory with no groups at all yields an empty key and no outlines, which is
+// correct: there are no regions to draw.
+function regionBoundaryKey(snapshot = state.snapshot) {
+  const { regions } = regionFilterOptions(snapshot);
+  return regions.map((entry) => entry.group).filter(Boolean).sort().join('|');
+}
+
+async function ensureRegionBoundaries() {
+  const key = regionBoundaryKey();
+  if (!key) {
+    return;
+  }
+  if (key === state.map.regionKey || key === state.map.regionPendingKey) {
+    return;
+  }
+  state.map.regionPendingKey = key;
+  try {
+    const response = await fetch('/api/region-boundaries', { headers: { accept: 'application/json' } });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    state.map.regionFeatures = Array.isArray(payload?.features) ? payload.features : [];
+    state.map.regionKey = key;
+    // The fetch resolves after the render that asked for it, so draw now. The
+    // re-entered render finds key === regionKey and does not fetch again.
+    renderObserverMap(currentSession());
+  } catch {
+    // A missing, broken or unconfigured boundary file must not take the map with
+    // it. Leaving regionKey unset lets a later poll retry.
+    state.map.regionFeatures = [];
+  } finally {
+    state.map.regionPendingKey = '';
+  }
+}
+
+// A dedicated pane keeps the outlines strictly between the tiles and the
+// markers. Leaflet's defaults are tilePane 200, overlayPane 400, shadowPane 500,
+// markerPane 600; 350 therefore draws above the basemap but below every marker,
+// so an outline can never cover an observer point.
+function ensureRegionPane(mapInstance) {
+  if (state.map.regionPane) {
+    return state.map.regionPane;
+  }
+  const name = 'observerRegions';
+  const pane = mapInstance.createPane(name);
+  pane.style.zIndex = '350';
+  // Belt and braces alongside interactive:false below: the pane swallows no
+  // pointer events at all, so marker taps, popups and drag/zoom are untouched.
+  pane.style.pointerEvents = 'none';
+  state.map.regionPane = name;
+  return name;
+}
+
+// Geometry follows the region selection only, never the subregion selection:
+// picking a single county still shows the whole region it belongs to, while the
+// observer points inside narrow to that county. Selecting a subregion always
+// sets selectedRegionGroup too (renderRegionFilter fills in the parent), so the
+// outline stays put through a drill-down.
+function regionBoundaryVisible(properties) {
+  if (state.selectedRegionGroup) {
+    return properties?.group === state.selectedRegionGroup;
+  }
+  return true;
+}
+
+// Stroke colour lives in CSS (.region-shape--*) against the same custom
+// properties as the region filter dots, so the palette is defined once. Leaflet's
+// setStyle does not update className, so a status change rebuilds the shape
+// rather than restyling it - there are only a handful of outlines and a status
+// only moves when a session's results change.
+function renderRegionBoundaries(mapInstance, session) {
+  const features = Array.isArray(state.map.regionFeatures) ? state.map.regionFeatures : [];
+  // Coloured by the region's own tally, so an outline always agrees with the
+  // region chip above it rather than with the subregion chips beneath it.
+  const { byGroup } = regionSeenTallies(session);
+  const wanted = new Map();
+  for (const feature of features) {
+    const group = feature?.properties?.group;
+    if (!group || !regionBoundaryVisible(feature.properties)) continue;
+    wanted.set(group, { feature, status: regionStatusFromTally(byGroup.get(group)) });
+  }
+
+  for (const [group, entry] of state.map.regionShapes.entries()) {
+    const next = wanted.get(group);
+    if (!next || next.status !== entry.status) {
+      entry.shape.remove();
+      state.map.regionShapes.delete(group);
+    }
+  }
+
+  if (wanted.size === 0) {
+    return;
+  }
+  const pane = ensureRegionPane(mapInstance);
+  for (const [group, entry] of wanted.entries()) {
+    if (state.map.regionShapes.has(group)) continue;
+    const shape = window.L.geoJSON(entry.feature, {
+      pane,
+      interactive: false,
+      // Fill is off outright rather than transparent, so the interior paints
+      // nothing and cannot become a hit target.
+      style: { fill: false, className: `region-shape region-shape--${entry.status}` },
+    }).addTo(mapInstance);
+    // Name the drawn path so the outline set is identifiable from the DOM, which
+    // is what the smoke test asserts against.
+    shape.eachLayer((sub) => sub.getElement()?.setAttribute('data-region-group', group));
+    state.map.regionShapes.set(group, { shape, status: entry.status });
+  }
+}
+
 function renderObserverMap(session) {
   // The region filter sits above this map and scopes the map, the observer list
   // and the reports list together, so it renders here rather than inside any one
@@ -1536,6 +1658,11 @@ function renderObserverMap(session) {
       nextLayer.addTo(mapInstance);
     }
   }
+
+  // Outlines are drawn before the markers so the pane exists below them, and the
+  // fetch is fire-and-forget: it re-enters this function once geometry lands.
+  ensureRegionBoundaries();
+  renderRegionBoundaries(mapInstance, session);
 
   const activeKeys = new Set(locatedObservers.map((observer) => observer.key));
   for (const [key, marker] of state.map.markers.entries()) {

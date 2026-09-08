@@ -805,6 +805,182 @@ function loadRegionBoundaries() {
 }
 
 const regionBoundaries = loadRegionBoundaries();
+
+// Boundary geometry served to the map layer. One outline per region group, not
+// per subregion: the map is meant to show region shapes, and the subregion
+// chips filter which observers are plotted inside them.
+//
+// REGIONS_FILE is configurable and some bundled files are enormous
+// (regions/us-places.geojson carries 32,656 features, ~15 MB), so the client is
+// never handed the whole file: only the groups that actually have observers.
+// Coordinates are rounded to five decimals (~1 m) because this copy is for
+// drawing, not for point-in-polygon tests - deriveRegionInfo() keeps using the
+// unrounded geometry loaded above.
+const REGION_GEOMETRY_DECIMALS = 5;
+
+// A dissolved ring smaller than this fraction of its group's total ring area is
+// discarded as an artifact. Adjacent subregions in a group share a border, but
+// the shared vertices only cancel where both files agree exactly; along water
+// boundaries they often disagree slightly and leave a tiny closed sliver. In
+// the bundled Bay Area file the real rings are 235 km^2 and up while every
+// sliver is under 0.12 km^2, so the gap this has to straddle is four orders of
+// magnitude wide. The test is relative, not absolute, so it holds for a file
+// whose groups are towns rather than counties.
+const REGION_SLIVER_AREA_FRACTION = 1e-4;
+
+function roundCoordinates(value) {
+  if (Array.isArray(value)) {
+    return value.map(roundCoordinates);
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return value;
+  }
+  return Number(value.toFixed(REGION_GEOMETRY_DECIMALS));
+}
+
+function boundaryRings(geometry) {
+  if (!geometry) {
+    return [];
+  }
+  if (geometry.type === 'Polygon') {
+    return geometry.coordinates.filter(Array.isArray);
+  }
+  if (geometry.type === 'MultiPolygon') {
+    return geometry.coordinates.flat().filter(Array.isArray);
+  }
+  return [];
+}
+
+// Shoelace area in square degrees. Only ever compared against other rings from
+// the same group, so leaving it unprojected is fine.
+function ringArea(ring) {
+  let sum = 0;
+  for (let i = 0; i < ring.length - 1; i += 1) {
+    sum += (ring[i][0] * ring[i + 1][1]) - (ring[i + 1][0] * ring[i][1]);
+  }
+  return Math.abs(sum) / 2;
+}
+
+// Merges several subregion polygons into the outline of the region they form, by
+// dropping every border segment that two of them walk in opposite directions
+// and stitching what is left back into closed rings. This is a topological
+// dissolve: it only ever deletes and reconnects existing vertices, so it needs
+// no geometry library and cannot invent coordinates. It relies on neighbours
+// sharing exact vertices, which the bundled county file does (450 of its 2,080
+// segments cancel this way).
+function dissolveRings(rings) {
+  const pointKey = (point) => `${point[0]},${point[1]}`;
+  const counts = new Map();
+  const points = new Map();
+  rings.forEach((ring) => {
+    for (let i = 0; i < ring.length - 1; i += 1) {
+      const from = pointKey(ring[i]);
+      const to = pointKey(ring[i + 1]);
+      if (from === to) {
+        continue;
+      }
+      points.set(from, ring[i]);
+      points.set(to, ring[i + 1]);
+      const edge = `${from}>${to}`;
+      counts.set(edge, (counts.get(edge) || 0) + 1);
+    }
+  });
+  const outgoing = new Map();
+  counts.forEach((count, edge) => {
+    const [from, to] = edge.split('>');
+    if (counts.has(`${to}>${from}`)) {
+      return;
+    }
+    if (!outgoing.has(from)) {
+      outgoing.set(from, []);
+    }
+    const targets = outgoing.get(from);
+    for (let i = 0; i < count; i += 1) {
+      targets.push(to);
+    }
+  });
+  const stitched = [];
+  outgoing.forEach((_targets, start) => {
+    while (outgoing.get(start)?.length) {
+      const ring = [points.get(start)];
+      let cursor = start;
+      for (;;) {
+        const targets = outgoing.get(cursor);
+        if (!targets?.length) {
+          break;
+        }
+        cursor = targets.pop();
+        ring.push(points.get(cursor));
+        if (cursor === start) {
+          break;
+        }
+      }
+      // An unclosed chain means the inputs did not share vertices cleanly.
+      // Dropping it would silently lose part of the outline, so the caller
+      // falls back to the undissolved geometry instead.
+      if (ring.length < 4 || pointKey(ring[0]) !== pointKey(ring[ring.length - 1])) {
+        stitched.length = 0;
+        return;
+      }
+      stitched.push(ring);
+    }
+  });
+  if (!stitched.length) {
+    return null;
+  }
+  const total = stitched.reduce((sum, ring) => sum + ringArea(ring), 0);
+  const kept = stitched.filter((ring) => ringArea(ring) >= total * REGION_SLIVER_AREA_FRACTION);
+  return kept.length ? kept : null;
+}
+
+// The map layer never fills these shapes, so a ring that was a hole in the
+// input draws the same whether it is nested or promoted to its own polygon.
+// That lets the dissolved output skip ring classification entirely.
+function groupGeometry(boundaries) {
+  if (boundaries.length === 1) {
+    return boundaries[0].geometry;
+  }
+  const rings = boundaries.flatMap((boundary) => boundaryRings(boundary.geometry));
+  const dissolved = dissolveRings(rings);
+  if (!dissolved) {
+    logger.warn(`[regions] could not dissolve ${boundaries.length} boundaries into one outline; drawing them separately`);
+    return { type: 'MultiPolygon', coordinates: rings.map((ring) => [ring]) };
+  }
+  return { type: 'MultiPolygon', coordinates: dissolved.map((ring) => [ring]) };
+}
+
+let regionGeometryCache = { key: '', payload: null };
+
+function regionBoundaryCollection(groups) {
+  const wanted = new Set((Array.isArray(groups) ? groups : []).filter(Boolean));
+  const key = [...wanted].sort().join('|');
+  if (regionGeometryCache.key === key && regionGeometryCache.payload) {
+    return regionGeometryCache.payload;
+  }
+  const byGroup = new Map();
+  regionBoundaries.forEach((boundary) => {
+    if (!boundary.group || !wanted.has(boundary.group)) {
+      return;
+    }
+    if (!byGroup.has(boundary.group)) {
+      byGroup.set(boundary.group, []);
+    }
+    byGroup.get(boundary.group).push(boundary);
+  });
+  const features = [...byGroup.entries()].map(([group, boundaries]) => {
+    const geometry = groupGeometry(boundaries);
+    const polygons = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+    return {
+      type: 'Feature',
+      properties: { group },
+      geometry: { type: 'MultiPolygon', coordinates: roundCoordinates(polygons) },
+    };
+  });
+  const payload = { type: 'FeatureCollection', features };
+  regionGeometryCache = { key, payload };
+  return payload;
+}
+
 // When true, a coordinate that falls outside every region boundary is ignored.
 // mqtt.gomesh.dev carries observers well outside the Bay Area (an Orlando
 // cluster, a Philadelphia repeater), and their adverts otherwise stretch the
@@ -3707,6 +3883,19 @@ app.get('/api/admin/reseed', (request, response) => {
 
 app.get('/api/bootstrap', (request, response) => {
   response.json(serializeBootstrap(request));
+});
+
+// Boundary outlines for the coverage map, one per region group. Deliberately
+// separate from the snapshot poll: the geometry only changes when the set of
+// groups holding observers changes, so repeating tens of KB of coordinates
+// every few seconds inside /api/bootstrap would be pure waste.
+//
+// A group qualifies as soon as any one of its subregions has an observer, and
+// then the whole region is outlined - including subregions with no observers -
+// because the outline describes the region, not the coverage inside it.
+app.get('/api/region-boundaries', (request, response) => {
+  const groups = [...new Set(observerDirectory().map((observer) => observer.regionGroup).filter(Boolean))];
+  response.json(regionBoundaryCollection(groups));
 });
 
 app.post(
