@@ -328,7 +328,18 @@ code {
   text-wrap: balance;
 }
 
-.dock-lede,
+/* The lede is one prose sentence with an inline channel chip in the middle, so
+   it must stay a normal text flow. It used to share the flex rule below with
+   .session-share-invite, which turned its three spans into flex items: the 16px
+   gap opened holes around the chip on desktop and on a 390px viewport the row
+   became three ragged columns. Flex also blockified the chip, which is why the
+   "display: inline" further down had no effect. Only the invite row wants flex. */
+.dock-lede {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
 .session-share-invite {
   display: flex;
   align-items: center;
@@ -461,6 +472,9 @@ code {
   display: inline;
   color: var(--accent-strong);
   font-family: var(--font-mono);
+  /* A channel name is a single token; breaking it across lines would read as
+     two channels. */
+  white-space: nowrap;
 }
 
 /* The hidden attribute alone loses to the display declaration above, the same
@@ -883,10 +897,12 @@ body[data-page-mode="share"] .status-pill::before {
 
 /* Re-scoped from .observer-panel when that panel was deleted. The original rule
    was margin: -2px 0 0, tuned for a header with nothing on its right. The reports
-   header carries #active-observer-note in .panel-actions, which wraps onto its
-   own line below ~430px, and the negative margin pulled this note up against it.
-   Positive top margin instead. (#expected-source was dropped from the selector:
-   that element went with the Observers panel.) */
+   header then carried #active-observer-note in .panel-actions, which wrapped onto
+   its own line below ~430px, and the negative margin pulled this note up against
+   it. That duplicate note has since been deleted, so the header is clear again,
+   but the positive top margin stays: it separates this note from the header rule
+   above it. (#expected-source was dropped from the selector: that element went
+   with the Observers panel.) */
 .reports-panel .allowlist-note {
   margin: 6px 0 0;
 }
@@ -1819,6 +1835,13 @@ body[data-page-mode="share"] .status-pill::before {
 
 .site-footer p {
   margin: 0;
+}
+
+/* Each footer entry is a label bound to its link, so the line may break between
+   entries but never inside one. Unwrapped, a 390px viewport stranded "Source:"
+   at the end of the first line and its repo slug on the second. */
+.site-footer .footer-entry {
+  white-space: nowrap;
 }
 
 .site-footer a {
@@ -3107,6 +3130,27 @@ body[data-ui-theme="light"] .additional-info[open] > .additional-info__summary {
 .map-section {
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas: "map";
+}
+
+/* Same single-column shape as .map-section, so the sharing row sits between the
+   map and the collapsed block without the surrounding grid needing changes. */
+.share-section {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "share";
+}
+
+/* The invite row used to be one item in a stack inside .session-sequence, so it
+   carried a top border and top padding to divide itself from the item above.
+   It is now the only thing in its own panel: the panel edge is the division, and
+   a border across the full page width would read as a stray rule. */
+.share-panel {
+  grid-area: share;
+}
+
+.share-panel .session-share-invite {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 /* One panel since the Observers chip list was deleted. Single explicit column,

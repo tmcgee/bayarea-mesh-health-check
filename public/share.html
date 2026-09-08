@@ -48,11 +48,10 @@
                 <p class="eyebrow" id="hero-eyebrow">Shared Result</p>
                 <h1 id="hero-title">Observer coverage someone shared with you.</h1>
               </div>
-              <p class="dock-lede lede">
-                <span id="hero-description-prefix">This page is read-only. Review the result from</span>
-                <strong id="hero-channel">#health-check</strong>
-                <span id="hero-description-suffix">or open the full dashboard to run your own check.</span>
-              </p>
+              <!-- Whitespace-free for the same reason as index.html: the spacing
+                   around the channel chip is written into the span text by
+                   app.js so a leading comma cannot be stranded on its own line. -->
+              <p class="dock-lede lede"><span id="hero-description-prefix">This page is read-only. Review the result from </span><strong id="hero-channel">#health-check</strong><span id="hero-description-suffix"> or open the full dashboard to run your own check.</span></p>
               <div class="control-utility-actions">
                 <button class="control-button ghost-button" id="ui-theme-toggle" type="button">
                   Light Mode
@@ -187,9 +186,6 @@
                 <p class="panel-label">Observer Reports</p>
                 <h2>Heard and not heard</h2>
               </div>
-              <div class="panel-actions">
-                <p class="small-note" id="active-observer-note">0 active observers</p>
-                </div>
             </div>
             <!-- Roster framing moved here when the Observers panel was removed.
                  It states what this code is scored against; the narrowing note
@@ -278,10 +274,9 @@
 
         <footer class="site-footer">
           <p class="small-note">
-            <a href="https://github.com/yellowcooln/meshcore-health-check/blob/main/CHANGES.md" id="site-version-note" rel="noopener noreferrer" target="_blank">Version: v0.0.0</a>
+            <span class="footer-entry"><a href="https://github.com/yellowcooln/meshcore-health-check/blob/main/CHANGES.md" id="site-version-note" rel="noopener noreferrer" target="_blank">Version: v0.0.0</a></span>
             <span aria-hidden="true"> · </span>
-            Source:
-            <a href="https://github.com/yellowcooln/meshcore-health-check" id="repo-note-link" rel="noopener noreferrer" target="_blank">yellowcooln/meshcore-health-check</a>
+            <span class="footer-entry">Source: <a href="https://github.com/yellowcooln/meshcore-health-check" id="repo-note-link" rel="noopener noreferrer" target="_blank">yellowcooln/meshcore-health-check</a></span>
           </p>
         </footer>
       </section>

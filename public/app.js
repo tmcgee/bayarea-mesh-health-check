@@ -47,7 +47,6 @@ const ui = {
   additionalInfoLabel: document.querySelector('#additional-info-label'),
   additionalInfoToggle: document.querySelector('#additional-info-toggle'),
   observerMap: document.querySelector('#observer-map'),
-  activeObserverNote: document.querySelector('#active-observer-note'),
   receiptsEmpty: document.querySelector('#receipts-empty'),
   receiptsFilter: document.querySelector('#receipts-filter'),
   receipts: document.querySelector('#receipts'),
@@ -348,9 +347,13 @@ function observerTargetSummary() {
   if (source === 'configured') {
     return `${count} observer${count === 1 ? '' : 's'}.`;
   }
+  // This branch only runs when no roster is configured and nothing was heard in
+  // the active window, so the target was picked by 7-day ranking rather than by
+  // live activity. The old wording - "Top 10 observers over 7 days." - stated the
+  // rule without saying it was the scoring rule, which read as a stray statistic.
   if (source === 'top-window') {
     const days = Math.max(1, Number(state.snapshot?.observerStats?.topWindowDays || 7));
-    return `Top ${count} observer${count === 1 ? '' : 's'} over ${days} day${days === 1 ? '' : 's'}.`;
+    return `Scored against the ${count} observer${count === 1 ? '' : 's'} most active over the last ${days} day${days === 1 ? '' : 's'}.`;
   }
   const windowSeconds = Math.max(1, Number(state.snapshot?.observerStats?.windowSeconds || 900));
   const minutes = Math.max(1, Math.round(windowSeconds / 60));
@@ -1368,8 +1371,10 @@ function applySiteBranding(snapshot) {
   if (isSharePage()) {
     ui.heroEyebrow.textContent = 'Shared Result';
     ui.heroTitle.textContent = 'Observer coverage someone shared with you.';
-    ui.heroDescriptionPrefix.textContent = 'This page is read-only. Review the result from';
-    ui.heroDescriptionSuffix.textContent = 'or open the full dashboard to run your own check.';
+    setHeroSentence(
+      'This page is read-only. Review the result from',
+      'or open the full dashboard to run your own check.',
+    );
     return;
   }
   ui.heroEyebrow.textContent = eyebrow;
@@ -1378,11 +1383,27 @@ function applySiteBranding(snapshot) {
   // phrase "configured channel" to split on. Without it the sentence stands
   // alone, so hide the chip instead of trailing a bare channel name after it.
   const hasChannelSlot = suffixParts.length > 0;
-  ui.heroDescriptionPrefix.textContent = (prefix || '').trimEnd() || 'Generate a test code, send it to';
-  ui.heroDescriptionSuffix.textContent = (suffix || '').trimStart();
+  setHeroSentence(
+    (prefix || '').trimEnd() || 'Generate a test code, send it to',
+    suffix || '',
+  );
   if (ui.heroChannel) {
     ui.heroChannel.hidden = !hasChannelSlot;
   }
+}
+
+// The channel chip is an inline element between two text spans that carry no
+// whitespace of their own in the markup, so the spacing belongs here. The suffix
+// usually resumes the sentence with punctuation (", and watch ..."), which has
+// to sit flush against the chip: a space in front of it both prints "#channel ,"
+// and offers the browser a line break that leaves a line starting with a comma.
+function setHeroSentence(prefixText, suffixText) {
+  const prefix = String(prefixText || '').trimEnd();
+  const suffix = String(suffixText || '').trimStart();
+  ui.heroDescriptionPrefix.textContent = prefix ? `${prefix} ` : '';
+  ui.heroDescriptionSuffix.textContent = suffix && !/^[,.;:!?)\]]/.test(suffix)
+    ? ` ${suffix}`
+    : suffix;
 }
 
 function mapKnownObservers(session) {
@@ -1490,9 +1511,19 @@ function currentTileLayer() {
       : '&copy; OpenStreetMap contributors');
   return window.L.tileLayer(url, {
     maxZoom: 19,
-    subdomains: 'abcd',
+    subdomains: tileSubdomains(url),
     attribution,
   });
+}
+
+// CARTO serves its raster tiles from a, b, c and d; OpenStreetMap only from a, b
+// and c - d.tile.openstreetmap.org has no address at all. Both URLs used to
+// share a hardcoded 'abcd', so roughly a quarter of tile requests failed with
+// ERR_NAME_NOT_RESOLVED whenever the app took the OSM fallback, leaving visible
+// holes in the map. Anything unrecognised gets the safe three, which every
+// {s}-style tile service supports.
+function tileSubdomains(url) {
+  return String(url).includes('cartocdn.com') ? 'abcd' : 'abc';
 }
 
 function markerIcon(observer) {
@@ -2490,8 +2521,11 @@ function render() {
     }
   }
   ui.brokerName.textContent = snapshot.mqtt.broker;
-  ui.activeObserverNote.textContent =
-    `${snapshot.observerStats.activeCount} active observer${snapshot.observerStats.activeCount === 1 ? '' : 's'} in the last ${snapshot.observerStats.windowSeconds}s`;
+  // The active-observer count used to be repeated in the Observer Reports header
+  // as "N active observers in the last 900s" - raw seconds, and the same number
+  // System Telemetry already shows as "N active nodes / 15m window" via
+  // transportSummary(). One statement of a metric, in the section about the
+  // transport, not two in different units.
   if (!session) {
     ui.sessionCode.textContent = 'No active code';
     ui.sessionInstructions.textContent = state.sharedSessionMissing

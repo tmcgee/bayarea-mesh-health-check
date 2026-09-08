@@ -287,6 +287,40 @@ test('share button uses the browser share API with the retained share link', asy
   expect(shareCalls[0].url).toMatch(/^http:\/\/127\.0\.0\.1:3091\/share\/[0-9a-f-]+$/i);
 });
 
+// Sharing belongs after the result it offers to share. It used to sit inside the
+// Three Easy Steps sequence, above the code, inviting the reader to share results
+// that did not exist yet.
+test('sharing sits between the coverage map and the collapsed section', async ({ page }) => {
+  await page.goto('/app');
+  await expect(page.locator('#session-code')).toContainText('MHC-', { timeout: 10000 });
+
+  const positions = await page.evaluate(() => {
+    const top = (selector) => {
+      const el = document.querySelector(selector);
+      return el ? el.getBoundingClientRect().top + window.scrollY : null;
+    };
+    return {
+      map: top('#coverage-map'),
+      share: top('.share-panel'),
+      toggle: top('#additional-info-toggle'),
+      strandedInSequence: Boolean(document.querySelector('.session-sequence .session-share-invite')),
+      buttonInPanel: Boolean(document.querySelector('.share-panel #share-session')),
+      noteInPanel: Boolean(document.querySelector('.share-panel #session-share-note')),
+    };
+  });
+
+  expect(positions.strandedInSequence).toBe(false);
+  expect(positions.buttonInPanel).toBe(true);
+  expect(positions.noteInPanel).toBe(true);
+  expect(positions.map).toBeLessThan(positions.share);
+  expect(positions.share).toBeLessThan(positions.toggle);
+
+  // Its own panel now, so the divider rule it used to carry inside the sequence
+  // would draw across the full page width for no reason.
+  const invite = page.locator('.share-panel .session-share-invite');
+  await expect(invite).toHaveCSS('border-top-width', '0px');
+});
+
 test('the merged report list is read-only and the code survives opening it', async ({ page }) => {
   await page.goto('/app');
 
@@ -306,6 +340,43 @@ test('the merged report list is read-only and the code survives opening it', asy
 
   await page.waitForTimeout(500);
   await expect(sessionCode).toHaveText(initialCode || '');
+});
+
+// The roster note has three branches and this is the least-exercised one: it runs
+// only when no roster is configured AND nothing was heard in the active window,
+// so the scoring set came from the 7-day ranking instead of live activity. It has
+// to say that it is the scoring set, not just recite the ranking rule.
+test('roster note explains a target picked by 7-day ranking', async ({ page }) => {
+  const directory = Array.from({ length: 10 }, (unused, index) => mapObserver(
+    `!top${index}`,
+    `Top Observer ${index}`,
+    37.8 + index * 0.01,
+    -122.27,
+    'East Bay',
+  ));
+
+  await page.addInitScript(() => {
+    window.WebSocket = class {
+      addEventListener() {}
+      close() {}
+    };
+  });
+  await page.route('**/api/bootstrap', (route) => {
+    const payload = mapBootstrap(directory);
+    payload.defaultObserverSource = 'top-window';
+    payload.observerStats.configuredCount = 0;
+    payload.observerStats.activeCount = 0;
+    payload.observerStats.topCount = 10;
+    payload.observerStats.topWindowDays = 7;
+    return route.fulfill({ contentType: 'application/json', body: JSON.stringify(payload) });
+  });
+
+  await page.goto('/app');
+  await page.locator('#additional-info-toggle').click();
+
+  const note = page.locator('#observer-allowlist-note');
+  await expect(note).toHaveText('Scored against the 10 observers most active over the last 7 days.');
+  await expect(note).not.toContainText('Top 10');
 });
 
 test('coverage map only plots observers targeted by the selected region', async ({ page }) => {
@@ -404,6 +475,11 @@ test('dark coverage map requests CARTO tiles with the configured key', async ({ 
   await expect.poll(() => cartoRequests.length).toBeGreaterThan(0);
   expect(cartoRequests[0]).toContain('dark_all');
   expect(cartoRequests[0]).toContain('key=test-carto-key');
+  // CARTO does serve a fourth subdomain, so the layer is entitled to use it.
+  const cartoHosts = new Set(cartoRequests.map((url) => new URL(url).host));
+  for (const host of cartoHosts) {
+    expect(host).toMatch(/^[abcd]\.basemaps\.cartocdn\.com$/);
+  }
 });
 
 test('dark dashboard falls back to OpenStreetMap without a CARTO key', async ({ page }) => {
@@ -423,6 +499,68 @@ test('dark dashboard falls back to OpenStreetMap without a CARTO key', async ({ 
 
   await expect.poll(() => osmRequests.length).toBeGreaterThan(0);
   expect(cartoRequests).toHaveLength(0);
+  // d.tile.openstreetmap.org has no DNS record, so requesting it means roughly a
+  // quarter of the basemap silently fails to load for real users. The layer used
+  // to hardcode CARTO's 'abcd' for both providers.
+  const osmHosts = [...new Set(osmRequests.map((url) => new URL(url).host))].sort();
+  expect(osmHosts).not.toContain('d.tile.openstreetmap.org');
+  for (const host of osmHosts) {
+    expect(host).toMatch(/^[abc]\.tile\.openstreetmap\.org$/);
+  }
+});
+
+// The lede is prose with an inline channel chip in the middle. It was styled by a
+// rule shared with .session-share-invite, which made the paragraph a flex
+// container: its three spans became flex items, so a 390px viewport rendered them
+// as three ragged columns and desktop showed 16px holes around the chip.
+test('hero lede stays one text flow with the channel chip inline', async ({ page }) => {
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/app');
+    const lede = page.locator('.dock-lede').first();
+    await expect(lede).toBeVisible();
+
+    const layout = await lede.evaluate((el) => ({
+      display: getComputedStyle(el).display,
+      chipDisplay: getComputedStyle(el.querySelector('#hero-channel')).display,
+      spanTops: [...el.children].map((child) => child.getBoundingClientRect().top),
+    }));
+    expect(layout.display).toBe('block');
+    expect(layout.chipDisplay).toBe('inline');
+    // Columns would put each span at the same top offset; a text flow does not.
+    expect(new Set(layout.spanTops).size).toBeGreaterThan(1);
+
+    // No space before the comma that resumes the sentence after the chip, which
+    // also denies the browser a break that would start a line with a comma.
+    const text = (await lede.innerText()).replace(/\s+/g, ' ');
+    expect(text).toContain('#health-check, and watch');
+  }
+});
+
+test('footer entries break between items, never inside one', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.goto('/app');
+  const entries = page.locator('.site-footer .footer-entry');
+  await expect(entries).toHaveCount(2);
+
+  const tops = [];
+  for (const entry of await entries.all()) {
+    // An entry spans several inline boxes (its label text plus its link), so
+    // count the distinct line tops rather than the rects: one line top means the
+    // entry did not wrap, whatever it is made of internally.
+    const box = await entry.evaluate((el) => ({
+      whiteSpace: getComputedStyle(el).whiteSpace,
+      lineTops: [...new Set([...el.getClientRects()].map((rect) => Math.round(rect.top)))],
+    }));
+    expect(box.whiteSpace).toBe('nowrap');
+    expect(box.lineTops).toHaveLength(1);
+    tops.push(box.lineTops[0]);
+  }
+
+  // At 390px the two entries do not fit side by side, so the break has to land
+  // between them. Previously it landed inside the second one, stranding the
+  // "Source:" label a line above its repo slug.
+  expect(new Set(tops).size).toBe(2);
 });
 
 test('escapes untrusted observer labels in timeline and map popups', async ({ page }) => {

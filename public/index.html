@@ -48,11 +48,12 @@
                 <p class="eyebrow" id="hero-eyebrow">MeshCore Observer Coverage</p>
                 <h1 id="hero-title">Check your mesh reach.</h1>
               </div>
-              <p class="dock-lede lede">
-                <span id="hero-description-prefix">Generate a test code, send it to</span>
-                <strong id="hero-channel">#health-check</strong>
-                <span id="hero-description-suffix">and watch the observers that receive the message report back in real time.</span>
-              </p>
+              <!-- No whitespace between these three, on purpose. The sentence
+                   continues after the channel chip with a comma, and a newline
+                   here would render as "#health-check , and watch" and allow a
+                   line break before the orphaned comma. app.js writes the
+                   spacing into the span text instead. -->
+              <p class="dock-lede lede"><span id="hero-description-prefix">Generate a test code, send it to </span><strong id="hero-channel">#health-check</strong><span id="hero-description-suffix"> and watch the observers that receive the message report back in real time.</span></p>
               <div class="control-utility-actions">
                 <button class="control-button ghost-button" id="ui-theme-toggle" type="button">
                   Light Mode
@@ -91,19 +92,6 @@
                   <a class="channel-qr" id="channel-qr" href="#" hidden>
                     <img alt="QR code that adds the test channel to the MeshCore companion app" id="channel-qr-image" src="/channel-qr.svg" width="84" height="84">
                   </a>
-                </div>
-                <div class="session-share-invite">
-                  <div class="session-share-invite__copy">
-                    <p class="session-share-invite__text">
-                      Want to show off your coverage or need some assistance? Share your final results with someone.
-                    </p>
-                    <p class="small-note session-share-note" id="session-share-note">
-                      Shared links are kept for one week by default.
-                    </p>
-                  </div>
-                  <button class="control-button ghost-button copy-button" id="share-session" type="button">
-                    Share
-                  </button>
                 </div>
                 <div class="session-code-row">
                   <div class="session-code-block">
@@ -199,6 +187,28 @@
           </article>
         </section>
 
+        <!-- Sharing sits here, after the map, because that is the point at which
+             there is a result worth sharing. It used to be stacked inside the
+             Three Easy Steps sequence, above the code, where it asked the reader
+             to share results they did not have yet. -->
+        <section class="dashboard-grid share-section">
+          <article class="panel share-panel">
+            <div class="session-share-invite">
+              <div class="session-share-invite__copy">
+                <p class="session-share-invite__text">
+                  Want to show off your coverage or need some assistance? Share your final results with someone.
+                </p>
+                <p class="small-note session-share-note" id="session-share-note">
+                  Shared links are kept for one week by default.
+                </p>
+              </div>
+              <button class="control-button ghost-button copy-button" id="share-session" type="button">
+                Share
+              </button>
+            </div>
+          </article>
+        </section>
+
         <details class="additional-info" id="additional-info">
           <summary class="additional-info__summary" id="additional-info-toggle">
             <span class="additional-info__label" id="additional-info-label">Show Additional Information</span>
@@ -212,9 +222,6 @@
                   <p class="panel-label">Observer Reports</p>
                   <h2>Heard and not heard</h2>
                 </div>
-                <div class="panel-actions">
-                  <p class="small-note" id="active-observer-note">0 active observers</p>
-                  </div>
               </div>
               <!-- Roster framing moved here when the Observers panel was removed.
                    It states what this code is scored against; the narrowing note
@@ -303,10 +310,9 @@
 
         <footer class="site-footer">
           <p class="small-note">
-            <a href="https://github.com/yellowcooln/meshcore-health-check/blob/main/CHANGES.md" id="site-version-note" rel="noopener noreferrer" target="_blank">Version: v0.0.0</a>
+            <span class="footer-entry"><a href="https://github.com/yellowcooln/meshcore-health-check/blob/main/CHANGES.md" id="site-version-note" rel="noopener noreferrer" target="_blank">Version: v0.0.0</a></span>
             <span aria-hidden="true"> · </span>
-            Source:
-            <a href="https://github.com/yellowcooln/meshcore-health-check" id="repo-note-link" rel="noopener noreferrer" target="_blank">yellowcooln/meshcore-health-check</a>
+            <span class="footer-entry">Source: <a href="https://github.com/yellowcooln/meshcore-health-check" id="repo-note-link" rel="noopener noreferrer" target="_blank">yellowcooln/meshcore-health-check</a></span>
           </p>
         </footer>
       </section>
