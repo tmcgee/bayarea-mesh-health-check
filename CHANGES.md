@@ -4,6 +4,23 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.3
+
+- added `locationUpdatedAt` to observer records: stamped only when an
+  observer's coordinates actually change (re-announcing the same position
+  never bumps it), `null` for an observer with no location, and `null` on
+  profiles persisted before this field existed even if they do have a
+  location
+- published `locationUpdatedAt` in the `/api/bootstrap` observer directory
+  alongside each observer's `lat`/`lon`
+- added the share page's "Show Additional Information" toggle (previously
+  only on the main dashboard) and hid the copy-code button on the share page,
+  since a shared result has no code left to copy
+- added dedicated Playwright smoke tests for `share.html` in its own project
+  and test server (port 3093), covering the new toggle, the hidden copy
+  button, and a populated/heard session rendering inside the collapsed
+  section
+
 ## v1.3.8+bayarea.2
 
 - merged the observer roster into Observer Reports: heard observers keep their

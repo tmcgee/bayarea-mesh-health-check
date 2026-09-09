@@ -316,7 +316,7 @@ function parseObserversJson(filePath) {
       if (typeof rawValue === 'string') {
         const name = String(rawValue || '').trim();
         if (name) {
-          profiles.set(key, { name, uplink: '', lat: null, lon: null, hashBytes: null });
+          profiles.set(key, { name, uplink: '', lat: null, lon: null, hashBytes: null, locationUpdatedAt: null });
         }
         continue;
       }
@@ -335,6 +335,12 @@ function parseObserversJson(filePath) {
       const hashBytes = Number.isInteger(rawHashBytes) && rawHashBytes >= 1 && rawHashBytes <= 3
         ? rawHashBytes
         : null;
+      // Legacy files predate this field entirely, so a missing/invalid value
+      // means "unknown", not "just updated" - never default it to now().
+      const rawLocationUpdatedAt = Number(rawValue.locationUpdatedAt ?? null);
+      const locationUpdatedAt = hasValidLocation && Number.isFinite(rawLocationUpdatedAt) && rawLocationUpdatedAt > 0
+        ? rawLocationUpdatedAt
+        : null;
       if (name || uplink || hasValidLocation || hashBytes != null) {
         profiles.set(key, {
           name: name || '',
@@ -342,6 +348,7 @@ function parseObserversJson(filePath) {
           lat: hasValidLocation ? lat : null,
           lon: hasValidLocation ? lon : null,
           hashBytes,
+          locationUpdatedAt,
         });
       }
     }
@@ -1464,12 +1471,18 @@ function writeObserverNamesFile() {
     const hashBytes = Number.isInteger(rawHashBytes) && rawHashBytes >= 1 && rawHashBytes <= 3
       ? rawHashBytes
       : null;
+    const rawLocationUpdatedAt = Number(profile.locationUpdatedAt);
+    const hasLocation = lat != null && lon != null;
+    const locationUpdatedAt = hasLocation && Number.isFinite(rawLocationUpdatedAt) && rawLocationUpdatedAt > 0
+      ? rawLocationUpdatedAt
+      : null;
     payload[key] = {
       ...(name ? { name } : {}),
       ...(uplink ? { uplink } : {}),
       ...(lat != null ? { lat } : {}),
       ...(lon != null ? { lon } : {}),
       ...(hashBytes != null ? { hashBytes } : {}),
+      ...(locationUpdatedAt != null ? { locationUpdatedAt } : {}),
     };
   }
   writeJsonFileAtomic(OBSERVERS_FILE_PATH, payload);
@@ -1505,12 +1518,21 @@ function applyReseededProfiles(fresh) {
       continue;
     }
     const live = observerProfiles.get(key) || {};
+    const nextLat = normalizeCoordinate(incoming.lat, 'lat');
+    const nextLon = normalizeCoordinate(incoming.lon, 'lon');
+    const locationChanged = (live.lat ?? null) !== (nextLat ?? null) || (live.lon ?? null) !== (nextLon ?? null);
     const merged = {
       ...live,
       name: String(live.name || '').trim() || String(incoming.name || '').trim() || '',
       uplink: normalizeUplinkCode(live.uplink) || normalizeUplinkCode(incoming.uplink) || '',
-      lat: normalizeCoordinate(incoming.lat, 'lat'),
-      lon: normalizeCoordinate(incoming.lon, 'lon'),
+      lat: nextLat,
+      lon: nextLon,
+      // The script can also clear a position it no longer confirms, so only
+      // stamp when the coordinates actually differ, and only keep a stamp at
+      // all when the merged result still has a location.
+      locationUpdatedAt: locationChanged
+        ? (nextLat != null && nextLon != null ? Date.now() : null)
+        : (live.locationUpdatedAt ?? null),
     };
     const width = Number(incoming.hashBytes);
     if (Number.isInteger(width) && width >= 1 && width <= 3) {
@@ -1702,6 +1724,10 @@ function createObserverRecord(observerKey) {
   const activity = observerActivityHistory.get(observerKey) || null;
   const lat = normalizeCoordinate(profile?.lat ?? null, 'lat');
   const lon = normalizeCoordinate(profile?.lon ?? null, 'lon');
+  const rawLocationUpdatedAt = profile?.locationUpdatedAt;
+  const locationUpdatedAt = lat != null && lon != null && rawLocationUpdatedAt != null && Number.isFinite(Number(rawLocationUpdatedAt))
+    ? Number(rawLocationUpdatedAt)
+    : null;
   const uplinkCode = normalizeUplinkCode(profile?.uplink ?? null);
   const regionInfo = resolveObserverRegion({ lat, lon, uplinkCode });
   const lastPacketAt = Math.max(0, Number(activity?.lastPacketAt || 0));
@@ -1711,6 +1737,7 @@ function createObserverRecord(observerKey) {
     name: profile?.name || null,
     lat,
     lon,
+    locationUpdatedAt,
     uplinkCode: uplinkCode || null,
     region: regionInfo.region,
     regionGroup: regionInfo.regionGroup,
@@ -1870,6 +1897,9 @@ function ensureObserverRecord(observerKey) {
   }
   if (observer.lon == null && profile?.lon != null) {
     observer.lon = normalizeCoordinate(profile.lon, 'lon');
+  }
+  if (observer.locationUpdatedAt == null && profile?.locationUpdatedAt != null) {
+    observer.locationUpdatedAt = profile.locationUpdatedAt;
   }
   if (!observer.uplinkCode && profile?.uplink) {
     observer.uplinkCode = normalizeUplinkCode(profile.uplink) || null;
@@ -2669,6 +2699,9 @@ function serializeObserver(observer) {
     lat: observer.lat ?? null,
     lon: observer.lon ?? null,
     hasLocation: observer.lat != null && observer.lon != null,
+    // null when never learned; also null on legacy profiles persisted before
+    // this field existed, even though those do have a location.
+    locationUpdatedAt: observer.lat != null && observer.lon != null ? (observer.locationUpdatedAt ?? null) : null,
     region: observer.region ?? null,
     regionGroup: observer.regionGroup ?? null,
     regionSource: observer.regionSource ?? null,
@@ -2707,6 +2740,7 @@ function serializeObserverForKey(observerKey) {
       lat: null,
       lon: null,
       hasLocation: false,
+      locationUpdatedAt: null,
       region: null,
       regionGroup: null,
       regionSource: null,
@@ -3359,9 +3393,11 @@ function updateObserverLocation(observerKey, location) {
   }
   const profile = observerProfiles.get(normalizedKey) || { name: '', lat: null, lon: null };
   const changed = profile.lat !== lat || profile.lon !== lon || observer.lat !== lat || observer.lon !== lon;
-  observerProfiles.set(normalizedKey, { ...profile, lat, lon });
+  const locationUpdatedAt = changed ? Date.now() : (profile.locationUpdatedAt ?? null);
+  observerProfiles.set(normalizedKey, { ...profile, lat, lon, locationUpdatedAt });
   observer.lat = lat;
   observer.lon = lon;
+  observer.locationUpdatedAt = locationUpdatedAt;
   const regionInfo = resolveObserverRegion(observer);
   observer.region = regionInfo.region;
   observer.regionGroup = regionInfo.regionGroup;

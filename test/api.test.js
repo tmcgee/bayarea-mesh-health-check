@@ -119,7 +119,7 @@ test('GET /api/bootstrap returns site and channel configuration', async () => {
 
   const payload = await response.json();
   assert.equal(payload.site.title, 'MeshCore Observer Coverage');
-  assert.equal(payload.site.version, '1.3.8+bayarea.2');
+  assert.equal(payload.site.version, '1.3.8+bayarea.3');
   assert.equal(payload.site.coreScopeUrl, 'https://analyzer.example.test');
   assert.equal(payload.site.externalLinkUrl, '');
   assert.equal(payload.testChannel.name, 'health-check');
@@ -751,6 +751,7 @@ test('packet activity is persisted for dynamic observer ranking', async () => {
 test('observer metadata learns and exposes saved coordinates from mqtt', async () => {
   const observerKey = 'AF07FC2005E04D08DDA921E64985E62201BF974AE0B0E35084B804229ED11A2B';
 
+  const beforeUpdate = Date.now();
   ingestMqttMessage(
     `meshcore/BOS/${observerKey}/status`,
     Buffer.from(JSON.stringify({
@@ -761,6 +762,7 @@ test('observer metadata learns and exposes saved coordinates from mqtt', async (
       },
     })),
   );
+  const afterUpdate = Date.now();
 
   const response = await fetch(`${baseUrl}/api/bootstrap`);
   assert.equal(response.status, 200);
@@ -771,6 +773,75 @@ test('observer metadata learns and exposes saved coordinates from mqtt', async (
   assert.equal(observer?.lat, 42.3601);
   assert.equal(observer?.lon, -71.0589);
   assert.equal(observer?.hasLocation, true);
+  assert.ok(
+    typeof observer?.locationUpdatedAt === 'number'
+      && observer.locationUpdatedAt >= beforeUpdate
+      && observer.locationUpdatedAt <= afterUpdate,
+    `expected locationUpdatedAt within [${beforeUpdate}, ${afterUpdate}], got ${observer?.locationUpdatedAt}`,
+  );
+});
+
+test('locationUpdatedAt is null for an observer with no location', async () => {
+  const observerKey = '00112233445566778899AABBCCDDEEFF0011223344556677889900AABBCCDDEE';
+
+  ingestMqttMessage(
+    `meshcore/BOS/${observerKey}/status`,
+    Buffer.from(JSON.stringify({ name: 'No Coordinates Yet' })),
+  );
+
+  const response = await fetch(`${baseUrl}/api/bootstrap`);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  const observer = payload.observerDirectory.find((entry) => entry.key === observerKey);
+
+  assert.equal(observer?.name, 'No Coordinates Yet');
+  assert.equal(observer?.hasLocation, false);
+  assert.equal(observer?.locationUpdatedAt, null);
+});
+
+test('locationUpdatedAt only advances when coordinates actually change', async () => {
+  const observerKey = '1122334455667788990011223344556677889900112233445566778899AABBCC';
+
+  ingestMqttMessage(
+    `meshcore/BOS/${observerKey}/status`,
+    Buffer.from(JSON.stringify({
+      name: 'Stable Observer',
+      location: { latitude: 40.0, longitude: -74.0 },
+    })),
+  );
+
+  const firstResponse = await fetch(`${baseUrl}/api/bootstrap`);
+  const firstPayload = await firstResponse.json();
+  const firstStamp = firstPayload.observerDirectory.find((entry) => entry.key === observerKey)?.locationUpdatedAt;
+  assert.ok(typeof firstStamp === 'number');
+
+  // Re-announcing the exact same coordinates must not bump the stamp.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  ingestMqttMessage(
+    `meshcore/BOS/${observerKey}/status`,
+    Buffer.from(JSON.stringify({
+      name: 'Stable Observer',
+      location: { latitude: 40.0, longitude: -74.0 },
+    })),
+  );
+  const secondResponse = await fetch(`${baseUrl}/api/bootstrap`);
+  const secondPayload = await secondResponse.json();
+  const secondStamp = secondPayload.observerDirectory.find((entry) => entry.key === observerKey)?.locationUpdatedAt;
+  assert.equal(secondStamp, firstStamp);
+
+  // A genuinely different position must bump the stamp.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  ingestMqttMessage(
+    `meshcore/BOS/${observerKey}/status`,
+    Buffer.from(JSON.stringify({
+      name: 'Stable Observer',
+      location: { latitude: 40.5, longitude: -74.5 },
+    })),
+  );
+  const thirdResponse = await fetch(`${baseUrl}/api/bootstrap`);
+  const thirdPayload = await thirdResponse.json();
+  const thirdStamp = thirdPayload.observerDirectory.find((entry) => entry.key === observerKey)?.locationUpdatedAt;
+  assert.ok(typeof thirdStamp === 'number' && thirdStamp > secondStamp);
 });
 
 test('observer status metadata falls back to origin for observer name', async () => {
