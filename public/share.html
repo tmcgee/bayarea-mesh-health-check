@@ -88,7 +88,7 @@
                     <div class="session-code" id="session-code">...</div>
                   </div>
                   <div class="session-code-actions">
-                    <button class="control-button ghost-button copy-button" id="copy-session-code" type="button">
+                    <button class="control-button ghost-button copy-button share-hidden" id="copy-session-code" type="button">
                       Copy
                     </button>
                     <button class="control-button ghost-button copy-button" id="share-session" type="button">
@@ -164,7 +164,9 @@
           </article>
         </section>
 
-        <section class="dashboard-grid">
+        <!-- The coverage map stays outside the collapsed block, matching index.html,
+             so it is always visible. -->
+        <section class="dashboard-grid map-section">
           <article class="panel map-panel spotlight-panel" id="coverage-map">
             <div class="panel-header slim">
               <div>
@@ -179,98 +181,107 @@
             </div>
             <div class="observer-map" id="observer-map"></div>
           </article>
+        </section>
 
-          <article class="panel reports-panel ledger-panel" id="observer-reports">
-            <div class="panel-header slim">
-              <div>
-                <p class="panel-label">Observer Reports</p>
-                <h2>Heard and not heard</h2>
+        <details class="additional-info" id="additional-info">
+          <summary class="additional-info__summary" id="additional-info-toggle">
+            <span class="additional-info__label" id="additional-info-label">Show Additional Information</span>
+            <span aria-hidden="true" class="additional-info__chevron"></span>
+          </summary>
+
+          <section class="dashboard-grid additional-info__grid">
+            <article class="panel reports-panel ledger-panel" id="observer-reports">
+              <div class="panel-header slim">
+                <div>
+                  <p class="panel-label">Observer Reports</p>
+                  <h2>Heard and not heard</h2>
+                </div>
               </div>
-            </div>
-            <!-- Roster framing moved here when the Observers panel was removed.
-                 It states what this code is scored against; the narrowing note
-                 at the end of the list states what is currently shown. -->
-            <p class="small-note allowlist-note" id="observer-allowlist-note">
-              0 observers.
-            </p>
-            <article class="glance-card receipt-spread-card">
-              <div class="glance-card__head">
-                <span class="panel-label">Receipt Spread</span>
+              <!-- Roster framing moved here when the Observers panel was removed.
+                   It states what this code is scored against; the narrowing note
+                   at the end of the list states what is currently shown. -->
+              <p class="small-note allowlist-note" id="observer-allowlist-note">
+                0 observers.
+              </p>
+              <article class="glance-card receipt-spread-card">
+                <div class="glance-card__head">
+                  <span class="panel-label">Receipt Spread</span>
+                </div>
+                <strong class="glance-card__value" id="latency-score">--</strong>
+                <div class="sparkline" id="latency-sparkline" aria-hidden="true"></div>
+                <p class="small-note" id="latency-label">Awaiting receipt spread.</p>
+              </article>
+              <div class="receipts-filter hidden" id="receipts-filter"></div>
+              <div class="empty-state" id="receipts-empty">
+                No observer reports yet.
               </div>
-              <strong class="glance-card__value" id="latency-score">--</strong>
-              <div class="sparkline" id="latency-sparkline" aria-hidden="true"></div>
-              <p class="small-note" id="latency-label">Awaiting receipt spread.</p>
+              <div class="receipts" id="receipts"></div>
+
+              <div class="ledger-divider share-hidden" aria-hidden="true"></div>
+              <div class="panel-header slim ledger-history-head share-hidden">
+                <div>
+                  <p class="panel-label">Recent Sessions</p>
+                  <h2>Previous checks</h2>
+                </div>
+              </div>
+              <div class="history-list" id="session-history"></div>
             </article>
-            <div class="receipts-filter hidden" id="receipts-filter"></div>
-            <div class="empty-state" id="receipts-empty">
-              No observer reports yet.
-            </div>
-            <div class="receipts" id="receipts"></div>
+          </section>
 
-            <div class="ledger-divider share-hidden" aria-hidden="true"></div>
-            <div class="panel-header slim ledger-history-head share-hidden">
-              <div>
-                <p class="panel-label">Recent Sessions</p>
-                <h2>Previous checks</h2>
-              </div>
-            </div>
-            <div class="history-list" id="session-history"></div>
-          </article>
-        </section>
-
-        <section class="dashboard-grid metrics-section">
-          <article class="panel metrics-panel" id="system-metrics">
-            <div class="panel-header slim">
-              <div>
-                <p class="panel-label">Shared Control Center</p>
-                <h2>System Telemetry</h2>
-              </div>
-              <div class="panel-actions">
-                <span class="pill status-pill" id="mqtt-pill">Shared Link</span>
-              </div>
-            </div>
-            <div class="metrics-panel__status">
-              <div class="dock-note">
-                <span class="meta-label">Share Mode</span>
-                <strong id="network-window">Read-only diagnostics</strong>
-              </div>
-              <div class="dock-note">
-                <span class="meta-label">Channel</span>
-                <strong id="channel-name">#health-check</strong>
-              </div>
-              <div class="dock-note">
-                <span class="meta-label">Broker</span>
-                <strong id="broker-name">Loading</strong>
-              </div>
-            </div>
-            <div class="glance-grid metrics-panel__grid">
-              <article class="glance-card">
-                <div class="glance-card__head">
-                  <span class="panel-label">Transport</span>
+          <section class="dashboard-grid metrics-section">
+            <article class="panel metrics-panel" id="system-metrics">
+              <div class="panel-header slim">
+                <div>
+                  <p class="panel-label">Shared Control Center</p>
+                  <h2>System Telemetry</h2>
                 </div>
-                <strong class="glance-card__value" id="network-state">Shared</strong>
-                <div class="sparkline" id="observer-sparkline" aria-hidden="true"></div>
-                <p class="small-note" id="observer-density-label">Awaiting observer directory.</p>
-              </article>
-              <article class="glance-card">
-                <div class="glance-card__head">
-                  <span class="panel-label">Mapped Nodes</span>
+                <div class="panel-actions">
+                  <span class="pill status-pill" id="mqtt-pill">Shared Link</span>
                 </div>
-                <strong class="glance-card__value" id="observer-density">0 / 0</strong>
-                <div class="sparkline" id="observer-load-sparkline" aria-hidden="true"></div>
-                <p class="small-note" id="observer-density-detail">No observer telemetry yet.</p>
-              </article>
-              <article class="glance-card">
-                <div class="glance-card__head">
-                  <span class="panel-label">Signal Quality</span>
+              </div>
+              <div class="metrics-panel__status">
+                <div class="dock-note">
+                  <span class="meta-label">Share Mode</span>
+                  <strong id="network-window">Read-only diagnostics</strong>
                 </div>
-                <strong class="glance-card__value" id="signal-quality">--</strong>
-                <div class="sparkline" id="signal-sparkline" aria-hidden="true"></div>
-                <p class="small-note" id="signal-quality-label">Awaiting telemetry.</p>
-              </article>
-            </div>
-          </article>
-        </section>
+                <div class="dock-note">
+                  <span class="meta-label">Channel</span>
+                  <strong id="channel-name">#health-check</strong>
+                </div>
+                <div class="dock-note">
+                  <span class="meta-label">Broker</span>
+                  <strong id="broker-name">Loading</strong>
+                </div>
+              </div>
+              <div class="glance-grid metrics-panel__grid">
+                <article class="glance-card">
+                  <div class="glance-card__head">
+                    <span class="panel-label">Transport</span>
+                  </div>
+                  <strong class="glance-card__value" id="network-state">Shared</strong>
+                  <div class="sparkline" id="observer-sparkline" aria-hidden="true"></div>
+                  <p class="small-note" id="observer-density-label">Awaiting observer directory.</p>
+                </article>
+                <article class="glance-card">
+                  <div class="glance-card__head">
+                    <span class="panel-label">Mapped Nodes</span>
+                  </div>
+                  <strong class="glance-card__value" id="observer-density">0 / 0</strong>
+                  <div class="sparkline" id="observer-load-sparkline" aria-hidden="true"></div>
+                  <p class="small-note" id="observer-density-detail">No observer telemetry yet.</p>
+                </article>
+                <article class="glance-card">
+                  <div class="glance-card__head">
+                    <span class="panel-label">Signal Quality</span>
+                  </div>
+                  <strong class="glance-card__value" id="signal-quality">--</strong>
+                  <div class="sparkline" id="signal-sparkline" aria-hidden="true"></div>
+                  <p class="small-note" id="signal-quality-label">Awaiting telemetry.</p>
+                </article>
+              </div>
+            </article>
+          </section>
+        </details>
 
         <footer class="site-footer">
           <p class="small-note">
