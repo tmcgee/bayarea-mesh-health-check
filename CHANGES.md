@@ -4,6 +4,34 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.4
+
+- reworked the repeater path on receipt cards: the header now reads
+  `Estimated path over 14 legs / 16 hops · at least 285 mi`, stating the hops
+  spanned separately from the legs drawn whenever a hop in between has no
+  known position
+- qualified the path total as `at least`: every leg is a great-circle line
+  between two located hops, so the sum is a floor on the distance covered and
+  never an over-estimate
+- added `pathCrowFlies` to receipts, the straight-line distance between the
+  first and last located hop, shown on the card as `End to end 96 mi as the
+  crow flies` with both endpoints named in its tooltip; it is deliberately not
+  derived from the legs, which sum to far more on a path that doubles back
+- numbered each leg, in a tabular column so the routes all start at the same
+  point and the distances read as a column
+- put each leg endpoint's path prefix inline as `Name (HASH)` and dropped the
+  separate prefix chip row from the card when legs are present, since it was
+  listing the same repeaters a second time; the chip row still renders when
+  there are no legs, and the drawer keeps the full raw chain
+- replaced the trailing `estimated over N unknown hops` text with a
+  subordinate line reading `via N hops with no location:` followed by up to
+  three of those hops by identity; segments now carry `skippedHops` with a
+  hash and, where the prefix resolved to exactly one observer, a name
+- removed the drawer's `Path Distance` stat, which repeated the path total
+  without its `at least` qualifier and, when there was no distance, said only
+  `not estimated` where the Path Trace section says which hops are missing
+  position
+
 ## v1.3.8+bayarea.3
 
 - added `locationUpdatedAt` to observer records: stamped only when an
