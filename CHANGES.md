@@ -4,6 +4,34 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.6
+
+- the CoreScope seeding pass now also runs about a minute after boot when the
+  region inputs have changed since the last successful pass, instead of only on
+  the daily `OBSERVER_RESEED_HOUR` schedule. A boundary edit reaches observer
+  positions only through a pass, so widening the map used to wait up to a day:
+  the 04:00 pass on the day Kern was added ran against the old 28-county file
+  and discarded both Kern repeaters, `TEH - Stallion Springs` and
+  `The Dale Repeater`, even though CoreScope had coordinates for both.
+- the fingerprint covers `REGIONS_FILE` **and** `UPLINK_CODES_FILE`. A code
+  moved between the `codes` and `outOfArea` blocks changes which observers are
+  in area, and re-running a pass that turns out to change nothing is cheaper
+  than reasoning about which edits can matter.
+- the boot pass ignores `OBSERVER_RESEED_HOUR` — the trigger is the edit, not
+  the clock — but still requires `OBSERVER_RESEED_ENABLED`, so CI, the smoke
+  run and sandbox copies never pull CoreScope on boot. It does not consume the
+  day's scheduled run, and only a successful pass records its fingerprint, so a
+  failure is retried on the next restart rather than marked done. An unreadable
+  region file yields no fingerprint rather than a new one, which would otherwise
+  fire a pass on every boot.
+- `GET /api/admin/reseed` reports `regionFingerprint`, `lastSeededFingerprint`
+  and `bootPassPending`. New `OBSERVER_RESEED_BOOT_DELAY_MS` (default 60000).
+- on the first deploy carrying this change no log line has a fingerprint yet,
+  so the pass fires once regardless of the boundary — the run that finally
+  locates the two Kern repeaters, taking located observers 31 to 33.
+- `test/reseed-fingerprint.test.js`: five tests over a stub seed script run
+  through `/bin/sh`, so the suite needs neither python3 nor CoreScope.
+
 ## v1.3.8+bayarea.5
 
 - removed the `Packet Detail` drawer and the click target on receipt cards.
