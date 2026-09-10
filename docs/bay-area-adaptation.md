@@ -222,6 +222,18 @@ DISTANCE_UNIT=mi
 
 `CORESCOPE_URL` makes matched packet hashes clickable through to [CoreScope](https://corescope.stonekitty.net); `DASH_BROKER_HOST` is a UI label only.
 
+The same base drives two more link families on the observer cards, and CoreScope routes the two identities under different, **case-sensitive** paths for the same public key:
+
+| Link | Route | Key case |
+| --- | --- | --- |
+| Packet hash | `#/packets/<hash>` | lowercase hash |
+| Observer name on each card | `#/observers/<KEY>` | **uppercase** |
+| Named repeater in the leg list and in the hop chips | `#/nodes/<key>` | **lowercase** |
+
+`/api/observers/<lowercase>` and `/api/nodes/<UPPERCASE>` both answer `404`, so the casing is functional. A hop links only when its prefix resolved to exactly one node — an ambiguous or unknown prefix stays plain text rather than linking to a guess. Unset `CORESCOPE_URL` and every one of these renders as plain text.
+
+Not every observer here exists in that CoreScope: the out-of-area MoKanMesh station feeds a different broker, so its link lands on an empty observer page.
+
 ### Colour scheme
 
 [bayareameshcore.org](https://bayareameshcore.org/) is Astro + Bootstrap 5.3 with a light/dark toggle. Its palette, read from `/_astro/index.DchGtAFf.css`:

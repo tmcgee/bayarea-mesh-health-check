@@ -732,6 +732,45 @@ function buildCoreScopePacketLink(hash) {
   return `${base}/#/packets/${encodeURIComponent(normalizedValue)}`;
 }
 
+// CoreScope holds the same public key under two routes and both are
+// case-sensitive: an observer is looked up by the UPPERCASE key, a node by the
+// lowercase one. /api/observers/<lowercase> and /api/nodes/<UPPERCASE> both
+// answer 404, so the casing below is load-bearing, not cosmetic.
+function coreScopePublicKey(key) {
+  const value = String(key || '').trim();
+  return /^[0-9a-f]{64}$/i.test(value) ? value : '';
+}
+
+function buildCoreScopeObserverLink(key) {
+  const base = normalizeCoreScopeBaseUrl(state.snapshot?.site?.coreScopeUrl);
+  const value = coreScopePublicKey(key);
+  if (!base || !value) {
+    return '';
+  }
+  return `${base}/#/observers/${value.toUpperCase()}`;
+}
+
+function buildCoreScopeNodeLink(key) {
+  const base = normalizeCoreScopeBaseUrl(state.snapshot?.site?.coreScopeUrl);
+  const value = coreScopePublicKey(key);
+  if (!base || !value) {
+    return '';
+  }
+  return `${base}/#/nodes/${value.toLowerCase()}`;
+}
+
+// Wraps already-escaped text in an external link, or returns it untouched when
+// there is no URL. Every caller passes escaped text, so nothing here escapes
+// twice.
+function externalLinkMarkup(url, escapedText, className, title) {
+  if (!url) {
+    return escapedText;
+  }
+  return `<a class="${className}" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"${
+    title ? ` title="${escapeHtml(title)}"` : ''
+  }>${escapedText}</a>`;
+}
+
 function packetHashLink(hash) {
   const coreScopeUrl = buildCoreScopePacketLink(hash);
   if (coreScopeUrl) {
@@ -1845,11 +1884,25 @@ function receiptPathMarkup(receipt) {
       const named = receiptHopIsNamed(hop);
       return `<span class="receipt-path__hop${named ? '' : ' receipt-path__hop--unresolved'}"${
         named ? ` title="${escapeHtml(`${hop.label} \u00b7 ${hop.hash}`)}"` : ' title="This hash does not match exactly one known node, so the repeater cannot be named."'
-      }><span class="receipt-path__name">${escapeHtml(hop.label)}</span>${
+      }><span class="receipt-path__name">${externalLinkMarkup(
+        named ? buildCoreScopeNodeLink(hop.key) : '',
+        escapeHtml(hop.label),
+        'corescope-link',
+        `Open ${hop.label} in CoreScope`,
+      )}</span>${
         named ? `<span class="receipt-path__hash">${escapeHtml(hop.hash)}</span>` : ''
       }</span>`;
     })
     .join('');
+}
+
+// The same text, linked to that node's CoreScope page when the prefix resolved
+// to exactly one node. An unresolved or ambiguous hop stays plain text -- there
+// is no single node page to send anyone to.
+function receiptHopLabelMarkup(label, hash, key) {
+  const text = receiptHopLabel(label, hash);
+  const url = buildCoreScopeNodeLink(key);
+  return externalLinkMarkup(url, escapeHtml(text), 'corescope-link', url ? `Open ${text} in CoreScope` : '');
 }
 
 // Plain-text form for the drawer's monospace blocks.
@@ -1918,20 +1971,25 @@ function receiptDistanceMarkup(receipt) {
       // cannot turn a leg into a paragraph. Older payloads carry no identities,
       // in which case the count still stands on its own.
       const skippedHops = Array.isArray(segment.skippedHops) ? segment.skippedHops : [];
-      const named = skippedHops.slice(0, 3).map((hop) => receiptHopLabel(hop.label, hop.hash));
+      const named = skippedHops.slice(0, 3)
+        .map((hop) => receiptHopLabelMarkup(hop.label, hop.hash, hop.key));
       const overflow = skippedHops.length - named.length;
       const skipList = named.length > 0
-        ? `: ${named.join(', ')}${overflow > 0 ? ` and ${overflow} more` : ''}`
+        ? `: ${named.join(', ')}${overflow > 0 ? escapeHtml(` and ${overflow} more`) : ''}`
         : '';
       const skipMarkup = skipped > 0
-        ? `<span class="receipt-distance__leg-note">${escapeHtml(`via ${skipped} hop${skipped === 1 ? '' : 's'} with no location${skipList}`)}</span>`
+        ? `<span class="receipt-distance__leg-note">${
+          escapeHtml(`via ${skipped} hop${skipped === 1 ? '' : 's'} with no location`)
+        }${skipList}</span>`
         : '';
       return `
         <span class="receipt-distance__leg">
           <span class="receipt-distance__leg-index">${index + 1}.</span>
-          <span class="receipt-distance__leg-route">${escapeHtml(`${
-        receiptHopLabel(segment.fromLabel, segment.fromHash)
-      } to ${receiptHopLabel(segment.toLabel, segment.toHash)}`)}</span>
+          <span class="receipt-distance__leg-route">${
+        receiptHopLabelMarkup(segment.fromLabel, segment.fromHash, segment.fromKey)
+      } to ${
+        receiptHopLabelMarkup(segment.toLabel, segment.toHash, segment.toKey)
+      }</span>
           <span class="receipt-distance__leg-value">${escapeHtml(unbreakableDistance(segment.distanceText))}</span>
           ${skipMarkup}
         </span>
@@ -2144,13 +2202,6 @@ function renderReceipts(session) {
     const heardState = heardStateOf(observer);
     const card = document.createElement('article');
     card.className = `receipt-card${receipt ? '' : ' receipt-card--quiet'}`;
-    // Only a receipt-backed card has a drawer to open - without a receipt the
-    // drawer lookup resolves to null. Leaving the attribute off keeps the click
-    // handler's `.receipt-card[data-observer-key]` selector from matching, so a
-    // quiet card is not falsely clickable.
-    if (receipt) {
-      card.dataset.observerKey = observer.key;
-    }
 
     const statusTone = heardState === 'heard' ? 'all' : (heardState === 'unheard' ? 'none' : 'unknown');
     const statusTitle = {
@@ -2172,13 +2223,26 @@ function renderReceipts(session) {
     // silently disappear for an observer the directory has dropped.
     const detailLine = observerDetailLine(observer);
     const modeNote = observerHashModeNote(observer);
+    // The observer's own CoreScope page, not the node page: same public key,
+    // different route, and the observer page is the one that carries uptime,
+    // packet counts and clock skew for the receiving station. Every observer
+    // gets the link, heard or not -- the point of the quiet card is that the
+    // station is worth looking at. No link when CORESCOPE_URL is unset, or when
+    // the key is not a full public key.
+    const observerLink = buildCoreScopeObserverLink(observer.key);
+    const labelMarkup = externalLinkMarkup(
+      observerLink,
+      escapeHtml(labelText),
+      'corescope-link',
+      `Open ${labelText} in CoreScope`,
+    );
 
     const head = `
       <div class="receipt-head">
         <div class="receipt-ident">
           <h3 class="receipt-title">
             <span class="region-btn__status region-btn__status--${statusTone}" aria-hidden="true" title="${escapeHtml(statusTitle)}"></span>
-            ${escapeHtml(labelText)}
+            ${labelMarkup}
           </h3>
           <div class="receipt-hash">${escapeHtml(hashText)} · ${escapeHtml(shortText)}</div>
           ${detailLine
@@ -2214,12 +2278,16 @@ function renderReceipts(session) {
     const signalTone = scoreTone(signal);
     const pathMarkup = receiptPathMarkup(receipt);
     const distanceMarkup = receiptDistanceMarkup(receipt);
-    const distanceText = String(receipt.pathDistanceText || '').trim();
+    // No path distance here. It used to sit in this line as `Path 285 mi`, read
+    // from the same receipt.pathDistanceText that the estimate block below
+    // prints as "at least 285 mi", so the same number appeared twice on every
+    // card. The estimate block is the one that explains itself -- hop count,
+    // per-leg breakdown, the crow-flies comparison, and "at least" rather than
+    // a bare total -- so the bare copy is the one that goes.
     const metrics = [
       receipt.rssi != null ? `RSSI ${receipt.rssi}` : '',
       receipt.snr != null ? `SNR ${receipt.snr}` : '',
       receipt.duration != null ? `${receipt.duration} ms` : '',
-      distanceText ? `Path ${distanceText}` : '',
     ]
       .filter(Boolean)
       .join(' · ');
@@ -2488,38 +2556,6 @@ function buildDrawerContent() {
             </section>
           `,
       };
-    case 'receipt': {
-      const receipt = receipts.find((entry) => entry.observerKey === state.drawer.key);
-      if (!receipt) {
-        return null;
-      }
-      // No Path Distance stat in the metrics grid: the Path Trace section states
-      // the same total in its header, qualified as a floor, and states why there
-      // is none when it cannot be measured. A bare duplicate can only disagree.
-      return {
-        meta: 'Packet Detail',
-        title: receipt.observerLabel,
-        body: `
-          <section class="drawer-card">
-            <h3>Receipt Metrics</h3>
-            <div class="drawer-stat-grid">
-              ${drawerStat('First Heard', formatTime(receipt.firstSeenAt))}
-              ${drawerStat('Message Packet', receipt.messageHash || '--')}
-              ${drawerStat('RSSI', receipt.rssi != null ? String(receipt.rssi) : 'n/a')}
-              ${drawerStat('SNR', receipt.snr != null ? String(receipt.snr) : 'n/a')}
-              ${drawerStat('Duration', receipt.duration != null ? `${receipt.duration} ms` : 'n/a')}
-              ${drawerStat('Packets', String(receipt.count))}
-            </div>
-          </section>
-          <section class="drawer-card">
-            <h3>Path Trace</h3>
-            <div class="receipt-path">${receiptPathMarkup(receipt)}</div>
-            ${receiptDistanceMarkup(receipt)}
-            <pre class="drawer-codeblock">${escapeHtml(receiptPathText(receipt))}</pre>
-          </section>
-        `,
-      };
-    }
     default:
       return null;
   }
@@ -2910,12 +2946,6 @@ if (ui.drawerScrim) {
   });
 }
 
-function targetIsPanelInteractive(target) {
-  return Boolean(target.closest(
-    'button, a, input, label, .leaflet-container, .leaflet-control-container, .leaflet-popup, .leaflet-marker-pane, .detail-drawer',
-  ));
-}
-
 document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) {
     return;
@@ -2926,13 +2956,6 @@ document.addEventListener('click', (event) => {
     openDrawer(action.dataset.drawerAction || '');
     return;
   }
-
-  const receiptCard = event.target.closest('.receipt-card[data-observer-key]');
-  if (receiptCard && ui.receipts?.contains(receiptCard) && !targetIsPanelInteractive(event.target)) {
-    openDrawer('receipt', receiptCard.dataset.observerKey || '');
-    return;
-  }
-
 });
 
 window.addEventListener('keydown', (event) => {

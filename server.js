@@ -2946,6 +2946,11 @@ function receiptPathHops(report) {
       // Falls back to the hash itself, so an unresolved hop still reads as the
       // only thing actually known about it rather than as a blank chip.
       label: observerDisplayLabel(observer, observer?.key || '') || hop,
+      // Full public key of the node this prefix resolved to, so the client can
+      // link the hop out to CoreScope. Empty when the prefix matched nothing or
+      // matched several nodes -- observerForPathHop refuses to guess, and a
+      // guessed key would link to the wrong node's page.
+      key: observer?.key || '',
       resolved: Boolean(observer),
       hasLocation: observer?.lat != null && observer?.lon != null,
       isTerminal,
@@ -2992,12 +2997,17 @@ function receiptDistanceEstimate(report) {
       .map((entry) => ({
         hash: entry.hop,
         label: entry.observer ? observerDisplayLabel(entry.observer, entry.observer.key) : '',
+        key: entry.observer?.key || '',
       }));
     segments.push({
       fromHash: from.hop,
       toHash: to.hop,
       fromLabel: observerDisplayLabel(from.observer, from.observer.key),
       toLabel: observerDisplayLabel(to.observer, to.observer.key),
+      // Both endpoints are located, so both are resolved by definition and
+      // always carry a key. Carried so each leg endpoint can link to its node.
+      fromKey: from.observer.key,
+      toKey: to.observer.key,
       skippedHops,
       skippedHopCount: Math.max(0, to.index - from.index - 1),
       estimated: to.index - from.index > 1,

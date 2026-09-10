@@ -588,12 +588,23 @@ test('packet path distance estimates across unknown or unlocated path hops', asy
   assert.equal(receipt.pathDistanceSegments[0].estimated, true);
   assert.equal(receipt.pathDistanceSegments[0].skippedHopCount, 2);
   // The jumped hops are carried by identity, not just counted. Neither prefix
-  // matches an observer, so both come through with an empty label and the hash
-  // is all the card can show for them.
+  // matches an observer, so both come through with an empty label and an empty
+  // key: the hash is all the card can show, and with no key there is no node
+  // page to link the hop to.
   assert.deepEqual(receipt.pathDistanceSegments[0].skippedHops, [
-    { hash: 'AAAAAA', label: '' },
-    { hash: 'BBBBBB', label: '' },
+    { hash: 'AAAAAA', label: '', key: '' },
+    { hash: 'BBBBBB', label: '', key: '' },
   ]);
+  // Both leg endpoints are located, so both resolved, so both carry the full
+  // public key the card turns into a CoreScope node link.
+  assert.equal(receipt.pathDistanceSegments[0].fromKey, locatedObservers[0].key);
+  assert.equal(receipt.pathDistanceSegments[0].toKey, locatedObservers[1].key);
+  // Same rule on the chip list: resolved hops carry a key, unresolved ones do
+  // not, so an unnamed hop can never link to somebody else's node page.
+  const hopKeys = Object.fromEntries(receipt.pathHops.map((hop) => [hop.hash, hop.key]));
+  assert.equal(hopKeys['3FA002'], locatedObservers[0].key);
+  assert.equal(hopKeys.AAAAAA, '');
+  assert.equal(hopKeys.BBBBBB, '');
   // One line drawn, three hops crossed. The header shows both only when they
   // differ, so this is the case that has to keep reporting them separately.
   assert.equal(receipt.pathSpannedHopCount, 3);
@@ -676,6 +687,9 @@ test('a jumped hop that is named but unlocated keeps its name', async () => {
     .filter((hop) => hop.hash === 'D2E005');
   assert.equal(jumped.length, 1);
   assert.equal(jumped[0].label, 'Unlocated Middle');
+  // Named but unlocated: it anchors no leg, yet it is a known node, so it keeps
+  // the key that lets the card link it out.
+  assert.equal(jumped[0].key, unlocatedKey);
 });
 
 test('packet path reports a straight-line span that is not the sum of its legs', async () => {
