@@ -385,6 +385,13 @@ const OBSERVER_RESEED_SCRIPT = resolveAppPath(envValue('OBSERVER_RESEED_SCRIPT',
 const OBSERVER_RESEED_PYTHON = envValue('OBSERVER_RESEED_PYTHON', 'python3');
 const OBSERVER_RESEED_LOG_PATH = resolveAppPath(envValue('OBSERVER_RESEED_LOG', path.join('data', 'reseed-log.jsonl')));
 const OBSERVER_RESEED_TIMEOUT_MS = Math.max(30000, envNumber('OBSERVER_RESEED_TIMEOUT_MS', 240000));
+// A boundary edit only reaches observer positions through a seeding pass, so a
+// deploy that widens the map used to wait up to a day for the next scheduled
+// run. The boot pass closes that gap: it fires once, when the region inputs no
+// longer match the ones the last successful pass recorded. Delayed rather than
+// immediate so the port bind, the MQTT connect and the first learned profiles
+// are not competing with a subprocess that may run for minutes.
+const OBSERVER_RESEED_BOOT_DELAY_MS = Math.max(0, envNumber('OBSERVER_RESEED_BOOT_DELAY_MS', 60000));
 const ADMIN_TOKEN = envValue('ADMIN_TOKEN', '');
 const UPLINK_CODES_FILE = envValue('UPLINK_CODES_FILE', '');
 const REGION_FALLBACK = envValue('REGION_FALLBACK', '').trim().toLowerCase();
@@ -1199,6 +1206,7 @@ let reseedInFlight = false;
 let reseedLastDayKey = null;
 let reseedLastResult = null;
 let reseedInterval = null;
+let reseedBootTimer = null;
 let observerActivityWriteTimer = null;
 let resultsWriteTimer = null;
 
@@ -1562,6 +1570,52 @@ function appendReseedLog(entry) {
   }
 }
 
+// Both region inputs are hashed, not only the boundary file: moving a code
+// between the "codes" and "outOfArea" blocks changes which observers are in
+// area, and re-running a pass that turns out to change nothing is far cheaper
+// than reasoning about which edits can affect positions.
+function computeRegionFingerprint() {
+  const inputs = [['regions', REGIONS_FILE], ['uplinkCodes', UPLINK_CODES_FILE]];
+  const parts = [];
+  for (const [label, configured] of inputs) {
+    if (!configured) {
+      continue;
+    }
+    try {
+      const digest = createHash('sha256')
+        .update(fs.readFileSync(resolveAppPath(configured)))
+        .digest('hex');
+      parts.push(`${label}:${digest}`);
+    } catch (error) {
+      // An unreadable input is not a changed input. Folding the error into the
+      // hash would make every boot look different and fire a pass each time.
+      logger.warn(`[reseed] could not fingerprint ${configured}: ${error.message}`);
+      return null;
+    }
+  }
+  if (!parts.length) {
+    return null;
+  }
+  return createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 16);
+}
+
+// Only successful passes count: a failed run leaves positions untouched, so its
+// fingerprint must not satisfy the next boot's check.
+function loadLastReseedFingerprint() {
+  try {
+    const lines = fs.readFileSync(OBSERVER_RESEED_LOG_PATH, 'utf8').trim().split('\n');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const entry = JSON.parse(lines[index]);
+      if (entry && entry.ok && entry.regionFingerprint) {
+        return String(entry.regionFingerprint);
+      }
+    }
+  } catch {
+    // no log yet
+  }
+  return null;
+}
+
 // Restarts must not re-run a pass that already ran today, so the last day key
 // comes off the log rather than resetting to null on every boot.
 function loadLastReseedDayKey() {
@@ -1597,6 +1651,7 @@ async function runObserverReseed(trigger = 'manual') {
   reseedInFlight = true;
   const startedAt = Date.now();
   const dayKey = localDayKey();
+  const regionFingerprint = computeRegionFingerprint();
   try {
     // Land anything learned since the last debounce so the script reads a file
     // that matches memory, and clear the pending timer that would otherwise
@@ -1610,7 +1665,7 @@ async function runObserverReseed(trigger = 'manual') {
     if (error || !summary || !summary.wrote) {
       const detail = error ? error.message : (summary ? 'script reported no write' : 'no summary line');
       const failure = {
-        ok: false, trigger, dayKey, at: new Date().toISOString(),
+        ok: false, trigger, dayKey, regionFingerprint, at: new Date().toISOString(),
         ms: Date.now() - startedAt, error: detail,
         stderr: stderr.trim().split('\n').slice(-3).join(' | '),
       };
@@ -1625,7 +1680,7 @@ async function runObserverReseed(trigger = 'manual') {
     scheduleObserverNamesWrite();
 
     const result = {
-      ok: true, trigger, dayKey, at: new Date().toISOString(),
+      ok: true, trigger, dayKey, regionFingerprint, at: new Date().toISOString(),
       ms: Date.now() - startedAt,
       profilesChangedInMemory: applied,
       profiles: summary.profiles || null,
@@ -1643,12 +1698,16 @@ async function runObserverReseed(trigger = 'manual') {
     );
     appendReseedLog(result);
     reseedLastResult = result;
-    reseedLastDayKey = dayKey;
+    // A boot pass is extra work, not the day's pass: claiming the day key here
+    // would let a deploy suppress the scheduled run.
+    if (trigger !== 'boot') {
+      reseedLastDayKey = dayKey;
+    }
     broadcastSnapshot(true);
     return result;
   } catch (error) {
     const failure = {
-      ok: false, trigger, dayKey, at: new Date().toISOString(),
+      ok: false, trigger, dayKey, regionFingerprint, at: new Date().toISOString(),
       ms: Date.now() - startedAt, error: error.message,
     };
     logger.warn(`[reseed] ${trigger} threw: ${error.message}`);
@@ -3967,6 +4026,9 @@ app.get('/api/admin/reseed', (request, response) => {
     lastDayKey: reseedLastDayKey,
     last: reseedLastResult,
     logPath: OBSERVER_RESEED_LOG_PATH,
+    regionFingerprint: computeRegionFingerprint(),
+    lastSeededFingerprint: loadLastReseedFingerprint(),
+    bootPassPending: reseedBootTimer !== null,
   });
 });
 
@@ -4220,6 +4282,26 @@ function startRuntime() {
       `[reseed] self-refresh on, daily after ${String(OBSERVER_RESEED_HOUR).padStart(2, '0')}:00 local`
       + `${reseedLastDayKey ? `, last scheduled pass ${reseedLastDayKey}` : ''}`,
     );
+    // A widened boundary only reaches observer positions through a pass, so a
+    // deploy that changes the region inputs runs one now rather than waiting
+    // for OBSERVER_RESEED_HOUR. The hour is deliberately not consulted: the
+    // trigger is the edit, not the clock. Fires once per changed fingerprint,
+    // because the pass itself records the new one.
+    const fingerprint = computeRegionFingerprint();
+    const seeded = loadLastReseedFingerprint();
+    if (fingerprint && fingerprint !== seeded) {
+      reseedBootTimer = setTimeout(() => {
+        reseedBootTimer = null;
+        runObserverReseed('boot').catch((error) => {
+          logger.warn(`[reseed] boot pass rejected: ${error.message}`);
+        });
+      }, OBSERVER_RESEED_BOOT_DELAY_MS);
+      reseedBootTimer.unref?.();
+      logger.info(
+        `[reseed] region inputs changed (${seeded || 'none recorded'} -> ${fingerprint});`
+        + ` boot pass in ${Math.round(OBSERVER_RESEED_BOOT_DELAY_MS / 1000)}s`,
+      );
+    }
   }
   startMqtt();
 
@@ -4292,6 +4374,9 @@ export function ingestMqttMessage(topic, payload) {
 }
 
 export {
+  computeRegionFingerprint,
+  loadLastReseedFingerprint,
+  runObserverReseed,
   app,
   server,
   APP_DATA_DIR,

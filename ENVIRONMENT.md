@@ -41,6 +41,7 @@ tile request URLs, so scope it to this project and its deployment hostnames.
 | `OBSERVER_RESEED_PYTHON` | `python3` | Interpreter used to run it. |
 | `OBSERVER_RESEED_LOG` | `data/reseed-log.jsonl` | One JSON line per pass: counts, newly located observers, hash-width moves, duration. |
 | `OBSERVER_RESEED_TIMEOUT_MS` | `240000` | Hard timeout for the script. |
+| `OBSERVER_RESEED_BOOT_DELAY_MS` | `60000` | Delay before the boot pass that fires when `REGIONS_FILE` or `UPLINK_CODES_FILE` no longer match the fingerprint recorded by the last successful pass. Ignores `OBSERVER_RESEED_HOUR`, needs `OBSERVER_RESEED_ENABLED`, and does not consume the day's scheduled run. |
 | `ADMIN_TOKEN` | blank | When set, exposes `POST /api/admin/reseed` and `GET /api/admin/reseed`, authenticated with an `x-admin-token` header, so an outside scheduler can drive or inspect the refresh. Both routes 404 while it is blank. |
 | `SEED_BACKUPS_KEEP` | `14` | Backups of `OBSERVERS_FILE` the script keeps; older `.bak-*` files are pruned after each write. |
 
