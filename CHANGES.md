@@ -4,6 +4,25 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.7
+
+- the observer card's hash-width note now reads `2-byte path hash` rather than
+  `2-byte path`. Neither of the obvious words was right alone: the note only
+  appears when the node's own advert confirmed the width, so it reports that
+  node's `path.hash.mode` setting and not the route any message took, which
+  argues against `path`; but `prefix` alone sits immediately after the truncated
+  key on the same row and reads as an annotation on that string's display width
+  rather than on a radio setting. `path hash` is upstream's own term — the
+  MeshCore FAQ names `path.hash.mode 1` a 2-byte path hash, and the bytes are a
+  public-key prefix a v1.14+ repeater appends before forwarding, not a digest of
+  the route — so the card now matches what an operator sees in the app.
+- no layout change. The span was already `white-space: nowrap; word-break:
+  keep-all`, the exemption added when the break-anywhere rule on
+  `.observer-detail` split `2-BYTE PATH` after the hyphen. Measured against the
+  real stylesheet at 1440, 390 and 320px: the span grows 103px to 152px, the
+  narrowest container is 286px, no horizontal overflow at any width, and the
+  detail line's height is unchanged because it was already two lines at 390px.
+
 ## v1.3.8+bayarea.6
 
 - the CoreScope seeding pass now also runs about a minute after boot when the
