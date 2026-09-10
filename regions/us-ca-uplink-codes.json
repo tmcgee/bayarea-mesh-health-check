@@ -3,13 +3,14 @@
     "GoMesh publishes on meshcore/<CODE>/<pubkey>/<stream>, where <CODE> is the",
     "airport identifier of the uplink gateway's metro - NOT the node's own position.",
     "Use it only as a group-level hint for observers that never publish coordinates.",
-    "Any code absent from this table is treated as out-of-area and its observers are",
-    "excluded from the directory, the region hierarchy and every count.",
+    "A code absent from BOTH blocks is currently left unclassified: its observers stay",
+    "listed with no region and the code is logged once. Absent does NOT mean excluded.",
+    "Only the outOfArea block excludes.",
     "confidence=observed: seen on mqtt.gomesh.dev and cross-checked against the",
     "  polygon-derived group of at least one located observer publishing under it.",
     "confidence=anticipated: an airport identifier inside a county in",
     "  regions/us-ca-bay-area.geojson, not yet observed on the broker. Listed so a",
-    "  new gateway does not silently drop its observers as out-of-area.",
+    "  new gateway's coordinate-less observers land in a group instead of no region.",
     "Groups must match REGION_GROUP_PROPERTY values in the boundary file."
   ],
   "version": 1,
@@ -120,28 +121,53 @@
       "confidence": "anticipated"
     },
     "MCE": {
-      "group": "Central Valley",
+      "group": "San Joaquin North",
       "label": "Merced",
       "confidence": "observed"
     },
     "MOD": {
-      "group": "Central Valley",
+      "group": "San Joaquin North",
       "label": "Modesto",
       "confidence": "anticipated"
     },
     "SCK": {
-      "group": "Central Valley",
+      "group": "San Joaquin North",
       "label": "Stockton",
       "confidence": "anticipated"
     },
     "SMF": {
-      "group": "Central Valley",
+      "group": "Sacramento Valley",
       "label": "Sacramento",
       "confidence": "anticipated"
     },
     "MHR": {
-      "group": "Central Valley",
+      "group": "Sacramento Valley",
       "label": "Mather",
+      "confidence": "anticipated"
+    },
+    "BFL": {
+      "group": "San Joaquin South",
+      "label": "Bakersfield",
+      "confidence": "anticipated"
+    },
+    "FAT": {
+      "group": "San Joaquin South",
+      "label": "Fresno",
+      "confidence": "anticipated"
+    },
+    "MAE": {
+      "group": "San Joaquin South",
+      "label": "Madera",
+      "confidence": "anticipated"
+    },
+    "HJO": {
+      "group": "San Joaquin South",
+      "label": "Hanford",
+      "confidence": "anticipated"
+    },
+    "VIS": {
+      "group": "San Joaquin South",
+      "label": "Visalia",
       "confidence": "anticipated"
     },
     "COA": {
@@ -172,8 +198,8 @@
   },
   "outOfArea": {
     "$comment": "Authoritative exclusion list. Observers uplinking through these codes are removed from the directory, all counts, region chips, the map, and every selection - unconditionally, whether or not REGION_FALLBACK is set. A code in neither block is left unclassified: the observer stays listed with no region and the code is logged once.",
-    "BFL": "Bakersfield - Kern County, outside the boundary file",
     "MCO": "Orlando FL - the cluster REQUIRE_REGION_MATCH was added for",
-    "PHL": "Philadelphia PA - single repeater"
+    "PHL": "Philadelphia PA - single repeater",
+    "MCI": "Kansas City MO - MoKanMesh, relayed onto the broker from out of state"
   }
 }

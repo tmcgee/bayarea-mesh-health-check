@@ -87,7 +87,7 @@ Three things this settles:
 
 1. **The broker is live and busy**, not merely "standing up" as the landing page suggests. SJC alone has 11 observers.
 2. **It is not Bay-Area-only.** MCO and PHL are East Coast, so the GeoJSON region filter is doing real work — those observers will simply show as unmatched rather than polluting a region.
-3. **Four codes fell outside the original region file** — PRB and SBP (San Luis Obispo County), MCE (Merced), COA (Calaveras). The file has been extended from 16 to 23 counties, adding San Luis Obispo to Central Coast, Merced to Central Valley, and a new **Sierra Foothills** group (Amador, Calaveras, El Dorado, Placer, Tuolumne). Every in-state observer above now resolves to a named county; Reno and Orlando still correctly fall through.
+3. **Four codes fell outside the original region file** — PRB and SBP (San Luis Obispo County), MCE (Merced), COA (Calaveras). The file has been extended from 16 to 28 counties (23 at the time; Kern, then Fresno, Madera, Kings and Tulare added 2026-09-10), adding San Luis Obispo to Central Coast, Merced to the Central Valley group (since split — see §3), and a new **Sierra Foothills** group (Amador, Calaveras, El Dorado, Placer, Tuolumne). Every in-state observer above now resolves to a named county; Reno and Orlando still correctly fall through.
 
 ### Envelope field mapping — GoMesh differs from LetsMesh
 
@@ -161,7 +161,7 @@ Since `#healthcheck` is joinable by name alone, publishing is easy: tell people 
 
 The bundled files are country-level (`us-states.geojson`) or 32,656 Census places (`us-places.geojson`), neither of which gives useful Bay Area grouping. I generated a purpose-built file for you:
 
-**`regions/us-ca-bay-area.geojson`** — 23 counties, 287 KB, with `name` = county and `group` = subregion:
+**`regions/us-ca-bay-area.geojson`** — 28 counties, 474 KB, with `name` = county and `group` = subregion:
 
 | Group | Counties | Live IATA codes seen |
 |---|---|---|
@@ -171,10 +171,20 @@ The bundled files are country-level (`us-states.geojson`) or 32,656 Census place
 | East Bay | Alameda, Contra Costa | OAK |
 | North Bay | Marin, Napa, Solano, Sonoma | STS |
 | Central Coast | Santa Cruz, San Benito, Monterey, San Luis Obispo | MRY, PRB, SBP |
-| Central Valley | Sacramento, San Joaquin, Stanislaus, Yolo, Merced | MCE |
+| Sacramento Valley | Sacramento, Yolo | SMF, MHR |
+| San Joaquin North | San Joaquin, Stanislaus, Merced | SCK, MOD, MCE |
+| San Joaquin South | Kern, Fresno, Madera, Kings, Tulare | BFL, FAT, MAE, HJO, VIS |
 | Sierra Foothills | Amador, Calaveras, El Dorado, Placer, Tuolumne | COA |
 
-The county list is not guesswork — it was fitted to the broker census in Section 1. The original 16-county draft left PRB, SBP, MCE, and COA observers unmatched, so San Luis Obispo and Merced were added and a Sierra Foothills group created. The extra Central Coast / Central Valley reach also tracks where the network has been expanding — Santa Cruz, Monterey, Sonoma, Sacramento ([r/santacruz announcement](https://www.reddit.com/r/santacruz/comments/1toqpfz/open_source_emergency_offgrid_communications_for/), [Sonoma Mesh](https://sonomamesh.com/)). Drop features you don't want; unmatched observers degrade gracefully.
+The county list is not guesswork — it was fitted to the broker census in Section 1. The original 16-county draft left PRB, SBP, MCE, and COA observers unmatched, so San Luis Obispo and Merced were added and a Sierra Foothills group created. Kern was added later (2026-09-10): it was originally excluded as out of area, but CoreScope shows a live 16-node cluster there — Tehachapi (`TEH -` prefix), Frazier Park (`FP -`), and Bakersfield itself — all within reach of the network, so it is now in the boundary file and `BFL` moved from the exclusion list into `codes`. The single **Central Valley** group was split three ways on the same day. It had grown to six counties spanning about 300 miles, and it conflated the state's two distinct valleys: Sacramento and Yolo are in the Sacramento Valley, everything else in the group is San Joaquin Valley ([Central Valley](https://en.wikipedia.org/wiki/Central_Valley_(California))). The San Joaquin line follows standard usage — San Joaquin, Stanislaus and Merced are the [North San Joaquin Valley](https://www.labor.ca.gov/wp-content/uploads/sites/338/2024/11/North-San-Joaquin-Valley-RPP2.pdf), and Kern is the valley's south end ([Fresno State CRPC](https://socialsciences.fresnostate.edu/geography/crpc/scope.html)). `San Joaquin North` and `San Joaquin South` are named that way round so they sort adjacently: groups are ordered by `localeCompare` (`server.js:2577`, `2833`), nothing hardcodes an order, and no group name appears anywhere outside these two data files.
+
+Adding Kern left a ~200 mile hole between Merced and Kern, so **Fresno, Madera, Kings and Tulare were added the same day** and the San Joaquin Valley is now complete at its standard eight counties. That was not a theoretical gap: point-testing CoreScope's 846 nodes against Census polygons for those four counties found 15 real nodes inside them — 7 in Fresno (including `KJA_RPT_Fresno_01`, `KJA_RPT_CLOVIS_2` and `K6US-Repeater`), 4 in Madera, 1 in Kings, 3 in Tulare, several heard within the hour. All 15 now resolve to `San Joaquin South`, which holds five counties rather than Kern alone. Madera sits in the south group with the other four; the north group stays at the three counties the standard definition gives it.
+
+Before that, a Fresno observer would have hit the worst path in the system: `REQUIRE_REGION_MATCH` discards coordinates outside the boundary file, so it would have survived as unlocated, fallen through to the uplink-code table where `FAT` was unclassified, and ended up listed with no region, absent from the map, and still a scoring target that could never be reached. `FAT`, `MAE`, `HJO` and `VIS` were added as `anticipated` codes to close the unlocated case as well.
+
+The split does not move the score: `regionCoverageFor` counts only groups holding a located observer in the scoring set, and the only Central Valley observers on the broker are three in Merced, all of which land in `San Joaquin North`. `Sacramento Valley` and `San Joaquin South` start empty, so they produce no chips and no coverage denominator until an observer appears in them.
+
+The extra Central Coast / Central Valley reach also tracks where the network has been expanding — Santa Cruz, Monterey, Sonoma, Sacramento ([r/santacruz announcement](https://www.reddit.com/r/santacruz/comments/1toqpfz/open_source_emergency_offgrid_communications_for/), [Sonoma Mesh](https://sonomamesh.com/)). Drop features you don't want; unmatched observers degrade gracefully.
 
 Enable it with:
 
@@ -186,9 +196,13 @@ REGION_GROUP_PROPERTY=group
 
 Source geometry: legal county boundaries from the [Census TIGERweb State_County service](https://tigerweb.geo.census.gov/arcgisrest/) (`STATE='06'`, GeoJSON, EPSG:4326), reduced with Ramer–Douglas–Peucker at 0.0009° (~100 m) — 7,259 vertices, 287 KB. Rebuild with `build_bayarea_geojson.py`.
 
+Two corrections to the paragraph above, both found on 2026-09-10 while adding Kern. The shipped file measures **20,260 vertices** across its 28 features, not 7,259. And `build_bayarea_geojson.py` is not in this repository, so Kern could not be produced by the documented pipeline: it was fetched from the same TIGERweb layer and reduced with a fresh RDP implementation at **0.0003° (~33 m)**, chosen because 0.0009° returned roughly half the vertex density of the existing counties (Monterey 578 against the shipped 1,431). Kern is landlocked, so the shoreline fidelity that motivated the TIGERweb switch does not apply to it; it lands at 120 vertices because its borders are largely straight lines. Fresno, Madera, Kings and Tulare came through the same 0.0003° path later that day — 1,770, 1,017, 162 and 587 vertices respectively, reduced from 9,733, 6,367, 2,334 and 3,365 raw. Their Sierra edges are genuinely convoluted, which is why they cost far more than Kern.
+
 The first draft used the [plotly/datasets US counties GeoJSON](https://github.com/plotly/datasets) decimated to ~200 m, and that was a real bug: at ~70 vertices per county the shoreline is gone, so an Alameda island repeater at 37.7595, −122.2642 and a Monterey harbour node at 36.6175, −121.8804 both fell **outside their own counties** and lost their region. TIGERweb boundaries include the water portion of each county, so dock, island, and marina nodes now resolve. Re-verified: Treasure Island → San Francisco, Angel Island → Marin, Berkeley Marina → Alameda, Santa Cruz wharf → Santa Cruz, Half Moon Bay harbour → San Mateo, Sausalito → Marin; Fresno, Bakersfield, Reno, Orlando, and a point 60 km offshore all correctly return no region.
 
-Point-in-polygon verified against one real observer location per live IATA code: Twin Peaks → San Francisco, Oakland → Alameda/East Bay, San Jose → Santa Clara/South Bay, San Carlos → San Mateo/Peninsula, Santa Rosa → Sonoma/North Bay, Monterey → Monterey/Central Coast, Paso Robles and Morro Bay → San Luis Obispo/Central Coast, Merced → Merced/Central Valley, Dorrington → Calaveras/Sierra Foothills. Reno and Orlando correctly fall through as unmatched.
+Two of those claims no longer hold. **Bakersfield and Fresno now resolve to San Joaquin South by design** (§3 above). And re-testing the shipped file on 2026-09-10 put the Monterey harbour point at 36.6175, −121.8804 and the tip of the Santa Cruz wharf at 36.9581, −122.0175 **outside** any county, while the wharf base at 36.9628, −122.0169 and Treasure Island, Berkeley Marina and the Alameda island node all resolve as described. So the over-water reach is shorter than this paragraph claims. Nobody has reported a node affected by it, and it was not investigated further.
+
+Point-in-polygon verified against one real observer location per live IATA code: Twin Peaks → San Francisco, Oakland → Alameda/East Bay, San Jose → Santa Clara/South Bay, San Carlos → San Mateo/Peninsula, Santa Rosa → Sonoma/North Bay, Monterey → Monterey/Central Coast, Paso Robles and Morro Bay → San Luis Obispo/Central Coast, Merced → Merced/San Joaquin North, Dorrington → Calaveras/Sierra Foothills. Reno and Orlando correctly fall through as unmatched.
 
 ---
 
@@ -420,8 +434,10 @@ So the code is a good **group-level** hint and a bad county-level one. The imple
 
 `UPLINK_CODES_FILE` points at `regions/us-ca-uplink-codes.json`, which has two blocks:
 
-- `codes` — in-area identifiers, each mapping to a region **group** that must exist in the boundary file (a code pointing at an unknown group is rejected at load with a warning, so it can never create a phantom chip). 31 entries: the 10 evidence-backed ones marked `"confidence": "observed"`, the rest `"anticipated"`.
-- `outOfArea` — the **authoritative exclusion list**: `BFL` (Bakersfield/Kern), `MCO` (the Orlando cluster `REQUIRE_REGION_MATCH` was added for), `PHL` (a single Philadelphia repeater).
+- `codes` — in-area identifiers, each mapping to a region **group** that must exist in the boundary file (a code pointing at an unknown group is rejected at load with a warning, so it can never create a phantom chip). 36 entries: the 10 evidence-backed ones marked `"confidence": "observed"`, the rest `"anticipated"` — including `BFL`, which is only `anticipated` because no located observer publishing under it has been available to cross-check since it left the exclusion list.
+- `outOfArea` — the **authoritative exclusion list**: `MCO` (the Orlando cluster `REQUIRE_REGION_MATCH` was added for), `PHL` (a single Philadelphia repeater), `MCI` (Kansas City, a MoKanMesh node relayed onto the broker). `BFL` was on this list until 2026-09-10 and is now an in-area code — see §3.
+
+  A code in **neither** block is not excluded: its observers are listed with no region and the code is logged once. That is why `MCI` had to be added by hand after "MoKanMesh Eastwood Hill" appeared as an unheard, unlocated, region-less row that was still a scoring target. Inverting this default — absent means excluded — is an open design question, not current behaviour.
 
 The two gates are deliberately separate:
 
@@ -475,6 +491,8 @@ Central Coast     6 +2      North Bay      1 +2      Sierra Foothills  2
 Central Valley    2         Peninsula      1 +1      South Bay         5 +4
 East Bay          4 +4      San Francisco  1
 ```
+
+That output predates the 2026-09-10 Central Valley split; its two Central Valley observers are in Merced and now report as San Joaquin North.
 
 All 13 previously region-less observers now sit in a group, all 13 render with a disabled checkbox, and the three out-of-area repeaters are gone from every count. Map markers stay at 22 — by design. `npm run check` clean; `npm test` **50/50** (43 baseline + 7 new tests in `test/uplink-code-region.test.js` covering inference, coordinate precedence, unconditional exclusion, unknown codes, hierarchy counts, target-set exclusion, and the fallback-off path).
 
@@ -594,7 +612,7 @@ Regions Reached    3 / 8
 
 The card's `title` breaks the number down on hover — `Reached: East Bay (4/4), San Francisco (1/1)…` / `No report: Sierra Foothills (0/2)…` — and both the card and the tooltip clear to `--` under the same `healthMeasured` gate as the rest of the score (§6d), so a session that has heard nothing shows a placeholder rather than a misleading `0 / 8`.
 
-The eight groups currently in play, from a live session: Central Coast (6 observers), East Bay (4), South Bay (4), Central Valley (2), Sierra Foothills (2), North Bay (1), Peninsula (1), San Francisco (1). Note this spans far more than one RF domain — a local SF test that reaches 2 of 8 is not a failing grade, it is an accurate statement that the Bay Area mesh is not one contiguous coverage blanket. That is more useful than a single percentage precisely because it cannot be averaged away.
+The eight groups in play in one live session, recorded before the 2026-09-10 Central Valley split: Central Coast (6 observers), East Bay (4), South Bay (4), Central Valley (2), Sierra Foothills (2), North Bay (1), Peninsula (1), San Francisco (1). Note this spans far more than one RF domain — a local SF test that reaches 2 of 8 is not a failing grade, it is an accurate statement that the Bay Area mesh is not one contiguous coverage blanket. That is more useful than a single percentage precisely because it cannot be averaged away.
 
 Seven cards in a two-column `.score-grid` would leave a half-width orphan, so the last card spans instead. The rule is written to be self-correcting rather than pinned to seven:
 
@@ -1512,7 +1530,7 @@ One `[mqtt] subscribed` line, not nine — the single-topic grant replaced the p
 - [x] Credentials verified: `example_user` returns CONNACK 0 and **SUBACK granted on `meshcore/#`**
 - [x] Live feed confirmed: 2,400 messages / 34 observers / 12 IATA codes in 270 s
 - [x] `MQTT_TOPIC=meshcore/#` chosen — broad grant, so no per-city list needed
-- [x] `regions/us-ca-bay-area.geojson` built and fitted to the observed IATA codes (23 counties)
+- [x] `regions/us-ca-bay-area.geojson` built and fitted to the observed IATA codes (28 counties)
 - [x] `.env.bayarea.example` written with the verified MQTT block
 - [x] Test channel set to the hashtag channel `#healthcheck`, key derived (`3ae59c2c…02ae`) and confirmed to load as channel hash `02`
 - [x] `EXTERNAL_LINK_URL` → `.org`, `CORESCOPE_URL` → `https://corescope.stonekitty.net`
@@ -1522,7 +1540,7 @@ One `[mqtt] subscribed` line, not nine — the single-topic grant replaced the p
 - [x] Theme matched to bayareameshcore.org (`public/theme-bayarea.css`, both light and dark) and icon recoloured
 - [x] Signal-quality regression fixed: GoMesh publishes `SNR`/`RSSI` uppercase as strings, so telemetry never reached the receipts; case-insensitive extraction added plus two regression tests (`npm test` now 43/43)
 - [x] Coverage map scope: `MAP_OBSERVER_SCOPE=directory` wired through `renderHtmlTemplate` → `data-map-observer-scope` on `<body>`, so the map plots the located directory (22 markers) instead of the 10-node scoring target (8 markers)
-- [x] Uplink-code region fallback: `UPLINK_CODES_FILE=regions/us-ca-uplink-codes.json` + `REGION_FALLBACK=uplink-code` place the 13 coordinate-less observers into region groups read-only, and the 3 out-of-area codes (`BFL`/`MCO`/`PHL`) are excluded from the directory unconditionally (`npm test` now 50/50)
+- [x] Uplink-code region fallback: `UPLINK_CODES_FILE=regions/us-ca-uplink-codes.json` + `REGION_FALLBACK=uplink-code` place the 13 coordinate-less observers into region groups read-only, and the out-of-area codes (`MCO`/`PHL`/`MCI`; `BFL` removed 2026-09-10) are excluded from the directory unconditionally (`npm test` now 50/50)
 - [x] Coverage map pulled back out of the collapsed section: it now has its own always-visible full-width row directly above the Show Additional Information toggle, and the inner grid dropped the `map` area so it doesn't reserve an empty column (§4)
 - [x] Startup placeholders: a session with no receipts now reports `healthMeasured: false` / `healthLabel: WAITING`, and the UI shows `Waiting` and `--` in the default text colour for the score, Observers Reached, and Repeaters instead of a red POOR / 0% / 0 / 10 (§6d, `npm test` now 51/51)
 - [x] Full run against GoMesh: 23 regions loaded, `meshcore/#` subscribed, 30-32 active observers, `npm run check` clean, `npm test` 43/43 with `REQUIRE_REGION_MATCH=false REGIONS_FILE= SITE_URL=` (the suite's fixtures are Boston coordinates, so the Bay Area `.env` legitimately fails 9 of them)
