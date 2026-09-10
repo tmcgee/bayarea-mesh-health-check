@@ -194,6 +194,11 @@
       "group": "Sierra Foothills",
       "label": "South Lake Tahoe",
       "confidence": "anticipated"
+    },
+    "MPI": {
+      "group": "Sierra Foothills",
+      "label": "Mariposa",
+      "confidence": "anticipated"
     }
   },
   "outOfArea": {

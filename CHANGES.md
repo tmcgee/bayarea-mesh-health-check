@@ -4,6 +4,37 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.5
+
+- removed the `Packet Detail` drawer and the click target on receipt cards.
+  Everything in it except three fields was already on the card itself, and
+  those three - the per-receipt message hash, the raw `A -> B -> C` path
+  string, and the hop chip row - are all still printed in the Technical Logs
+  drawer's Trace Lines, so nothing is lost from the page
+- linked each observer's name on its card to that station's CoreScope
+  observer page, and every named repeater in the leg list and the hop chips
+  to its CoreScope node page. CoreScope routes the two identities
+  case-sensitively for the same public key, so observer links are uppercase
+  and node links lowercase; both were confirmed in the rendered UI, where the
+  wrong case gives a `Node not found` page rather than a redirect
+- a hop links only when its prefix resolved to exactly one station; an
+  ambiguous or unknown prefix stays plain text rather than pointing at a
+  guess. `pathHops`, `segments` and `skippedHops` now carry the resolved
+  node's public key for this, empty when unresolved
+- added Mariposa and Alpine counties to the boundary file, both in Sierra
+  Foothills. Point-testing all 692 located CoreScope nodes against every
+  California county found only six outside the boundary, two of them bad
+  data; the rest were `Bullion Repeater` and `Bullion Room (hello)` in
+  Mariposa and `SIERRA Lake Alpine` in Alpine, the latter part of the same
+  Highway 4 chain that already fills Calaveras. Mariposa was enclosed on
+  three sides by counties already in the file
+- added `MPI` (Mariposa-Yosemite) as an anticipated code. Alpine County has
+  no IATA airport and so gets no code; an unlocated Alpine observer stays
+  unclassified rather than being guessed into a group
+- left Santa Barbara out despite `Gravel Peak` being the busiest excluded
+  node on the broker: Southern California runs MeshCore on a different
+  frequency, so those repeaters are noise on this network for now
+
 ## v1.3.8+bayarea.4
 
 - reworked the repeater path on receipt cards: the header now reads
