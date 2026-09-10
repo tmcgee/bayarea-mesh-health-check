@@ -854,14 +854,16 @@ On the store of 736 profiles this recorded 361 widths: 1 one-byte, 349 two-byte,
 **The row now states the mode**, so a wider prefix never looks like an inconsistency:
 
 ```
-C0ffee SF               C0FFEE   SAN FRANCISCO, SAN FRANCISCO · MAPPED · 3-BYTE PATH
-67 Repeater             6767     CONTRA COSTA, EAST BAY · MAPPED · 2-BYTE PATH
+C0ffee SF               C0FFEE   SAN FRANCISCO, SAN FRANCISCO · MAPPED · 3-BYTE PATH HASH
+67 Repeater             6767     CONTRA COSTA, EAST BAY · MAPPED · 2-BYTE PATH HASH
 armooo                  EA       NORTH BAY VIA STS · NO COORDINATES
 ```
 
 It is only stated where the advert confirmed it — an observer with no confirmed width shows its 1-byte prefix and says nothing, rather than asserting a default as if it were measured.
 
-**A wrapping bug fell out of this.** `.observer-detail` sets `overflow-wrap: anywhere; word-break: break-word` so that long county names fit a narrow card, and that happily split `2-BYTE PATH` after the hyphen — `· 2-` / `BYTE PATH`. My fault; the first version appended the width to the plain detail string, which left no way to exempt it. The width is now rendered as its own `<span class="observer-detail__mode">` with `white-space: nowrap`. It is short and fixed-length, so it cannot overflow even at 390px. The rest of the detail line keeps the break-anywhere behaviour it needs.
+**A wrapping bug fell out of this.** `.observer-detail` sets `overflow-wrap: anywhere; word-break: break-word` so that long county names fit a narrow card, and that happily split `2-BYTE PATH` after the hyphen — `· 2-` / `BYTE PATH`. My fault; the first version appended the width to the plain detail string, which left no way to exempt it. The width is now rendered as its own `<span class="observer-detail__mode">` with `white-space: nowrap; word-break: keep-all`. It is short and fixed-length, so it cannot overflow even at 390px. The rest of the detail line keeps the break-anywhere behaviour it needs.
+
+**The label later became `2-byte path hash`** (was `2-byte path`). Two words were candidates and neither was right alone. The note only appears when the node's own advert confirmed the width, so it reports that node's `path.hash.mode` setting, not the route any message took — which argues against `path`. But `prefix` alone sits immediately after the truncated key on the same row and reads as an annotation on *that* string's display width rather than on a radio setting, and it drops the reason the width exists. `path hash` is upstream's own term: [the MeshCore FAQ](https://docs.meshcore.io/faq/) names `path.hash.mode 1` a 2-byte path hash, and the [path diagnostics post](https://blog.meshcore.io/2026/03/06/path-diagnostics-improvements) describes these hashes as "the pubkey prefixes" a v1.14+ repeater appends before forwarding — a prefix of the key, not a digest of the route. Matching upstream makes the card searchable against community documentation. The longer string cannot introduce a mid-token break, because the span was already `nowrap`; it just moves to the next line as a unit on a narrow card.
 
 **Verified live** on a 35-row directory: 17 rows at 2 bytes, 2 at 3 bytes (C0ffee SF, Salusa Secundus), 16 unconfirmed at 1 byte; 19 rows stating a width; **zero duplicate displayed prefixes**, so both the `69` and `E4` collisions are gone. Confirmed intact — no mid-token break — in dark mode, light mode, and at 390px, with no console errors. `npm run check` clean, `npm test` **56/56**.
 

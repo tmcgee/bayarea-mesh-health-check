@@ -1318,6 +1318,12 @@ function observerDetailLine(observer) {
   return parts.join(' \u00b7 ');
 }
 
+// "path hash" is upstream's own name for the setting -- docs.meshcore.io calls
+// `path.hash.mode 1` a 2-byte path hash -- so the card matches what an operator
+// sees in the app. The bytes are a public-key prefix rather than a digest of the
+// route, but "prefix" alone would read as an annotation on the truncated key
+// printed just before this note, and would drop the reason the width matters.
+//
 // Rendered as its own element rather than appended to the detail string, because
 // .observer-detail sets overflow-wrap: anywhere for long region names and that
 // happily split "2-BYTE PATH" after the hyphen. Only stated when the node's own
@@ -1327,7 +1333,7 @@ function observerHashModeNote(observer) {
   if (!observer?.hashBytesConfirmed) {
     return '';
   }
-  return `${observerHashBytes(observer)}-byte path`;
+  return `${observerHashBytes(observer)}-byte path hash`;
 }
 
 // The one roster the reports list is built from, and the only one now: the

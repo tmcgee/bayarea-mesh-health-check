@@ -1361,7 +1361,8 @@ body[data-page-mode="share"] .status-pill::before {
 }
 
 /* Exempt from the break-anywhere above, which split "2-BYTE PATH" at the hyphen.
-   Short and fixed length, so it cannot overflow even at 390px. */
+   Now reads "2-BYTE PATH HASH", upstream's own name for the setting; still short
+   and fixed length, so it wraps to its own line rather than overflowing at 390px. */
 .observer-detail__mode {
   white-space: nowrap;
   overflow-wrap: normal;
