@@ -587,9 +587,183 @@ test('packet path distance estimates across unknown or unlocated path hops', asy
   assert.equal(receipt.pathDistanceSegments.length, 1);
   assert.equal(receipt.pathDistanceSegments[0].estimated, true);
   assert.equal(receipt.pathDistanceSegments[0].skippedHopCount, 2);
+  // The jumped hops are carried by identity, not just counted. Neither prefix
+  // matches an observer, so both come through with an empty label and the hash
+  // is all the card can show for them.
+  assert.deepEqual(receipt.pathDistanceSegments[0].skippedHops, [
+    { hash: 'AAAAAA', label: '' },
+    { hash: 'BBBBBB', label: '' },
+  ]);
+  // One line drawn, three hops crossed. The header shows both only when they
+  // differ, so this is the case that has to keep reporting them separately.
+  assert.equal(receipt.pathSpannedHopCount, 3);
   assert.match(receipt.pathDistanceText, / mi$/);
   assert.ok(receipt.pathDistance > 200);
   assert.ok(receipt.pathDistance < 210);
+});
+
+test('a jumped hop that is named but unlocated keeps its name', async () => {
+  // The common case in a real directory: the observer is known and reporting,
+  // it just never sent coordinates. It cannot anchor a leg, but it is not
+  // anonymous either, so the card should name it rather than show a bare hash.
+  const anchors = [
+    {
+      key: 'D1E0040000000000000000000000000000000000000000000000000000000000',
+      name: 'Named Anchor One',
+      lat: 1,
+      lon: 0,
+    },
+    {
+      key: 'D3E0060000000000000000000000000000000000000000000000000000000000',
+      name: 'Named Anchor Two',
+      lat: 1,
+      lon: 3,
+    },
+  ];
+
+  for (const observer of anchors) {
+    ingestMqttMessage(
+      `meshcore/BOS/${observer.key}/status`,
+      Buffer.from(JSON.stringify({
+        name: observer.name,
+        location: {
+          latitude: observer.lat,
+          longitude: observer.lon,
+        },
+      })),
+    );
+  }
+
+  // Same shape as the anchors, minus any location field at all.
+  const unlocatedKey = 'D2E0050000000000000000000000000000000000000000000000000000000000';
+  ingestMqttMessage(
+    `meshcore/BOS/${unlocatedKey}/status`,
+    Buffer.from(JSON.stringify({ name: 'Unlocated Middle' })),
+  );
+
+  const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: '{}',
+  });
+
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+
+  const envelope = buildGroupTextEnvelope({
+    secretHex: process.env.TEST_CHANNEL_SECRET,
+    sender: 'Named Gap Tester',
+    message: `named gap ${created.code}`,
+    messageHash: '99aabbccddeeff00',
+    timestamp: 1760000065,
+    path: ['D1E004', 'D2E005', 'D3E006'],
+  });
+
+  ingestMqttMessage(
+    `meshcore/BOS/${anchors[1].key}/packets`,
+    Buffer.from(JSON.stringify(envelope)),
+  );
+
+  const sessionResponse = await fetch(`${baseUrl}/api/sessions/${created.id}`);
+  assert.equal(sessionResponse.status, 200);
+
+  const session = await sessionResponse.json();
+  const receipt = session.receipts[0];
+  const jumped = receipt.pathDistanceSegments
+    .flatMap((segment) => segment.skippedHops)
+    .filter((hop) => hop.hash === 'D2E005');
+  assert.equal(jumped.length, 1);
+  assert.equal(jumped[0].label, 'Unlocated Middle');
+});
+
+test('packet path reports a straight-line span that is not the sum of its legs', async () => {
+  // Out and part way back, so the legs sum to far more than the ends are apart.
+  // A collinear path would make the two numbers equal and prove nothing.
+  const crowObservers = [
+    {
+      key: 'C1A0010000000000000000000000000000000000000000000000000000000000',
+      name: 'Crow Hop One',
+      lat: 1,
+      lon: 0,
+    },
+    {
+      key: 'C2B0020000000000000000000000000000000000000000000000000000000000',
+      name: 'Crow Hop Two',
+      lat: 1,
+      lon: 2,
+    },
+    {
+      key: 'C3C0030000000000000000000000000000000000000000000000000000000000',
+      name: 'Crow Terminal',
+      lat: 1,
+      lon: 0.5,
+    },
+  ];
+
+  for (const observer of crowObservers) {
+    ingestMqttMessage(
+      `meshcore/BOS/${observer.key}/status`,
+      Buffer.from(JSON.stringify({
+        name: observer.name,
+        location: {
+          latitude: observer.lat,
+          longitude: observer.lon,
+        },
+      })),
+    );
+  }
+
+  const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: '{}',
+  });
+
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+
+  const envelope = buildGroupTextEnvelope({
+    secretHex: process.env.TEST_CHANNEL_SECRET,
+    sender: 'Crow Tester',
+    message: `crow distance ${created.code}`,
+    messageHash: '1122334455667788',
+    timestamp: 1760000060,
+    path: ['C1A001', 'C2B002', 'C3C003'],
+  });
+
+  ingestMqttMessage(
+    `meshcore/BOS/${crowObservers[2].key}/packets`,
+    Buffer.from(JSON.stringify(envelope)),
+  );
+
+  const sessionResponse = await fetch(`${baseUrl}/api/sessions/${created.id}`);
+  assert.equal(sessionResponse.status, 200);
+
+  const session = await sessionResponse.json();
+  const receipt = session.receipts[0];
+  assert.equal(receipt.pathDistanceSegments.length, 2);
+  // Nothing jumped over on a fully located path.
+  assert.deepEqual(receipt.pathDistanceSegments[0].skippedHops, []);
+  assert.deepEqual(receipt.pathDistanceSegments[1].skippedHops, []);
+  // Every hop located, so hops spanned equals legs drawn and the header
+  // collapses to one number.
+  assert.equal(receipt.pathSpannedHopCount, 2);
+  assert.equal(receipt.pathCrowFlies.fromLabel, 'Crow Hop One');
+  assert.equal(receipt.pathCrowFlies.toLabel, 'Crow Terminal');
+  assert.equal(receipt.pathCrowFlies.fromHash, 'C1A001');
+  assert.equal(receipt.pathCrowFlies.toHash, 'C3C003');
+  assert.match(receipt.pathCrowFlies.distanceText, / mi$/);
+  // First hop to last hop is 0.5 degrees of longitude at lat 1: ~34.5 mi, while
+  // the two legs cover 2.0 then 1.5 degrees for ~241 mi.
+  assert.ok(receipt.pathCrowFlies.distance > 33);
+  assert.ok(receipt.pathCrowFlies.distance < 36);
+  assert.ok(receipt.pathDistance > 235);
+  assert.ok(receipt.pathDistance < 245);
+  assert.ok(receipt.pathCrowFlies.distance < receipt.pathDistance / 5);
 });
 
 test('session distance falls back to observer span, but a receipt reports its own path only', async () => {
@@ -662,6 +836,9 @@ test('session distance falls back to observer span, but a receipt reports its ow
   assert.equal(receipt.displayDistanceText, '');
   assert.equal(receipt.displayDistanceLabel, '');
   assert.equal(receipt.pathDistance, null);
+  // No measurable leg means no span either, rather than a zero.
+  assert.equal(receipt.pathCrowFlies, null);
+  assert.equal(receipt.pathSpannedHopCount, 0);
   // Says why there is no number instead of substituting an unrelated one.
   assert.equal(
     receipt.pathDistanceNote,

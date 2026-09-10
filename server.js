@@ -2981,11 +2981,24 @@ function receiptDistanceEstimate(report) {
     if (!Number.isFinite(distance)) {
       continue;
     }
+    // The hops this leg jumps over, carried as identities rather than only a
+    // count. Three different situations land here and only the first has a
+    // name: the prefix matched exactly one observer that has no coordinates;
+    // the prefix matched nothing; or the prefix matched several observers, in
+    // which case observerForPathHop refuses to guess. The hash is the one fact
+    // known in all three, so it is always carried and the label may be empty.
+    const skippedHops = resolved
+      .slice(from.index + 1, to.index)
+      .map((entry) => ({
+        hash: entry.hop,
+        label: entry.observer ? observerDisplayLabel(entry.observer, entry.observer.key) : '',
+      }));
     segments.push({
       fromHash: from.hop,
       toHash: to.hop,
       fromLabel: observerDisplayLabel(from.observer, from.observer.key),
       toLabel: observerDisplayLabel(to.observer, to.observer.key),
+      skippedHops,
       skippedHopCount: Math.max(0, to.index - from.index - 1),
       estimated: to.index - from.index > 1,
       distance,
@@ -2993,10 +3006,38 @@ function receiptDistanceEstimate(report) {
     });
   }
   const distance = segments.reduce((sum, segment) => sum + segment.distance, 0);
+  // Straight-line span between the two ends of the measured chain. Deliberately
+  // NOT derived from the legs: a path that doubles back sums to far more than it
+  // spans, and that difference is the interesting part.
+  const first = located[0];
+  const last = located[located.length - 1];
+  // How many hops the mileage actually spans, which is not the leg count when
+  // hops in between have no position. Measured first-located to last-located on
+  // purpose: unresolved hops trailing past the last located one are covered by
+  // no leg and contribute no distance, so counting them would overstate it.
+  const spannedHopCount = segments.length > 0 && first && last
+    ? last.index - first.index
+    : 0;
+  let crowFlies = null;
+  if (segments.length > 0 && first && last && first.observer.key !== last.observer.key) {
+    const crowValue = convertDistance(distanceKmBetween(first.observer, last.observer));
+    if (Number.isFinite(crowValue)) {
+      crowFlies = {
+        distance: crowValue,
+        distanceText: formatDistance(crowValue),
+        fromHash: first.hop,
+        toHash: last.hop,
+        fromLabel: observerDisplayLabel(first.observer, first.observer.key),
+        toLabel: observerDisplayLabel(last.observer, last.observer.key),
+      };
+    }
+  }
   return {
     distance: segments.length > 0 ? distance : null,
     distanceText: segments.length > 0 ? formatDistance(distance) : '',
     segments,
+    crowFlies,
+    spannedHopCount,
     locatedHopCount: located.length,
     estimatedSegmentCount: segments.filter((segment) => segment.estimated).length,
   };
@@ -3068,6 +3109,8 @@ function serializeSession(session, request = null) {
         pathDistance: distanceEstimate.distance,
         pathDistanceText: distanceEstimate.distanceText,
         pathDistanceSegments: distanceEstimate.segments,
+        pathCrowFlies: distanceEstimate.crowFlies,
+        pathSpannedHopCount: distanceEstimate.spannedHopCount,
         pathLocatedHopCount: distanceEstimate.locatedHopCount,
       };
     });

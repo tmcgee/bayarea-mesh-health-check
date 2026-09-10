@@ -1863,6 +1863,36 @@ function receiptPathText(receipt) {
     .join(' \u2192 ');
 }
 
+// A repeater reads as "Name (HASH)" so the leg list carries the raw prefix
+// itself. That is what let the separate chip row above it go: the same repeaters
+// were being listed twice, once as prefixed chips and again as leg endpoints.
+function receiptHopLabel(label, hash) {
+  const name = String(label || '').trim();
+  const code = String(hash || '').trim();
+  if (!name) {
+    return code;
+  }
+  if (!code || name.toUpperCase() === code.toUpperCase()) {
+    return name;
+  }
+  return `${name} (${code})`;
+}
+
+// "285 mi" must never break between the number and the unit, which it did at
+// 390px in the header line. A non-breaking space is cheaper and more reliable
+// here than a nowrap wrapper, which would also inherit the muted span styling.
+function unbreakableDistance(text) {
+  return String(text || '').replace(/ /g, '\u00a0');
+}
+
+// True when the leg list can stand in for the chip row: every leg endpoint is
+// named with its prefix, so the chips would only repeat them.
+function receiptHasDistanceLegs(receipt) {
+  return Boolean(String(receipt?.pathDistanceText || '').trim())
+    && Array.isArray(receipt?.pathDistanceSegments)
+    && receipt.pathDistanceSegments.length > 0;
+}
+
 // One leg per line, so a multi-hop estimate can be read hop by hop instead of as
 // one wrapped paragraph.
 function receiptDistanceMarkup(receipt) {
@@ -1876,20 +1906,67 @@ function receiptDistanceMarkup(receipt) {
       : '';
   }
   const legs = segments
-    .map((segment) => `
+    .map((segment, index) => {
+      // Its own subordinate line rather than trailing the distance. Appended to
+      // the value it made the leg wrap at 390px, and a wrapped value reads as a
+      // separate unnumbered row instead of as part of this leg.
+      const skipped = segment.estimated ? Number(segment.skippedHopCount) || 0 : 0;
+      // "no location", not "unknown": position is the only thing that puts a hop
+      // here, and some of them are perfectly well named. Named ones read as
+      // "Name (HASH)" like every other repeater; the rest show the bare hash,
+      // which is all that is known about them. Capped at three so one long gap
+      // cannot turn a leg into a paragraph. Older payloads carry no identities,
+      // in which case the count still stands on its own.
+      const skippedHops = Array.isArray(segment.skippedHops) ? segment.skippedHops : [];
+      const named = skippedHops.slice(0, 3).map((hop) => receiptHopLabel(hop.label, hop.hash));
+      const overflow = skippedHops.length - named.length;
+      const skipList = named.length > 0
+        ? `: ${named.join(', ')}${overflow > 0 ? ` and ${overflow} more` : ''}`
+        : '';
+      const skipMarkup = skipped > 0
+        ? `<span class="receipt-distance__leg-note">${escapeHtml(`via ${skipped} hop${skipped === 1 ? '' : 's'} with no location${skipList}`)}</span>`
+        : '';
+      return `
         <span class="receipt-distance__leg">
-          <span class="receipt-distance__leg-route">${escapeHtml(`${segment.fromLabel} to ${segment.toLabel}`)}</span>
-          <span class="receipt-distance__leg-value">${escapeHtml(String(segment.distanceText || ''))}${
-      segment.estimated
-        ? escapeHtml(` estimated over ${segment.skippedHopCount} unknown hop${segment.skippedHopCount === 1 ? '' : 's'}`)
-        : ''
-    }</span>
+          <span class="receipt-distance__leg-index">${index + 1}.</span>
+          <span class="receipt-distance__leg-route">${escapeHtml(`${
+        receiptHopLabel(segment.fromLabel, segment.fromHash)
+      } to ${receiptHopLabel(segment.toLabel, segment.toHash)}`)}</span>
+          <span class="receipt-distance__leg-value">${escapeHtml(unbreakableDistance(segment.distanceText))}</span>
+          ${skipMarkup}
         </span>
-      `)
+      `;
+    })
     .join('');
+  const legCount = segments.length;
+  // Legs are the lines drawn; spanned hops are what the mileage crosses. They
+  // differ only when a hop in between had no position, so both are shown only
+  // then -- "14 legs / 14 hops" would be noise on a fully resolved path. Older
+  // payloads predate the field, so fall back to the leg count.
+  const spannedHopCount = Number(receipt?.pathSpannedHopCount) || legCount;
+  // Each count is held together the same way the distance is: at 390px the
+  // header broke between "16" and "hops". The slash stays a legal break point.
+  const countText = spannedHopCount > legCount
+    ? `${unbreakableDistance(`${legCount} leg${legCount === 1 ? '' : 's'}`)} / ${unbreakableDistance(`${spannedHopCount} hops`)}`
+    : unbreakableDistance(`${legCount} hop${legCount === 1 ? '' : 's'}`);
+  const crow = receipt?.pathCrowFlies;
+  const crowText = String(crow?.distanceText || '').trim();
+  // Straight-line end to end, stated once above the legs because it describes
+  // the whole path rather than any one leg. Older cached or shared payloads
+  // predate the field and simply omit the line.
+  const crowMarkup = crowText
+    ? `<span class="receipt-distance__crow" title="${escapeHtml(`Straight-line distance from ${
+      receiptHopLabel(crow.fromLabel, crow.fromHash)
+    } to ${receiptHopLabel(crow.toLabel, crow.toHash)}`)}">End to end ${escapeHtml(unbreakableDistance(crowText))} as the crow flies</span>`
+    : '';
+  // "at least", not a bare total: every leg is a straight line between two
+  // located hops, which is the shortest distance those two ends can be apart.
+  // Any real routing between them, and any hop we could not place, only adds.
+  // So the number is a floor on the distance covered, never an over-estimate.
   return `
         <div class="receipt-distance">
-          <strong>Estimated path ${escapeHtml(distanceText)}</strong>
+          <strong>Estimated path over ${countText} \u00b7 at least ${escapeHtml(unbreakableDistance(distanceText))}</strong>
+          ${crowMarkup}
           ${legs || '<span>Distance estimated from known node positions.</span>'}
         </div>
       `;
@@ -2169,7 +2246,7 @@ function renderReceipts(session) {
           <strong>${receipt.duration != null ? `${receipt.duration} ms` : 'n/a'}</strong>
         </div>
       </div>
-      <div class="receipt-path">${pathMarkup}</div>
+      ${receiptHasDistanceLegs(receipt) ? '' : `<div class="receipt-path">${pathMarkup}</div>`}
       ${distanceMarkup}
     `;
     ui.receipts.appendChild(card);
@@ -2416,6 +2493,9 @@ function buildDrawerContent() {
       if (!receipt) {
         return null;
       }
+      // No Path Distance stat in the metrics grid: the Path Trace section states
+      // the same total in its header, qualified as a floor, and states why there
+      // is none when it cannot be measured. A bare duplicate can only disagree.
       return {
         meta: 'Packet Detail',
         title: receipt.observerLabel,
@@ -2428,7 +2508,6 @@ function buildDrawerContent() {
               ${drawerStat('RSSI', receipt.rssi != null ? String(receipt.rssi) : 'n/a')}
               ${drawerStat('SNR', receipt.snr != null ? String(receipt.snr) : 'n/a')}
               ${drawerStat('Duration', receipt.duration != null ? `${receipt.duration} ms` : 'n/a')}
-              ${drawerStat('Path Distance', receipt.pathDistanceText || 'not estimated')}
               ${drawerStat('Packets', String(receipt.count))}
             </div>
           </section>
