@@ -236,3 +236,25 @@ test('share page shows no code countdown and never marks the shared code dead', 
   // Nor does the dead-code headline correction reach a saved result.
   await expect(page.locator('#health-label')).not.toHaveText('No result');
 });
+
+// A shared result is a permanent record and its copy controls are about the
+// link, not about sending anything. The dashboard's dead-code rule must not
+// reach across and switch them off.
+test('share page keeps its copy controls usable for a long-dead shared code', async ({ page }) => {
+  const expired = waitingSession();
+  expired.expiresAt = Date.now() - 86400000;
+  expired.usesRemaining = 0;
+  expired.useCount = 3;
+  // The share button is governed by whether there is a link to copy, never by
+  // the code's liveness, so the session needs one for this to mean anything.
+  expired.shareUrl = 'https://healthcheck.example.test/share/share-session';
+  await mockShareRoutes(page, { session: expired });
+  await page.goto('/share/share-session');
+
+  await expect(page.locator('#session-code')).toHaveText('MHC-7F98BB');
+  // The share link button is the one that matters here and it stays live.
+  await expect(page.locator('#share-session')).toBeEnabled();
+  // The dashboard's own copy button is hidden on this page rather than
+  // repurposed, and the dead-code rule must not have touched it either.
+  await expect(page.locator('#copy-session-code')).toBeHidden();
+});

@@ -4,6 +4,58 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.9
+
+- the `Copy` button now follows the code on screen rather than merely whether a
+  session exists. `render()` set it from `!session`, so a dead code — expired or
+  used up — kept a working `Copy` button for the rest of its readable window.
+  Since bayarea.8 the page already said `Expired` directly above that button,
+  which made the offer to copy read as a contradiction rather than an oversight.
+- the rule is derived, not remembered: `isCodeSendable(session)` is true when a
+  session exists and its life is neither `expired` nor `used-up`, and it is the
+  single predicate behind both the button state and the handler. Nothing
+  persists a flag and nothing re-enables the button except a live code being
+  rendered, so the awkward cases fall out rather than each needing a branch.
+- it is assigned in `renderCodeLife()` ahead of that function's four early
+  returns, so every dashboard path reaches it and both callers — the 1s ticker
+  and the 5s poll's render — keep it current. Driving it from `render()` alone
+  leaves up to five seconds where the code reads `Expired` beside a live button.
+- `copyCurrentCode()` repeats the check itself. The disabled attribute is a
+  hint, and a stale or tampered one must not put an unsendable code on the
+  clipboard. The share page is exempt from both: a shared result is a permanent
+  record, and its copy controls are governed by whether there is a link to copy.
+- two of the three rules this started from turned out to be wrong, and the
+  derived form is what exposed them. `Copy` must not "always" re-enable when
+  `New Code` is pressed — a failed mint leaves the dead code on screen — and it
+  must not "stay disabled" after a reload, because an expired *unused* code is
+  replaced before first paint and the fresh code is copyable. The third rule,
+  disable on expiry, holds. A rule set omitting used-up codes covered about a
+  third of the reachable states.
+- smoke coverage goes 23 to 30. Five of the new tests pin cases a
+  transition-based implementation gets wrong, including a used-up code that
+  still displays its earned grade, and one samples the button and the countdown
+  together across the moment of death so the two can never be seen disagreeing.
+- four mutations were run against the new invariant and all four are now caught.
+  One of them was not: the poll-only mutation initially passed, and the first
+  mutation report calling it caught was wrong. An awaited `toBeDisabled()`
+  placed ahead of the sampling loop blocked until the button settled and so
+  swallowed the exact window the loop existed to observe; moving the loop before
+  it made the catch real. The earlier pass was timing luck.
+- three further mistakes were made in the test code and are worth recording
+  because each produced a green or red result for the wrong reason. An
+  assertion on a stubbed clipboard passed whether or not the stub worked, since
+  the recorder starts empty. Twice a `toBeEnabled()` passed because the test had
+  flipped the attribute by hand rather than because the session was live, so the
+  click that followed correctly refused and the absent copy looked like a defect
+  in the code. And a real clipboard write was used at first: Chromium leaves it
+  pending on an unfocused document instead of rejecting it, which failed roughly
+  half of runs for reasons unrelated to anything under test. The clipboard is
+  now stubbed, both clicks are dispatched synchronously, and the test holds over
+  ten consecutive runs.
+- one incidental confirmation: the flake that first made the handler test hang
+  was the ticker taking a hand-forced attribute back off within a second, which
+  is the repair behaviour the derived rule is for.
+
 ## v1.3.8+bayarea.8
 
 - the dashboard no longer presents a dead session code as a live one. The page

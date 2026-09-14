@@ -929,3 +929,239 @@ test('an expired unused code restored on load is replaced with a fresh one', asy
   await page.waitForTimeout(2500);
   expect(mints).toBe(1);
 });
+
+// ---------------------------------------------------------------------------
+// Copy button. The rule is one derived invariant - Copy is enabled exactly
+// when a session exists and its code is still sendable - rather than a set of
+// remembered transitions. These tests exist mostly to pin the cases a
+// transition-based implementation gets wrong.
+// ---------------------------------------------------------------------------
+
+test('Copy is enabled while the code lives and never survives its death', async ({ page }) => {
+  const expiresAt = Date.now() + 3000;
+  await openCodeLifePage(page, () => lifeSession({ expiresAt }));
+  const copy = page.locator('#copy-session-code');
+
+  await expect(copy).toBeEnabled();
+
+  // The countdown is driven by the one-second ticker and the button state is
+  // written in the same pass. Set the button from render() alone and there is
+  // a window of up to five seconds where the code reads Expired while Copy
+  // still works - invisible to a single-moment assertion, so sample instead.
+  //
+  // The sampling has to start before the code dies and run straight through
+  // the death. An awaited toBeDisabled() placed here instead would block until
+  // the button settles and so swallow the exact window this is looking for -
+  // which it did, and the mutation that proves this test works went
+  // undetected until the loop was moved ahead of it.
+  const disagreements = [];
+  const deadline = Date.now() + 9000;
+  while (Date.now() < deadline) {
+    const label = (await page.locator('#session-code-expiry').textContent())?.trim();
+    const enabled = await copy.isEnabled();
+    if (label === 'Expired' && enabled) {
+      disagreements.push(`${Date.now()} Expired but Copy enabled`);
+    }
+    await page.waitForTimeout(200);
+  }
+  expect(disagreements).toEqual([]);
+
+  // And it really did die during that window, so the loop was not watching a
+  // still-live code and passing for nothing.
+  await expect(page.locator('#session-code-expiry')).toHaveText('Expired');
+  await expect(copy).toBeDisabled();
+});
+
+// Expiry is not the only way a code dies. This one has a real grade, so any
+// implementation keying off "expired" or off the absence of a result leaves
+// Copy enabled on a code the server will refuse.
+test('Copy is disabled for a used-up code that still shows its grade', async ({ page }) => {
+  await openCodeLifePage(page, () => lifeSession({
+    expiresAt: Date.now() + 600000,
+    useCount: 3,
+    usesRemaining: 0,
+    matchedAt: Date.now() - 500,
+    status: 'matched',
+    healthMeasured: true,
+    healthRated: true,
+    healthLabel: 'FAIR',
+    healthPercent: 55,
+    observedCount: 2,
+    expectedCount: 4,
+    sender: 'N6ABC',
+    messageBody: 'MHC-LIFE01 test transmission',
+  }));
+
+  await expect(page.locator('#session-code-expiry')).toHaveText('Used up');
+  await expect(page.locator('#copy-session-code')).toBeDisabled();
+  // The grade is still on screen; only the code is dead.
+  await expect(page.locator('#health-label')).toHaveText('FAIR');
+});
+
+// The case a "stays disabled after reload" rule gets backwards. The code was
+// expired and unused, so it is replaced before first paint - and a fresh code
+// must be copyable.
+test('Copy is enabled after a reload replaces an expired unused code', async ({ page }) => {
+  const stale = () => lifeSession({ expiresAt: Date.now() - 60000 });
+  const fresh = () => lifeSession({ id: 'fresh-session', code: 'MHC-FRESH1' });
+
+  await page.addInitScript(() => {
+    window.WebSocket = class { addEventListener() {} close() {} };
+    sessionStorage.setItem('mesh-health-check-session-id', 'life-session');
+    sessionStorage.setItem('mesh-health-check-session-history', JSON.stringify(['life-session']));
+  });
+  await page.route('**/api/bootstrap', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify(mapBootstrap([])),
+  }));
+  await page.route('**/api/sessions', (route) => route.fulfill({
+    status: 201,
+    contentType: 'application/json',
+    body: JSON.stringify(fresh()),
+  }));
+  await page.route('**/api/sessions/*', (route) => {
+    const id = route.request().url().split('/').pop();
+    return route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(id === 'fresh-session' ? fresh() : stale()),
+    });
+  });
+  await page.goto('/app');
+
+  await expect(page.locator('#session-code')).toHaveText('MHC-FRESH1');
+  await expect(page.locator('#copy-session-code')).toBeEnabled();
+});
+
+// The narrower case where "stays disabled after reload" is right: the code was
+// used at least once, so it is not replaceable and survives the load dead.
+test('Copy stays disabled when a dead but used code survives the reload', async ({ page }) => {
+  await openCodeLifePage(page, () => lifeSession({
+    expiresAt: Date.now() - 60000,
+    useCount: 1,
+    usesRemaining: 2,
+    matchedAt: Date.now() - 120000,
+    status: 'matched',
+    healthMeasured: true,
+  }), { preseedId: 'life-session' });
+
+  await expect(page.locator('#session-code')).toHaveText('MHC-LIFE01');
+  await expect(page.locator('#session-code-expiry')).toHaveText('Expired');
+  await expect(page.locator('#copy-session-code')).toBeDisabled();
+});
+
+// Pressing New Code is a request, not an outcome. If the mint fails the dead
+// code is still on screen, and re-enabling Copy on the click would hand back a
+// working button for a code the server rejects.
+test('Copy stays disabled when pressing New Code fails to mint', async ({ page }) => {
+  const dead = () => lifeSession({
+    expiresAt: Date.now() - 60000,
+    useCount: 1,
+    usesRemaining: 2,
+    matchedAt: Date.now() - 120000,
+    status: 'matched',
+    healthMeasured: true,
+  });
+
+  await page.addInitScript(() => {
+    window.WebSocket = class { addEventListener() {} close() {} };
+    sessionStorage.setItem('mesh-health-check-session-id', 'life-session');
+    sessionStorage.setItem('mesh-health-check-session-history', JSON.stringify(['life-session']));
+  });
+  await page.route('**/api/bootstrap', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify(mapBootstrap([])),
+  }));
+  let mintAttempts = 0;
+  await page.route('**/api/sessions', (route) => {
+    mintAttempts += 1;
+    return route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'mint unavailable' }),
+    });
+  });
+  await page.route('**/api/sessions/*', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify(dead()),
+  }));
+  await page.goto('/app');
+
+  await expect(page.locator('#copy-session-code')).toBeDisabled();
+  await page.locator('#new-session-button').click();
+  await expect.poll(() => mintAttempts).toBeGreaterThan(0);
+
+  // The dead code is still the code on screen, so Copy is still wrong to offer.
+  await expect(page.locator('#session-code')).toHaveText('MHC-LIFE01');
+  await expect(page.locator('#copy-session-code')).toBeDisabled();
+  // And it must not drift back to enabled on a later poll or ticker tick.
+  await page.waitForTimeout(6500);
+  await expect(page.locator('#copy-session-code')).toBeDisabled();
+});
+
+// Defence in depth. Disabling the button is a hint; the handler must refuse a
+// dead code on its own, so a stale attribute cannot put one on the clipboard.
+//
+// The clipboard is stubbed rather than used for real. Chromium leaves a real
+// clipboard write pending on an unfocused document instead of rejecting it,
+// which made earlier versions of this test fail perhaps half the time for
+// reasons having nothing to do with the code under test. The stub also removes
+// the user-activation requirement, so both clicks can be dispatched
+// synchronously and neither can race the one-second ticker.
+test('the copy handler refuses a dead code even with the button re-enabled', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__clipboardWrites = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async (value) => { window.__clipboardWrites.push(value); } },
+    });
+  });
+
+  const deadFields = {
+    expiresAt: Date.now() - 60000,
+    useCount: 1,
+    usesRemaining: 2,
+    matchedAt: Date.now() - 120000,
+    status: 'matched',
+    healthMeasured: true,
+  };
+  // A flag over the session data, not over the button attribute. Flipping the
+  // attribute by hand is how the first draft fooled itself: toBeEnabled passed
+  // because of the test's own override while the session was still dead, so
+  // the handler correctly refused and the missing copy looked like a bug.
+  let live = false;
+  await openCodeLifePage(
+    page,
+    () => (live ? lifeSession() : lifeSession(deadFields)),
+    { preseedId: 'life-session' },
+  );
+
+  const copy = page.locator('#copy-session-code');
+  const writes = () => page.evaluate(() => window.__clipboardWrites);
+  await expect(copy).toBeDisabled();
+
+  // Simulate a stale attribute: clear it and click in one synchronous block,
+  // because the ticker repairs the attribute within a second. That repair is
+  // itself evidence the derived rule works; here it just has to be kept out of
+  // the way so the handler's own guard is what gets tested.
+  await page.evaluate(() => {
+    const button = document.querySelector('#copy-session-code');
+    button.disabled = false;
+    button.click();
+  });
+  await page.waitForTimeout(400);
+  expect(await writes()).toEqual([]);
+  // Wait for the ticker to take the stale attribute back off before touching
+  // the session data. Skipping this is what made the previous version flaky:
+  // the button was still enabled from the override above, so the toBeEnabled
+  // below passed on the test's own doing and the click that followed hit a
+  // session that was still dead.
+  await expect(copy).toBeDisabled({ timeout: 5000 });
+
+  // Control. Without it the assertion above would also pass for a handler that
+  // never runs, or a stub that never captures - both of which have already
+  // happened while writing this test.
+  live = true;
+  await expect(copy).toBeEnabled({ timeout: 10000 });
+  await page.evaluate(() => { document.querySelector('#copy-session-code').click(); });
+  await expect.poll(writes).toEqual(['MHC-LIFE01']);
+});

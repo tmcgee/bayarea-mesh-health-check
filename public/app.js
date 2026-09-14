@@ -932,6 +932,14 @@ async function copyCurrentCode() {
   if (!code) {
     return;
   }
+  // Defence in depth. The button is already disabled for a dead code, but a
+  // programmatic click, a stale attribute or a mid-flight death must not put
+  // an unsendable code on the clipboard either. Shared results are exempt for
+  // the same reason they never render as dead: the code is a historical
+  // record, not something the reader is being asked to send.
+  if (!isSharePage() && !isSharedRoute() && !isCodeSendable(session)) {
+    return;
+  }
 
   await copyText(code);
   flashButtonText(ui.copySessionCodeButton, 'Copied');
@@ -1074,6 +1082,17 @@ function sessionCodeLife(session) {
   return { state: 'live', msLeft };
 }
 
+// Single source of truth for "may this code still be sent". Both the Copy
+// button's disabled state and the copy handler's own guard read it, so the
+// two cannot drift apart the way the health headline and renderCodeLife did.
+function isCodeSendable(session) {
+  if (!session?.code) {
+    return false;
+  }
+  const { state } = sessionCodeLife(session);
+  return state !== 'expired' && state !== 'used-up';
+}
+
 function formatCountdown(ms) {
   const total = Math.max(0, Math.ceil(ms / 1000));
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
@@ -1093,6 +1112,18 @@ function renderCodeLife() {
   // saying so would report a fault where there is none.
   const suppressed = isSharePage() || isSharedRoute() || life.state === 'none';
   const dead = life.state === 'expired' || life.state === 'used-up';
+
+  // Copy follows the code that is actually on screen, derived every render and
+  // every ticker tick rather than remembered. That is what makes the awkward
+  // cases fall out for free: a dead-but-unused code is replaced before first
+  // paint, so the fresh code re-enables the button, while a dead code that
+  // survives a reload keeps it disabled - with no persisted flag to get out of
+  // step. It is also why a failed New Code mint cannot wrongly re-enable it,
+  // since nothing re-enables the button except a live code being rendered.
+  // Set before the early returns below so every dashboard path reaches it.
+  if (ui.copySessionCodeButton && !isSharePage() && !isSharedRoute()) {
+    ui.copySessionCodeButton.disabled = !isCodeSendable(session);
+  }
 
   ui.sessionCodeExpiry.classList.toggle('is-expiring', !suppressed && life.state === 'expiring');
   ui.sessionCodeExpiry.classList.toggle('is-dead', !suppressed && dead);
