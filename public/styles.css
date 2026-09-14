@@ -964,6 +964,46 @@ body[data-page-mode="share"] .status-pill::before {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
+/* A code stops being accepted long before the page stops showing it, so the
+   code itself carries its own state. Colours are the region status tokens -
+   the same true yellow/red the region dots use - not a new palette. */
+.session-code.is-expiring {
+  border-color: color-mix(in srgb, var(--region-status-some) 55%, transparent);
+}
+
+.session-code.is-dead {
+  border-color: color-mix(in srgb, var(--region-status-none) 55%, transparent);
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+  opacity: 0.72;
+}
+
+.session-code-expiry {
+  margin-top: 8px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  /* The countdown is the one string on this page that changes every second.
+     Letting it wrap would reflow the block on the tick from 10:00 to 9:59. */
+  white-space: nowrap;
+}
+
+.session-code-expiry[hidden] {
+  display: none;
+}
+
+.session-code-expiry.is-expiring {
+  color: var(--region-status-some);
+}
+
+.session-code-expiry.is-dead {
+  color: var(--region-status-none);
+}
+
 /* Stacked and pinned right so they read as the same kind of control pair as the
    utility stack in the header, rather than a three-across button row. */
 .session-code-actions {

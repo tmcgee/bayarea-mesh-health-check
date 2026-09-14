@@ -115,7 +115,7 @@ test('the fork version records its upstream base and its own build', () => {
 
 test('the version maps to a legal Docker tag', () => {
   const tag = dockerTag(packageJson.version);
-  assert.equal(tag, '1.3.8-bayarea.7');
+  assert.equal(tag, '1.3.8-bayarea.8');
   assert.ok(isLegalDockerTag(tag));
   assert.ok(!tag.includes('+'), 'Docker tags cannot contain +');
   assert.throws(() => dockerTag('1.3.8+bay area'), /legal Docker tag/);

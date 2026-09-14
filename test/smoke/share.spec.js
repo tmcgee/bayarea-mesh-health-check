@@ -211,3 +211,28 @@ test('share page never shows the read/write session controls dashboard visitors 
   await expect(page.locator('#new-session-button')).toHaveClass(/hidden/);
   await expect(page.locator('#new-session-button')).toBeHidden();
 });
+
+// A shared result is a historical record. Its code expired long before anyone
+// followed the link, and counting that down - or striking it through as though
+// something had gone wrong - would report a fault where there is none. The
+// dashboard's code-lifetime treatment is suppressed here entirely.
+test('share page shows no code countdown and never marks the shared code dead', async ({ page }) => {
+  const expired = waitingSession();
+  expired.expiresAt = Date.now() - 86400000;
+  expired.usesRemaining = 0;
+  expired.useCount = 3;
+  await mockShareRoutes(page, { session: expired });
+  await page.goto('/share/share-session');
+
+  await expect(page.locator('#session-code')).toHaveText('MHC-7F98BB');
+  const expiry = page.locator('#session-code-expiry');
+  await expect(expiry).toBeAttached();
+  await expect(expiry).toBeHidden();
+  await expect(page.locator('#session-code')).not.toHaveClass(/is-dead/);
+  await expect(page.locator('#session-code')).not.toHaveClass(/is-expiring/);
+  await expect(page.locator('#session-instructions')).not.toContainText('no longer accepted');
+  // The share page has its own label and the dashboard's states never touch it.
+  await expect(page.locator('#session-code-label')).toHaveText('Shared Code');
+  // Nor does the dead-code headline correction reach a saved result.
+  await expect(page.locator('#health-label')).not.toHaveText('No result');
+});

@@ -7,8 +7,8 @@ services:
       no_cache: true
     # Docker tags allow only [A-Za-z0-9_][A-Za-z0-9_.-]*, so the '+' in the
     # package version is illegal here. Use the hyphenated form, which
-    # `npm run docker:tag` prints: 1.3.8+bayarea.7 -> 1.3.8-bayarea.7
-    image: bayarea-mesh-health-check:${APP_IMAGE_TAG:-1.3.8-bayarea.7}
+    # `npm run docker:tag` prints: 1.3.8+bayarea.8 -> 1.3.8-bayarea.8
+    image: bayarea-mesh-health-check:${APP_IMAGE_TAG:-1.3.8-bayarea.8}
     container_name: mesh-health-check
     restart: unless-stopped
     env_file:

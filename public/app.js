@@ -2,6 +2,11 @@ const SESSION_STORAGE_KEY = 'mesh-health-check-session-id';
 const SESSION_HISTORY_STORAGE_KEY = 'mesh-health-check-session-history';
 const OBSERVER_ALLOWLIST_STORAGE_KEY = 'mesh-health-check-observer-allowlist';
 const UI_THEME_STORAGE_KEY = 'mesh-health-check-ui-theme';
+// Last minute before a code stops being accepted, when the useful thing to say
+// changes from "here is your code" to "send it now or take a fresh one".
+const CODE_EXPIRING_SOON_MS = 60000;
+const MAX_CLOCK_SKEW_MS = 86400000;
+const CODE_LIFE_TICK_MS = 1000;
 const ANALYZER_BASE_URL = 'https://analyzer.letsmesh.net/packets?packet_hash=';
 const SHARE_ROUTE_PREFIX = '/share/';
 let deferredInstallPrompt = null;
@@ -13,6 +18,8 @@ const ui = {
   copySessionCodeButton: document.querySelector('#copy-session-code'),
   shareSessionButton: document.querySelector('#share-session'),
   sessionCode: document.querySelector('#session-code'),
+  sessionCodeExpiry: document.querySelector('#session-code-expiry'),
+  sessionCodeLabel: document.querySelector('#session-code-label'),
   sessionInstructions: document.querySelector('#session-instructions'),
   sessionStepChannel: document.querySelector('#session-step-channel'),
   channelQr: document.querySelector('#channel-qr'),
@@ -92,6 +99,11 @@ const state = {
   // never changes what this code is scored against.
   receiptHeardFilter: 'all',
   uiTheme: loadUiTheme(),
+  // Difference between the server's clock and ours, refreshed from every
+  // snapshot. The server decides when a code stops being accepted, so a
+  // countdown measured against an unsynced phone clock would be confidently
+  // wrong in whichever direction that phone is drifting.
+  serverSkewMs: 0,
   sessions: new Map(),
   socket: null,
   socketRetryTimer: 0,
@@ -821,6 +833,15 @@ function isHealthPending(label) {
     || label === 'Not rated';
 }
 
+// Whether a message actually landed on this code. healthMeasured is absent on
+// cached payloads from an older server, so fall back to the label. render() and
+// renderCodeLife both gate on this and must not drift apart, hence one helper.
+function isHealthMeasured(session) {
+  return session?.healthMeasured != null
+    ? Boolean(session.healthMeasured)
+    : !isHealthPending(session?.healthLabel);
+}
+
 function isHealthRated(entry) {
   if (entry?.healthRated != null) {
     return Boolean(entry.healthRated);
@@ -1009,6 +1030,130 @@ function currentSession() {
     return null;
   }
   return state.sessions.get(sessionId) || null;
+}
+
+// Every snapshot carries the server's own clock. Anything inside a day is
+// treated as real drift and corrected for; anything wilder is a malformed or
+// missing field rather than a plausible clock, and correcting by it would do
+// more damage than ignoring it.
+function updateServerSkew(snapshot) {
+  const serverTime = Number(snapshot?.serverTime);
+  if (!Number.isFinite(serverTime) || serverTime <= 0) {
+    return;
+  }
+  const skew = serverTime - Date.now();
+  state.serverSkewMs = Math.abs(skew) > MAX_CLOCK_SKEW_MS ? 0 : skew;
+}
+
+function serverNow() {
+  return Date.now() + state.serverSkewMs;
+}
+
+// A code has two independent ways to stop being accepted and they are
+// different facts. Running out of time and running out of uses send someone
+// looking for different things, so they are never collapsed into one word.
+// Uses are checked first: a code that was consumed three times demonstrably
+// worked, and saying "expired" about it would point at the wrong problem.
+function sessionCodeLife(session) {
+  if (!session) {
+    return { state: 'none', msLeft: 0 };
+  }
+  const expiresAt = Number(session.expiresAt);
+  const timed = Number.isFinite(expiresAt) && expiresAt > 0;
+  const msLeft = timed ? expiresAt - serverNow() : Infinity;
+  const usesRemaining = Number(session.usesRemaining);
+  if (Number.isFinite(usesRemaining) && usesRemaining <= 0) {
+    return { state: 'used-up', msLeft };
+  }
+  if (timed && msLeft <= 0) {
+    return { state: 'expired', msLeft };
+  }
+  if (timed && msLeft <= CODE_EXPIRING_SOON_MS) {
+    return { state: 'expiring', msLeft };
+  }
+  return { state: 'live', msLeft };
+}
+
+function formatCountdown(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+// Owns everything that depends on how much life the code has left: the
+// countdown line, the styling on the code itself, and - only once the code is
+// dead - the instruction and status text that render() wrote a moment ago.
+// Deliberately cheap, because the one-second ticker calls it too.
+function renderCodeLife() {
+  if (!ui.sessionCodeExpiry || !ui.sessionCode) {
+    return;
+  }
+  const session = currentSession();
+  const life = sessionCodeLife(session);
+  // A shared result is a historical record. Its code expired long ago and
+  // saying so would report a fault where there is none.
+  const suppressed = isSharePage() || isSharedRoute() || life.state === 'none';
+  const dead = life.state === 'expired' || life.state === 'used-up';
+
+  ui.sessionCodeExpiry.classList.toggle('is-expiring', !suppressed && life.state === 'expiring');
+  ui.sessionCodeExpiry.classList.toggle('is-dead', !suppressed && dead);
+  ui.sessionCode.classList.toggle('is-expiring', !suppressed && life.state === 'expiring');
+  ui.sessionCode.classList.toggle('is-dead', !suppressed && dead);
+
+  if (suppressed) {
+    ui.sessionCodeExpiry.hidden = true;
+    ui.sessionCodeExpiry.textContent = '';
+    return;
+  }
+
+  // The label sits directly above the code and is the one piece of the block
+  // that would otherwise still call a struck-through code "Active". Two
+  // adjacent elements disagreeing about the same code is the failure this
+  // whole change exists to remove, so it moves with the rest.
+  if (ui.sessionCodeLabel) {
+    if (life.state === 'used-up') {
+      ui.sessionCodeLabel.textContent = 'Used-Up Code';
+    } else if (life.state === 'expired') {
+      ui.sessionCodeLabel.textContent = 'Expired Code';
+    } else {
+      ui.sessionCodeLabel.textContent = 'Active Code';
+    }
+  }
+
+  ui.sessionCodeExpiry.hidden = false;
+  if (life.state === 'used-up') {
+    ui.sessionCodeExpiry.textContent = 'Used up';
+  } else if (life.state === 'expired') {
+    ui.sessionCodeExpiry.textContent = 'Expired';
+  } else {
+    ui.sessionCodeExpiry.textContent = `Expires in ${formatCountdown(life.msLeft)}`;
+  }
+
+  if (!dead) {
+    return;
+  }
+  // Ends with the send, not with the diagnosis. This sentence is step 2 of a
+  // numbered list whose step 3 is "Return to this page to see your results" -
+  // stopping at "press New Code" left that step promising a result for a code
+  // that was never going to be sent. Pointing step 2 back at the channel makes
+  // step 3 true again, which is cheaper than rewriting step 3 in two files.
+  ui.sessionInstructions.textContent = life.state === 'used-up'
+    ? 'This code has already been used the maximum number of times. Press New Code and send the fresh one.'
+    : 'This code is no longer accepted. Press New Code and send the fresh one.';
+  ui.sessionStatus.textContent = life.state === 'used-up' ? 'USED UP' : 'EXPIRED';
+
+  // A dead code does not invalidate a result it already earned: a code used its
+  // full three times has a real grade, and overwriting that would throw away
+  // the measurement. Only the never-measured case is corrected, where the
+  // headline was promising a result that can no longer arrive.
+  if (isHealthMeasured(session)) {
+    return;
+  }
+  ui.healthLabel.textContent = 'No result';
+  ui.healthLabel.className = '';
+  ui.messagePreview.textContent = life.state === 'used-up'
+    ? 'No message was heard on this code.'
+    : 'No message was heard before this code expired.';
+  ui.messagePreview.title = '';
 }
 
 // Builds { byGroup: Map<group, {seen,total}>, byRegion: Map<name, {seen,total}> }
@@ -2682,6 +2827,7 @@ function render() {
     renderHistory(historySessions);
     renderGlanceMetrics(null);
     updateRing(0, 'Waiting');
+    renderCodeLife();
     renderDrawer();
     return;
   }
@@ -2707,11 +2853,7 @@ function render() {
   const sessionRan = Boolean(session.matchedAt) || Number(session.useCount) > 0;
   ui.sessionStatus.textContent = sessionRan ? session.status.toUpperCase() : '--';
   setSessionHash(session.messageHash);
-  // healthMeasured is absent on cached payloads from an older server; fall back to
-  // the label so the placeholder still shows instead of a red zero.
-  const healthMeasured = session.healthMeasured != null
-    ? Boolean(session.healthMeasured)
-    : !isHealthPending(session.healthLabel);
+  const healthMeasured = isHealthMeasured(session);
   // Two separate gates. healthMeasured means a message actually landed, so the
   // counters have something to report. healthRated means the target set was big
   // enough for a percentage to mean anything - a one-observer target is heard or
@@ -2754,11 +2896,18 @@ function render() {
   renderReceipts(session);
   renderHistory(historySessions);
   renderGlanceMetrics(session);
+  // Runs last, deliberately. Once the code is dead this overrides the
+  // instruction, the status and - only when nothing was ever measured - the
+  // health headline and matched-message line, all of which are written above.
+  // The ring is left alone: it is already neutral for an unmeasured code, and
+  // colouring it red would report a network fault that did not happen.
+  renderCodeLife();
   renderDrawer();
 }
 
 function applySnapshot(snapshot) {
   reconcileRegionSelection(snapshot);
+  updateServerSkew(snapshot);
   state.snapshot = snapshot;
   render();
 }
@@ -2879,12 +3028,32 @@ async function bootstrap() {
   }
   if (isSharedRoute()) {
     render();
-  } else if (!currentSession()) {
+    connectSocket();
+    return;
+  }
+  const restored = currentSession();
+  if (!restored) {
+    await createSession();
+  } else if (isReplaceableOnLoad(restored)) {
     await createSession();
   } else {
     render();
   }
   connectSocket();
+}
+
+// The server keeps a session readable for the whole result-retention window -
+// days after it stopped accepting the code - so the id in sessionStorage
+// rehydrates happily into a code nothing will match. Replacing it is only safe
+// here, at load, and only when the code was never used: nothing can be in
+// flight against a code that has never been seen. A code that dies while the
+// page is open is left exactly where it is, because swapping it under someone
+// who has already sent it is the failure this whole change exists to prevent.
+function isReplaceableOnLoad(session) {
+  if (sessionCodeLife(session).state !== 'expired') {
+    return false;
+  }
+  return Number(session.useCount) === 0 && !session.matchedAt;
 }
 
 ui.newSessionButton.addEventListener('click', () => {
@@ -2974,6 +3143,26 @@ bootstrap();
 window.setInterval(() => {
   refreshFromServer();
 }, 5000);
+
+// A local clock, deliberately not the five-second network poll. A throttled,
+// backgrounded or offline tab is when the poll stops, and it is exactly when
+// someone is most likely to come back to a code that quietly died while they
+// were away.
+window.setInterval(renderCodeLife, CODE_LIFE_TICK_MS);
+
+// Coming back to the tab is the moment the displayed code is most likely to be
+// stale, and waiting up to five seconds for the next poll to say so is five
+// seconds someone can spend sending a dead code.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') {
+    return;
+  }
+  renderCodeLife();
+  refreshFromServer().catch(() => {
+    // The poll will try again in a moment; renderCodeLife has already told the
+    // truth about the code from the payload we still hold.
+  });
+});
 
 window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault();

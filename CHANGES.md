@@ -4,6 +4,65 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.8
+
+- the dashboard no longer presents a dead session code as a live one. The page
+  restored `currentSessionId` from `sessionStorage` and only minted a new code
+  when there was no session at all, while `refreshTrackedSessions` dropped a
+  session only on HTTP 404 — and `GET /api/sessions/:id` keeps answering for
+  `RESULT_RETENTION_SECONDS`. At the deployed settings that is a code accepted
+  for 600s inside a window that stays readable for 604800s, so for about 99.9%
+  of a session's readable life the old UI would happily show its code as
+  current and tell the operator to send it. `MAX_USES_PER_CODE` was a second
+  way to reach the same dead end.
+- no server change was needed. `serializeSession` already shipped `expiresAt`,
+  `status`, `useCount`, `maxUses` and `usesRemaining`, and `/api/bootstrap`
+  already shipped `serverTime`; the client discarded all of it.
+- the code block now carries its own remaining life: a countdown under the
+  code, a warning state in the last 60s, and a dead state that strikes the code
+  through and reads `Expired` or `Used up`. The label above the code moves with
+  it — `Active Code` / `Expired Code` / `Used-Up Code` — because a tight crop
+  during review showed `ACTIVE CODE` sitting directly above a struck-through
+  expired code, which is worse than either state alone.
+- **the code is never swapped underneath the operator.** Auto-minting on expiry
+  and minting on focus were both considered and rejected: someone who has just
+  typed the code into a companion app and is walking to a radio must not have
+  it changed while their back is turned. The one exception is load time, where
+  a code that is both expired and never used is replaced before it is shown,
+  since nothing can be waiting on it.
+- the remaining life is measured against the server's clock, not the browser's.
+  `serverTime` sets a skew that is applied inside a 24h sanity bound, so a tab
+  whose clock is minutes fast no longer declares a live code expired; beyond
+  24h the skew is ignored rather than trusted.
+- the health headline and matched-message line no longer contradict a dead
+  code. They read `No result` and `No message was heard before this code
+  expired.` instead of `Waiting` and `Waiting for your #health-check message.`
+  — but only when nothing was ever measured. A used-up code has a real earned
+  grade, and being dead is a fact about the code rather than about the
+  measurement, so its grade, observer count, sender and message body all stand.
+- the progress ring is deliberately left neutral rather than turned red. Red is
+  this app's colour for a network that did not carry the message, and a stale
+  code is not a network fault; colouring it would report a failure that did not
+  happen.
+- step 3 of the instructions, `Return to this page to see your results.`, is
+  true again. It only read as a false promise because the dead step 2 stopped
+  at the diagnosis, so step 2 now ends by pointing back at the send. No markup
+  changed, which avoids keeping a second element in sync across two pages.
+- smoke coverage goes 18 to 23. Two rounds of mutation testing each found a
+  real hole the passing suite had missed: a mock that returned the same code
+  forever hid an auto-swap, and a single-moment assertion on the headline hid a
+  5s flicker between `Waiting` and `No result` caused by the 1s ticker racing
+  the poll. The expiry test now samples the headline every 250ms across a full
+  poll cycle, and `renderCodeLife()` runs last in `render()` so its corrections
+  win — that ordering is load-bearing.
+- verified end to end against a real server rather than only against route
+  mocks: a tab held open across a genuine 60s expiry, a reload afterwards
+  minting a fresh code, and a browser clock pushed ten minutes fast leaving the
+  countdown correct.
+- known limit: the warning threshold is an absolute 60s rather than a fraction
+  of the TTL. At the deployed 600s that is the final 10%; at the 60s server
+  floor a code would sit in the warning state for its entire life.
+
 ## v1.3.8+bayarea.7
 
 - the observer card's hash-width note now reads `2-byte path hash` rather than

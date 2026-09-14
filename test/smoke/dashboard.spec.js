@@ -105,6 +105,9 @@ function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key') {
     availableRegions: [...new Set(observerDirectory.map((observer) => observer.region).filter(Boolean))],
     regionHierarchy: regionHierarchy(observerDirectory),
     results: { retentionSeconds: 604800 },
+    // The real payload carries the server's clock, and the code-expiry
+    // countdown measures against it rather than the browser's.
+    serverTime: Date.now(),
   };
 }
 
@@ -711,4 +714,218 @@ test('escapes untrusted observer labels in timeline and map popups', async ({ pa
   await expect(page.locator('.leaflet-popup-content')).toContainText('Evil Observer');
   await expect(page.locator('.leaflet-popup-content img')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.__meshHealthXssHit)).toBe(false);
+});
+
+// --- Session code lifetime -------------------------------------------------
+//
+// A code stops being accepted at expiresAt, but the server keeps the session
+// readable for the whole result-retention window, so the page could hold a
+// dead code on screen for days without saying so. These cover what the page
+// now says about that, and - just as importantly - what it refuses to do.
+
+function lifeSession(overrides = {}) {
+  const code = overrides.code || 'MHC-LIFE01';
+  return {
+    id: 'life-session',
+    code,
+    instructions: `Send the code ${code} to the #health-check channel.`,
+    status: 'waiting',
+    createdAt: Date.now() - 1000,
+    expiresAt: Date.now() + 600000,
+    resultExpiresAt: Date.now() + 604800000,
+    maxUses: 3,
+    useCount: 0,
+    usesRemaining: 3,
+    matchedAt: 0,
+    expectedCount: 0,
+    observedCount: 0,
+    repeaterCount: 0,
+    healthPercent: 0,
+    healthLabel: 'Waiting',
+    healthMeasured: false,
+    expectedObserverSource: 'active observers',
+    expectedObservers: [],
+    receipts: [],
+    ...overrides,
+  };
+}
+
+// Routes the dashboard's three session calls. `buildSession` is a builder
+// rather than a value so each poll re-serialises against the current clock
+// while the absolute expiresAt inside it stays put.
+//
+// The create endpoint hands back the intended session the first time and a
+// loudly different code every time after that. The page is supposed to mint
+// exactly once, at load; any second mint puts MHC-SWAPPD on screen and fails
+// whichever assertion named the real code. Without that the swap tests pass
+// vacuously - a mock that returns the same code forever cannot tell a page
+// that kept its code from one that replaced it with an identical one.
+async function openCodeLifePage(page, buildSession, { preseedId = '' } = {}) {
+  const swapped = () => lifeSession({ id: 'swapped-session', code: 'MHC-SWAPPD' });
+  let mints = 0;
+  await page.addInitScript((sessionId) => {
+    window.WebSocket = class {
+      addEventListener() {}
+      close() {}
+    };
+    if (sessionId) {
+      sessionStorage.setItem('mesh-health-check-session-id', sessionId);
+      sessionStorage.setItem('mesh-health-check-session-history', JSON.stringify([sessionId]));
+    }
+  }, preseedId);
+  await page.route('**/api/bootstrap', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify(mapBootstrap([])),
+  }));
+  await page.route('**/api/sessions', (route) => {
+    mints += 1;
+    return route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify(mints === 1 ? buildSession() : swapped()),
+    });
+  });
+  await page.route('**/api/sessions/*', (route) => {
+    const id = route.request().url().split('/').pop();
+    return route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(id === 'swapped-session' ? swapped() : buildSession()),
+    });
+  });
+  await page.goto('/app');
+}
+
+test('a live code shows a countdown and no dead styling', async ({ page }) => {
+  await openCodeLifePage(page, () => lifeSession());
+
+  await expect(page.locator('#session-code')).toHaveText('MHC-LIFE01');
+  await expect(page.locator('#session-code-expiry')).toBeVisible();
+  await expect(page.locator('#session-code-expiry')).toContainText(/^Expires in \d+:\d\d$/);
+  await expect(page.locator('#session-code-expiry')).not.toHaveClass(/is-dead/);
+  await expect(page.locator('#session-code')).not.toHaveClass(/is-dead/);
+  await expect(page.locator('#session-instructions')).toContainText('Send the code MHC-LIFE01');
+  await expect(page.locator('#session-code-label')).toHaveText('Active Code');
+  // A live code is genuinely still waiting, so the headline says so.
+  await expect(page.locator('#health-label')).toHaveText('Waiting');
+  await expect(page.locator('#message-preview')).toContainText('Waiting for your');
+});
+
+// The regression guard for the whole change. A code that dies while the page
+// is open must be reported, never replaced: swapping it under someone who has
+// already sent it is the exact failure this work exists to prevent.
+test('a code that expires while the page is open is marked dead, not swapped', async ({ page }) => {
+  const expiresAt = Date.now() + 3000;
+  await openCodeLifePage(page, () => lifeSession({ expiresAt }));
+
+  await expect(page.locator('#session-code')).toHaveText('MHC-LIFE01');
+  await expect(page.locator('#session-code')).not.toHaveClass(/is-dead/);
+
+  await expect(page.locator('#session-code-expiry')).toHaveText('Expired', { timeout: 10000 });
+  await expect(page.locator('#session-code')).toHaveClass(/is-dead/);
+  await expect(page.locator('#session-status')).toHaveText('EXPIRED');
+  await expect(page.locator('#session-instructions'))
+    .toHaveText('This code is no longer accepted. Press New Code and send the fresh one.');
+  // Nothing adjacent may still call it active.
+  await expect(page.locator('#session-code-label')).toHaveText('Expired Code');
+  // Step 2 now ends with the send, so step 3 is true as written and stays put.
+  await expect(page.locator('.session-steps__list li').nth(2))
+    .toHaveText('Return to this page to see your results.');
+  // Nothing is coming for this code, so the page stops saying it is waiting.
+  await expect(page.locator('#health-label')).toHaveText('No result');
+  await expect(page.locator('#message-preview'))
+    .toHaveText('No message was heard before this code expired.');
+
+  // And it has to STAY said. The correction has two independent callers - the
+  // one-second ticker and the five-second poll's render - and if render applied
+  // it before writing the headline rather than after, the poll would put
+  // "Waiting" back and the ticker would undo it a second later. A single-moment
+  // assertion cannot see that; sampling across a full poll cycle can. Any value
+  // other than 'No result' turning up here is that flicker.
+  const seen = new Set();
+  const deadline = Date.now() + 6500;
+  while (Date.now() < deadline) {
+    seen.add((await page.locator('#health-label').textContent())?.trim());
+    await page.waitForTimeout(250);
+  }
+  expect([...seen]).toEqual(['No result']);
+  // The point of the test: same code, still on screen, nothing minted behind it.
+  await expect(page.locator('#session-code')).toHaveText('MHC-LIFE01');
+});
+
+// A code cannot run out of uses without messages having landed on it, so this
+// state always carries a real result. Being dead is a fact about the code, not
+// about the measurement, and the grade it earned has to survive saying so.
+test('a code with no uses left reads as used up and keeps the result it earned', async ({ page }) => {
+  await openCodeLifePage(page, () => lifeSession({
+    expiresAt: Date.now() + 600000,
+    useCount: 3,
+    usesRemaining: 0,
+    matchedAt: Date.now() - 500,
+    status: 'matched',
+    healthMeasured: true,
+    healthRated: true,
+    healthLabel: 'FAIR',
+    healthPercent: 55,
+    observedCount: 2,
+    expectedCount: 4,
+    minScoringSet: 3,
+    sender: 'N6ABC',
+    messageBody: 'MHC-LIFE01 test transmission',
+  }));
+
+  await expect(page.locator('#session-code-expiry')).toHaveText('Used up');
+  await expect(page.locator('#session-status')).toHaveText('USED UP');
+  await expect(page.locator('#session-code')).toHaveClass(/is-dead/);
+  await expect(page.locator('#session-instructions')).toContainText('used the maximum number of times');
+  await expect(page.locator('#session-code-label')).toHaveText('Used-Up Code');
+
+  // The measurement is untouched by the code being dead.
+  await expect(page.locator('#health-label')).toHaveText('FAIR');
+  await expect(page.locator('#observed-count')).toHaveText('2 / 4');
+  await expect(page.locator('#message-preview')).toHaveText('MHC-LIFE01 test transmission');
+});
+
+// The one case where replacing the code is right: nothing is in flight against
+// a code that expired unused before the page was even opened.
+test('an expired unused code restored on load is replaced with a fresh one', async ({ page }) => {
+  const stale = () => lifeSession({ expiresAt: Date.now() - 60000 });
+  const fresh = () => lifeSession({ id: 'fresh-session', code: 'MHC-FRESH1' });
+
+  await page.addInitScript(() => {
+    window.WebSocket = class {
+      addEventListener() {}
+      close() {}
+    };
+    sessionStorage.setItem('mesh-health-check-session-id', 'life-session');
+    sessionStorage.setItem('mesh-health-check-session-history', JSON.stringify(['life-session']));
+  });
+  await page.route('**/api/bootstrap', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify(mapBootstrap([])),
+  }));
+  let mints = 0;
+  await page.route('**/api/sessions', (route) => {
+    mints += 1;
+    return route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify(fresh()),
+    });
+  });
+  await page.route('**/api/sessions/*', (route) => {
+    const id = route.request().url().split('/').pop();
+    return route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(id === 'fresh-session' ? fresh() : stale()),
+    });
+  });
+  await page.goto('/app');
+
+  await expect(page.locator('#session-code')).toHaveText('MHC-FRESH1');
+  await expect(page.locator('#session-code')).not.toHaveClass(/is-dead/);
+  await expect(page.locator('#session-code-expiry')).toContainText(/^Expires in \d+:\d\d$/);
+  // Once, at load - not once per poll. The replacement is a load-time repair,
+  // and a page that keeps minting is a page burning codes in the background.
+  await page.waitForTimeout(2500);
+  expect(mints).toBe(1);
 });
