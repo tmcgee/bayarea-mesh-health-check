@@ -221,12 +221,12 @@ APP_HEADLINE=Check your mesh reach across the Bay.
 SITE_URL=https://healthcheck.bayareameshcore.org
 EXTERNAL_LINK_URL=https://bayareameshcore.org/
 EXTERNAL_LINK_LABEL=Bay Area MeshCore
-CORESCOPE_URL=https://corescope.stonekitty.net
+CORESCOPE_URL=https://corescope.bayareameshcore.org
 DASH_BROKER_HOST=mqtt.gomesh.dev
 DISTANCE_UNIT=mi
 ```
 
-`CORESCOPE_URL` makes matched packet hashes clickable through to [CoreScope](https://corescope.stonekitty.net); `DASH_BROKER_HOST` is a UI label only.
+`CORESCOPE_URL` makes matched packet hashes clickable through to [CoreScope](https://corescope.bayareameshcore.org); `DASH_BROKER_HOST` is a UI label only.
 
 The same base drives two more link families on the observer cards, and CoreScope routes the two identities under different, **case-sensitive** paths for the same public key:
 
@@ -1564,7 +1564,7 @@ One `[mqtt] subscribed` line, not nine — the single-topic grant replaced the p
 - [x] `regions/us-ca-bay-area.geojson` built and fitted to the observed IATA codes (28 counties)
 - [x] `.env.bayarea.example` written with the verified MQTT block
 - [x] Test channel set to the hashtag channel `#healthcheck`, key derived (`3ae59c2c…02ae`) and confirmed to load as channel hash `02`
-- [x] `EXTERNAL_LINK_URL` → `.org`, `CORESCOPE_URL` → `https://corescope.stonekitty.net`
+- [x] `EXTERNAL_LINK_URL` → `.org`, `CORESCOPE_URL` → `https://corescope.bayareameshcore.org`
 - [x] Boundary file rebuilt from Census TIGERweb — the earlier decimated geometry was dropping shoreline and island nodes out of their own counties
 - [x] `data/observer.json` seeded from CoreScope: 636 in-area nodes merged, 18 out-of-area discarded, 19 out-of-region coordinates purged; located uplinks 10/37 → 21/33, map markers 0 → 8
 - [x] `REQUIRE_REGION_MATCH=true` added so Orlando/Philadelphia adverts can't re-pollute the map

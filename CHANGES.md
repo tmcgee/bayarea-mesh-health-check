@@ -4,6 +4,39 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.10
+
+- CoreScope moved to `corescope.bayareameshcore.org`. Two live references carried
+  the old `corescope.stonekitty.net` host: the `CORESCOPE_URL` fallback in
+  `seed-observers.py`, which applies only when the variable is unset, and the
+  value in `.env.bayarea.example`. Both now name the new host.
+- this changes nothing on a running site by itself. `server.js` reads
+  `CORESCOPE_URL` with an empty default, so the dashboard's link base comes
+  purely from the deployed `.env`; the served pages follow only once that file
+  is updated on the droplet. The seed fallback matters only to a deployment that
+  leaves the variable unset.
+- `docs/bay-area-adaptation.md` updated in three places: the §4 config block, the
+  sentence describing where matched packet hashes link, and the adaptation
+  checklist entry. The §5 seeding walkthrough and the quoted `seed-observers.py`
+  source keep the old host, being records of runs made against it.
+- the new host serves the same data from the same backend: 885 nodes, 717 with a
+  position, an identical set of 885 public keys and an identical `counts` block.
+  A seed dry run against each host agreed on every figure — 712 inside the
+  boundary, 6 discarded, 678 profiles merged, 365 hash widths newly recorded, 10
+  cleared, 724 final profiles of which 713 located — differing only in one name
+  within a capped sample list. The `#/packets/<hash>`, `#/observers/<KEY>` and
+  `#/nodes/<key>` link families were each opened against the new host and render.
+- one caveat, unresolved here because it lives in Cloudflare rather than in this
+  repo: the new hostname is proxied and a bot rule challenges some clients. A
+  plain `curl` receives `403` with `cf-mitigated: challenge` on every path,
+  including `/api/nodes`. The seeding pass is unaffected today — `get_json` sends
+  `User-Agent: bayarea-health-check-seed/1.0`, which passes, and a real fetch
+  returned all 885 nodes — but nothing in the code marks that string as
+  load-bearing, and a tighter rule would make the daily pass raise `HTTPError`
+  on an HTML body. It would fail before writing, so the store is never at risk.
+  A WAF skip rule for the droplet address or for that agent removes the
+  dependency.
+
 ## v1.3.8+bayarea.9
 
 - the `Copy` button now follows the code on screen rather than merely whether a

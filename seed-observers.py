@@ -31,7 +31,7 @@ def _app_path(env_name, default_rel):
 
 
 CORESCOPE = (os.environ.get("CORESCOPE_URL", "").strip().rstrip("/")
-             or "https://corescope.stonekitty.net") + "/api/nodes?limit=5000"
+             or "https://corescope.bayareameshcore.org") + "/api/nodes?limit=5000"
 GEOJSON = _app_path("REGIONS_FILE", "regions/us-ca-bay-area.geojson")
 STORE = _app_path("OBSERVERS_FILE", "data/observer.json")
 BOOTSTRAP = (os.environ.get("SEED_BOOTSTRAP_URL", "").strip()
