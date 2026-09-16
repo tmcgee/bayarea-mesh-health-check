@@ -218,13 +218,15 @@ Point-in-polygon verified against one real observer location per live IATA code:
 APP_TITLE=Bay Area Mesh Health Check
 APP_EYEBROW=Bay Area MeshCore Observer Coverage
 APP_HEADLINE=Check your mesh reach across the Bay.
-SITE_URL=https://healthcheck.bayareameshcore.org
+SITE_URL=
 EXTERNAL_LINK_URL=https://bayareameshcore.org/
 EXTERNAL_LINK_LABEL=Bay Area MeshCore
 CORESCOPE_URL=https://corescope.bayareameshcore.org
 DASH_BROKER_HOST=mqtt.gomesh.dev
 DISTANCE_UNIT=mi
 ```
+
+`SITE_URL` is deliberately blank. Three hostnames now serve this deployment — `healthcheck.sonomamesh.com`, `healthcheck.bayareameshcore.org` and `healthcheck.baymc.org` — and `requestOrigin()` returns `SITE_URL` whenever it is set, so any value there makes all three hand out links for that one name. Blank, it falls back to the request's `Host` header and each hostname self-references. This needs `TRUST_PROXY=1` and Caddy's `header_up X-Forwarded-Proto https`, both already in place.
 
 `CORESCOPE_URL` makes matched packet hashes clickable through to [CoreScope](https://corescope.bayareameshcore.org); `DASH_BROKER_HOST` is a UI label only.
 

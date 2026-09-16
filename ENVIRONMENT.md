@@ -13,7 +13,7 @@ in source files.
 | `APP_EYEBROW` | `MeshCore Observer Coverage` | Small hero/dashboard label. |
 | `APP_HEADLINE` | `Check your mesh reach.` | Hero headline on the dashboard. |
 | `APP_DESCRIPTION` | Generated coverage description | Site description and social metadata. |
-| `SITE_URL` | blank | Public site URL used for generated absolute share links and social metadata. Set this when running behind a reverse proxy. |
+| `SITE_URL` | blank | Public site URL used for generated absolute share links and social metadata. Set it behind a reverse proxy that serves one hostname; leave it blank when several hostnames serve the app, so each one self-references via the request `Host` header. |
 | `CORESCOPE_URL` | blank | Optional CoreScope root URL. When set, matched message hashes link to `#/packets/<hash>`. |
 | `CARTO_BASEMAP_KEY` | blank | Public browser key for CARTO raster map tiles. Without it, the coverage map uses OpenStreetMap tiles in both themes while the dashboard keeps its dark theme. `CARTO_API_KEY` is accepted as a legacy alias. |
 | `MAP_TILE_DARK_URL` | blank | Full tile-URL override for the dark basemap. Wins over `CARTO_BASEMAP_KEY`. |
