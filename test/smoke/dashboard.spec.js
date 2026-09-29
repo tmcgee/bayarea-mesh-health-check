@@ -60,6 +60,12 @@ function regionHierarchy(observerDirectory) {
       groups.set(observer.regionGroup, { group: observer.regionGroup, count: 0, inferredCount: 0, regions: [] });
     }
     const entry = groups.get(observer.regionGroup);
+    // Placed by uplink code alone: no county, so the server tallies it at group
+    // level as inferredCount rather than as a located observer.
+    if (!observer.region && observer.regionInferred) {
+      entry.inferredCount += 1;
+      return;
+    }
     entry.count += 1;
     const region = entry.regions.find((item) => item.name === observer.region);
     if (region) {
@@ -453,6 +459,88 @@ test('region outlines draw under the markers, colour by status, and follow the r
 
   await page.locator('.region-btn--all').first().click();
   await expect(outlines).toHaveCount(2);
+});
+
+// Screen-space rectangles of a region outline and of the map, for asserting what
+// the viewport frames without reaching into Leaflet's module-scoped map.
+async function outlineFraming(page, group) {
+  return page.evaluate((name) => {
+    const path = document.querySelector(`#observer-map path[data-region-group="${name}"]`);
+    const map = document.querySelector('#observer-map');
+    if (!path || !map) return null;
+    const o = path.getBoundingClientRect();
+    const m = map.getBoundingClientRect();
+    return {
+      inside: o.left >= m.left - 1 && o.right <= m.right + 1 && o.top >= m.top - 1 && o.bottom <= m.bottom + 1,
+      // How much of the padded viewport the outline fills on its tighter axis.
+      // Leaflet snaps to whole zoom levels, so a fitted outline lands between
+      // 0.5 and 1; the world view at zoom 2 would be near 0.1.
+      fill: Math.max(o.width / (m.width - 52), o.height / (m.height - 52)),
+    };
+  }, group);
+}
+
+test('a region chip zooms to the region outline, a county chip to its observers', async ({ page }) => {
+  // Two mapped observers clustered in one corner of a large region, so fitting
+  // the markers and fitting the outline give very different views.
+  const boston = mapObserver(MAP_TEST_KEYS.target, 'Boston Observer', 42.3601, -71.0589, 'Boston', 'North America');
+  const cambridge = mapObserver(MAP_TEST_KEYS.neighbour, 'Cambridge Observer', 42.3736, -71.1097, 'Cambridge', 'North America');
+  // A region whose only observer has no coordinates - the empty-region map path.
+  const unmapped = {
+    ...mapObserver(MAP_TEST_KEYS.outside, 'Unmapped Observer', null, null, null, 'Europe'),
+    hasLocation: false,
+    regionInferred: true,
+  };
+  const observers = [boston, cambridge, unmapped];
+
+  await openMockMapSession(page, observers, observers, 'test-carto-key', {
+    boundaries: [
+      boundaryFeature('North America', -80, 35, -65, 48),
+      boundaryFeature('Europe', -5, 43, 8, 51),
+    ],
+  });
+  await expect(page.locator('#observer-map path.region-shape')).toHaveCount(2);
+
+  // Region chip: the whole outline is in view and fills the padded viewport on
+  // one axis. Fitting the two markers instead would zoom to 10 and push the
+  // outline far past every edge.
+  await page.locator('.region-btn--group', { hasText: 'North America' }).first().click();
+  await expect.poll(() => outlineFraming(page, 'North America'), { timeout: 5000 })
+    .toMatchObject({ inside: true });
+  expect((await outlineFraming(page, 'North America')).fill).toBeGreaterThan(0.45);
+
+  // County chip: back to framing its observers, so the outline overflows.
+  await page.locator('.region-btn--child', { hasText: 'Boston' }).first().click();
+  await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
+  await expect.poll(() => outlineFraming(page, 'North America'), { timeout: 5000 })
+    .toMatchObject({ inside: false });
+
+  // "All North America" is the region again, so the outline framing returns.
+  await page.locator('.region-btn--child', { hasText: 'All North America' }).first().click();
+  await expect.poll(() => outlineFraming(page, 'North America'), { timeout: 5000 })
+    .toMatchObject({ inside: true });
+
+  // A region with no mapped observers still moves the map to itself. Before,
+  // the map stayed on North America and Europe's outline sat off-screen.
+  await page.locator('.region-btn--group', { hasText: 'Europe' }).first().click();
+  await expect(page.locator('#map-observer-note')).toHaveText('No mapped observers in Europe.');
+  await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(0);
+  await expect.poll(() => outlineFraming(page, 'Europe'), { timeout: 5000 })
+    .toMatchObject({ inside: true });
+  expect((await outlineFraming(page, 'Europe')).fill).toBeGreaterThan(0.45);
+
+  // A poll re-render with the same selection keeps the user's view: pan away,
+  // wait past the 5 s refresh, and the map has not snapped back.
+  const map = page.locator('#observer-map');
+  const box = await map.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.95, box.y + box.height * 0.95, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => outlineFraming(page, 'Europe'), { timeout: 5000 })
+    .toMatchObject({ inside: false });
+  await page.waitForTimeout(6000);
+  expect((await outlineFraming(page, 'Europe')).inside).toBe(false);
 });
 
 test('coverage map omits observers with 0,0 coordinates', async ({ page }) => {

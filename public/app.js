@@ -1870,6 +1870,31 @@ function renderRegionBoundaries(mapInstance, session) {
   }
 }
 
+// The outline bounds of the selected region, or null when the map should frame
+// the plotted observers instead. Only a region chip qualifies: a subregion
+// (county) has no outline of its own on the client, and "All" has no single
+// region. Mapped observers in a region were placed there by its outline, so the
+// frame always contains them; unmapped ones cannot be drawn either way, and a
+// region with none mapped still gets a view of itself instead of the map staying
+// wherever it was. Null until the geometry arrives - the fetch re-enters
+// renderObserverMap, and the changed boundsKey then refits to the outline.
+function selectedRegionFrame() {
+  if (!state.selectedRegionGroup || state.selectedRegion || !window.L) {
+    return null;
+  }
+  const features = Array.isArray(state.map.regionFeatures) ? state.map.regionFeatures : [];
+  const feature = features.find((item) => item?.properties?.group === state.selectedRegionGroup);
+  if (!feature) {
+    return null;
+  }
+  try {
+    const bounds = window.L.geoJSON(feature).getBounds();
+    return bounds.isValid() ? bounds : null;
+  } catch {
+    return null;
+  }
+}
+
 function renderObserverMap(session) {
   // The region filter sits above this map and scopes the map, the observer list
   // and the reports list together, so it renders here rather than inside any one
@@ -1943,13 +1968,19 @@ function renderObserverMap(session) {
     `);
   }
 
-  // boundsKey is the observer key list, so narrowing the region filter changes it
-  // and the map refits to the filtered subset for free.
-  const boundsKey = locatedObservers.map((observer) => observer.key).join('|');
-  if (bounds.length > 0 && boundsKey !== state.map.boundsKey) {
-    mapInstance.fitBounds(bounds, { padding: [26, 26], maxZoom: 10 });
+  // A region chip frames the region's outline; everything else frames the
+  // plotted observers. boundsKey names the frame, so it only refits when the
+  // frame itself changes: narrowing the filter or switching region refits, a
+  // poll that adds or ages out an observer inside a selected region does not.
+  const regionFrame = selectedRegionFrame();
+  const frame = regionFrame || (bounds.length > 0 ? bounds : null);
+  const boundsKey = regionFrame
+    ? `region:${state.selectedRegionGroup}`
+    : locatedObservers.map((observer) => observer.key).join('|');
+  if (frame && boundsKey !== state.map.boundsKey) {
+    mapInstance.fitBounds(frame, { padding: [26, 26], maxZoom: 10 });
     state.map.boundsKey = boundsKey;
-  } else if (bounds.length === 0 && !regionScope && state.map.boundsKey !== '__empty__') {
+  } else if (!frame && !regionScope && state.map.boundsKey !== '__empty__') {
     // Only reset to the world view when there is genuinely nothing to show.
     // Filtering to a region with no coordinates must not yank the viewport out
     // to zoom 2 - the user is still looking at the area they selected.
