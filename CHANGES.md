@@ -4,6 +4,52 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.11
+
+- a region chip now frames the region's outline rather than the observers
+  plotted inside it. A region can list observers with no coordinates, so a
+  frame built from the mapped ones showed a fraction of the region, or nothing
+  when none were mapped. `selectedRegionFrame()` returns the bounds of the
+  selected group's boundary feature, and `boundsKey` names the frame
+  (`region:<group>`), so the map refits when the selection changes and not when
+  a poll adds or ages out an observer inside it. With no chip selected the frame
+  is still the plotted observers.
+- region outlines are drawn as inner strokes. Neighbouring regions share
+  borders (17 pairs in the Bay Area set) and a stroke centred on the boundary
+  painted both regions onto the same pixels, so a red region surrounded by green
+  ones could lose most of its outline to whichever was drawn last. Each outline
+  is now clipped to its own polygon and drawn at `stroke-width` 6, leaving 3px
+  inside the boundary, so neighbours sit side by side along a shared border in
+  their own colours at every zoom. The clip is a separate path kept in step with
+  Leaflet's redraws by a `MutationObserver` on the outline's `d`; a `<use>` of
+  the outline would inherit its `clip-path` and reference itself. Outlines are
+  also stacked by status, unknown < all < some < none, instead of by rebuild
+  order, so red is always on top.
+- a heard receipt whose hops are all 2-byte hashes gets a `Show path on map`
+  toggle that draws its path on the coverage map. Points are hops resolved to
+  exactly one located node; legs between hops adjacent in the path are solid, and
+  legs through hops with no known position are dashed, with the skipped count in
+  a tooltip. The path uses the accent colour in its own pane, above the outlines
+  and below the observer markers, and takes the map frame while shown. The card
+  says the lines are straight lines between known positions, not the radio path,
+  and that the sender's position is not part of the path. The selection is
+  dropped when a filter or a new code hides the card.
+- 1-byte receipts get no toggle, on measurement rather than preference. Over
+  3083 receipt paths from the live broker (270 s, 33 observers), 97% of 1-byte
+  hops matched several known nodes, and 36% of the 1-byte hops that did resolve
+  share their prefix with a CoreScope node outside the app's known set, so a map
+  would draw guesses as route. At 2 bytes 89% of hops resolved to a located node
+  and 1% shared a prefix. 3-byte receipts are excluded too for now; every one in
+  that sample had a gap.
+- `receiptPathHops` carries `lat` and `lon` for a hop resolved to exactly one
+  located node and `null` otherwise, so an unresolved or ambiguous hop can never
+  be given a candidate's position. Hop resolution itself is unchanged.
+- tests: smoke coverage at 1440px and 390px for the region-chip frame, the inner
+  strokes (pixel samples either side of each shared border, before and after a
+  zoom) and the path map (toggle rule, points, solid and dashed legs, framing,
+  toggle off, filter drop); unit assertions for hop positions. Smoke is 35 tests,
+  up from 30.
+
 ## v1.3.8+bayarea.10
 
 - CoreScope moved to `corescope.bayareameshcore.org`. Two live references carried
