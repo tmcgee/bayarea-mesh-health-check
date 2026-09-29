@@ -1825,6 +1825,12 @@ function regionBoundaryVisible(properties) {
   return true;
 }
 
+// Least to most urgent: later entries draw on top.
+const REGION_STROKE_ORDER = { unknown: 0, all: 1, some: 2, none: 3 };
+
+// Unique ids for the per-outline <clipPath> elements (see clipToInnerStroke).
+let regionClipSequence = 0;
+
 // Stroke colour lives in CSS (.region-shape--*) against the same custom
 // properties as the region filter dots, so the palette is defined once. Leaflet's
 // setStyle does not update className, so a status change rebuilds the shape
@@ -1846,6 +1852,7 @@ function renderRegionBoundaries(mapInstance, session) {
     const next = wanted.get(group);
     if (!next || next.status !== entry.status) {
       entry.shape.remove();
+      entry.clips.forEach(releaseInnerStroke);
       state.map.regionShapes.delete(group);
     }
   }
@@ -1854,8 +1861,10 @@ function renderRegionBoundaries(mapInstance, session) {
     return;
   }
   const pane = ensureRegionPane(mapInstance);
+  let added = false;
   for (const [group, entry] of wanted.entries()) {
     if (state.map.regionShapes.has(group)) continue;
+    added = true;
     const shape = window.L.geoJSON(entry.feature, {
       pane,
       interactive: false,
@@ -1865,9 +1874,71 @@ function renderRegionBoundaries(mapInstance, session) {
     }).addTo(mapInstance);
     // Name the drawn path so the outline set is identifiable from the DOM, which
     // is what the smoke test asserts against.
-    shape.eachLayer((sub) => sub.getElement()?.setAttribute('data-region-group', group));
-    state.map.regionShapes.set(group, { shape, status: entry.status });
+    const clips = [];
+    shape.eachLayer((sub) => {
+      const element = sub.getElement();
+      if (!element) return;
+      element.setAttribute('data-region-group', group);
+      const clip = clipToInnerStroke(element);
+      if (clip) clips.push(clip);
+    });
+    state.map.regionShapes.set(group, { shape, status: entry.status, clips });
   }
+
+  // Neighbouring regions share borders, and before inner strokes the last-drawn
+  // outline owned the shared pixels. With inner strokes each side paints only
+  // its own half, so order rarely shows - but where it does (a vertex, a sliver
+  // from coordinate rounding) the more urgent status should win. A rebuilt shape
+  // is appended last, so without this the order drifted with every status change.
+  if (added) {
+    [...state.map.regionShapes.values()]
+      .sort((left, right) => (REGION_STROKE_ORDER[left.status] ?? 0) - (REGION_STROKE_ORDER[right.status] ?? 0))
+      .forEach((entry) => entry.shape.bringToFront());
+  }
+}
+
+// Inner stroke: the outline's stroke is centred on the boundary, so two regions
+// sharing a border painted the same pixels and one colour hid the other. Each
+// outline is clipped to its own polygon and drawn at double width
+// (.region-shape), leaving only the inside half - neighbours then sit side by
+// side along a shared border, each showing its own colour, at any zoom.
+//
+// The clip is a separate path, not a <use> of the outline: a clone of the
+// outline would carry the outline's own clip-path and reference itself. Leaflet
+// rewrites the outline's d on every zoom and pan, so an observer copies it
+// across; clipPathUnits default to the outline's own user space, so the copy
+// lines up without any transform.
+function clipToInnerStroke(pathElement) {
+  const svg = pathElement.ownerSVGElement;
+  if (!svg || typeof MutationObserver === 'undefined') return null;
+  const ns = 'http://www.w3.org/2000/svg';
+  let defs = svg.querySelector(':scope > defs');
+  if (!defs) {
+    defs = document.createElementNS(ns, 'defs');
+    svg.insertBefore(defs, svg.firstChild);
+  }
+  regionClipSequence += 1;
+  const id = `region-clip-${regionClipSequence}`;
+  const clipPath = document.createElementNS(ns, 'clipPath');
+  clipPath.setAttribute('id', id);
+  const source = document.createElementNS(ns, 'path');
+  source.setAttribute('class', 'region-clip');
+  // Leaflet draws polygons evenodd, so holes clip out exactly as they render.
+  source.setAttribute('clip-rule', 'evenodd');
+  source.setAttribute('d', pathElement.getAttribute('d') || '');
+  clipPath.appendChild(source);
+  defs.appendChild(clipPath);
+  const observer = new MutationObserver(() => {
+    source.setAttribute('d', pathElement.getAttribute('d') || '');
+  });
+  observer.observe(pathElement, { attributes: true, attributeFilter: ['d'] });
+  pathElement.setAttribute('clip-path', `url(#${id})`);
+  return { clipPath, observer };
+}
+
+function releaseInnerStroke(clip) {
+  clip.observer.disconnect();
+  clip.clipPath.remove();
 }
 
 // The outline bounds of the selected region, or null when the map should frame

@@ -543,6 +543,147 @@ test('a region chip zooms to the region outline, a county chip to its observers'
   expect((await outlineFraming(page, 'Europe')).inside).toBe(false);
 });
 
+// Pixel colours from a screenshot of the map, decoded in the page so the suite
+// needs no image library. Points are page (CSS) coordinates at DPR 1.
+async function sampleMapColours(page, points) {
+  const map = page.locator('#observer-map');
+  const box = await map.boundingBox();
+  // Raw bytes into a Blob: the page's CSP forbids fetching a data: URL.
+  const png = [...await map.screenshot()];
+  return page.evaluate(async ({ data, origin, pts }) => {
+    const blob = new Blob([new Uint8Array(data)], { type: 'image/png' });
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0);
+    return pts.map(([x, y]) => {
+      const px = Math.floor(x - origin.x);
+      const py = Math.floor(y - origin.y);
+      if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) return null;
+      return [...ctx.getImageData(px, py, 1, 1).data.slice(0, 3)];
+    });
+  }, { data: png, origin: { x: box.x, y: box.y }, pts: points });
+}
+
+// Nearest named colour, so anti-aliasing and blending never need exact values.
+function nearestColour(rgb, palette) {
+  if (!rgb) return null;
+  let best = null;
+  let bestDistance = Infinity;
+  for (const [name, ref] of Object.entries(palette)) {
+    const distance = ref.reduce((sum, value, index) => sum + (value - rgb[index]) ** 2, 0);
+    if (distance < bestDistance) {
+      best = name;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function parseRgb(css) {
+  return (css.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map(Number);
+}
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+  test(`region outlines stroke inside their own boundary at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    // Three abutting squares: a silent (red) region between two heard (green)
+    // ones - the case where a centred stroke let one colour hide the other.
+    const west = mapObserver(MAP_TEST_KEYS.target, 'West Observer', 0.6, -2, 'West County', 'West');
+    const middle = mapObserver(MAP_TEST_KEYS.neighbour, 'Middle Observer', -0.6, 0, 'Middle County', 'Middle');
+    const east = mapObserver(MAP_TEST_KEYS.outside, 'East Observer', 0.6, 2, 'East County', 'East');
+    const observers = [west, middle, east];
+    await openMockMapSession(page, observers, observers, 'test-carto-key', {
+      seenKeys: [west.key, east.key],
+      boundaries: [
+        boundaryFeature('West', -3, -1, -1, 1),
+        boundaryFeature('Middle', -1, -1, 1, 1),
+        boundaryFeature('East', 1, -1, 3, 1),
+      ],
+    });
+    // Pixel samples read the outlines alone: no basemap, no markers.
+    await page.addStyleTag({ content: '.leaflet-tile-pane, .leaflet-marker-pane, .leaflet-shadow-pane { visibility: hidden !important; }' });
+
+    const outline = (group) => page.locator(`#observer-map path.region-shape[data-region-group="${group}"]`);
+    await expect(outline('West')).toHaveClass(/region-shape--all/);
+    await expect(outline('Middle')).toHaveClass(/region-shape--none/);
+    await expect(outline('East')).toHaveClass(/region-shape--all/);
+    await page.locator('#observer-map').scrollIntoViewIfNeeded();
+
+    // Draw order puts the most urgent status last (on top), whatever the
+    // feature order - Middle arrives second but is drawn last.
+    const order = await page.locator('#observer-map path.region-shape').evaluateAll(
+      (paths) => paths.map((path) => path.getAttribute('data-region-group')),
+    );
+    expect(order[order.length - 1]).toBe('Middle');
+
+    // Every outline is clipped by its own clipPath, whose path tracks the
+    // outline's geometry.
+    const clipsInStep = () => page.locator('#observer-map path.region-shape').evaluateAll((paths) => paths.every((path) => {
+      const id = (path.getAttribute('clip-path') || '').match(/url\(#([^)]+)\)/)?.[1];
+      const source = id ? document.getElementById(id)?.querySelector('path') : null;
+      return Boolean(source) && source.getAttribute('d') === path.getAttribute('d')
+        && source.getAttribute('clip-rule') === 'evenodd';
+    }));
+    expect(await clipsInStep()).toBe(true);
+
+    const palette = {
+      green: parseRgb(await outline('West').evaluate((path) => getComputedStyle(path).stroke)),
+      red: parseRgb(await outline('Middle').evaluate((path) => getComputedStyle(path).stroke)),
+      background: parseRgb(await page.locator('#observer-map').evaluate((map) => getComputedStyle(map).backgroundColor)),
+    };
+
+    // Both sides of each shared border, 1.5px in: each region's own colour.
+    // A centred stroke paints one colour across the line and leaves 1.5px
+    // outside it bare. 8px in is past the 3px inner stroke: bare map.
+    const bordersShowBothColours = async () => {
+      const rect = await outline('Middle').evaluate((path) => {
+        const r = path.getBoundingClientRect();
+        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+      });
+      const y = (rect.top + rect.bottom) / 2;
+      const samples = await sampleMapColours(page, [
+        [rect.left - 1.5, y], [rect.left + 1.5, y], [rect.left + 8, y],
+        [rect.right + 1.5, y], [rect.right - 1.5, y], [rect.right - 8, y],
+      ]);
+      return samples.map((rgb) => nearestColour(rgb, palette));
+    };
+    await expect.poll(bordersShowBothColours, { timeout: 5000 })
+      .toEqual(['green', 'red', 'background', 'green', 'red', 'background']);
+
+    // Zooming out rewrites every outline's d; the clips must follow or the
+    // strokes are cut away.
+    await page.locator('#observer-map .leaflet-control-zoom-out').click();
+    await expect.poll(clipsInStep, { timeout: 5000 }).toBe(true);
+    await expect.poll(bordersShowBothColours, { timeout: 5000 })
+      .toEqual(['green', 'red', 'background', 'green', 'red', 'background']);
+
+    // Selected on its own, the red region shows a complete red outline, all of
+    // it inside the boundary and nothing outside.
+    await page.locator('.region-btn--group', { hasText: 'Middle' }).first().click();
+    await expect(page.locator('#observer-map path.region-shape')).toHaveCount(1);
+    const ring = async () => {
+      const r = await outline('Middle').evaluate((path) => {
+        const b = path.getBoundingClientRect();
+        return { left: b.left, right: b.right, top: b.top, bottom: b.bottom };
+      });
+      const cx = (r.left + r.right) / 2;
+      const cy = (r.top + r.bottom) / 2;
+      const samples = await sampleMapColours(page, [
+        [r.left + 1.5, cy], [r.right - 1.5, cy], [cx, r.top + 1.5], [cx, r.bottom - 1.5],
+        [r.left - 2, cy], [r.right + 2, cy], [cx, r.top - 2], [cx, r.bottom + 2],
+      ]);
+      return samples.map((rgb) => nearestColour(rgb, palette));
+    };
+    await expect.poll(ring, { timeout: 5000 }).toEqual([
+      'red', 'red', 'red', 'red',
+      'background', 'background', 'background', 'background',
+    ]);
+  });
+}
+
 test('coverage map omits observers with 0,0 coordinates', async ({ page }) => {
   const target = mapObserver(MAP_TEST_KEYS.target, 'Target Observer', 42.3601, -71.0589, 'BOS');
   const zero = mapObserver(MAP_TEST_KEYS.zero, 'Zero Observer', 0, 0, 'BOS');
