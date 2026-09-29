@@ -3012,6 +3012,11 @@ function receiptPathHops(report) {
       key: observer?.key || '',
       resolved: Boolean(observer),
       hasLocation: observer?.lat != null && observer?.lon != null,
+      // Position of the one node this prefix resolved to, for the receipt path
+      // map. Null whenever the hop is unresolved or ambiguous: a candidate's
+      // position would draw a guess as though it were the route.
+      lat: observer?.lat != null && observer?.lon != null ? Number(observer.lat) : null,
+      lon: observer?.lat != null && observer?.lon != null ? Number(observer.lon) : null,
       isTerminal,
     };
   });

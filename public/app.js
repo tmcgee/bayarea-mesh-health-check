@@ -124,6 +124,17 @@ const state = {
     regionPendingKey: '',
     regionPane: '',
     regionShapes: new Map(),
+    // The selected receipt's path (see renderReceiptPathLayer): its own pane,
+    // the drawn layer group, and the signature it was built from.
+    pathPane: '',
+    pathLayer: null,
+    pathSignature: '',
+  },
+  // Which receipt's path is drawn on the coverage map, by observer key, and the
+  // session it belongs to so a new code never inherits the old selection.
+  receiptPath: {
+    key: '',
+    sessionId: '',
   },
   drawer: {
     kind: '',
@@ -1966,6 +1977,150 @@ function selectedRegionFrame() {
   }
 }
 
+// Receipt path map. Only for receipts whose every hop is a 2-byte hash: measured
+// on live traffic, 97% of 1-byte hops match several known nodes and over a third
+// of the 1-byte hops that do resolve share their prefix with a node the app does
+// not know about, so a 1-byte map would draw guesses as route. At 2 bytes 89% of
+// hops resolve to a located node and about 1% are shared.
+const RECEIPT_PATH_HASH_HEX = 4;
+
+// Points are the hops the server resolved to exactly one located node (it sends
+// no position otherwise), in path order. Consecutive hops that resolved to the
+// same node collapse into one point. A leg between points that are not adjacent
+// in the path passes through hops with no position and is drawn dashed. Null
+// when there is nothing honest to draw: not 2-byte, or fewer than two points.
+function receiptPathMapData(receipt) {
+  const hops = Array.isArray(receipt?.pathHops) ? receipt.pathHops : [];
+  if (hops.length < 2) {
+    return null;
+  }
+  if (!hops.every((hop) => String(hop?.hash || '').length === RECEIPT_PATH_HASH_HEX)) {
+    return null;
+  }
+  const points = [];
+  hops.forEach((hop, index) => {
+    if (hop?.lat == null || hop?.lon == null) {
+      return;
+    }
+    const lat = Number(hop.lat);
+    const lon = Number(hop.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return;
+    }
+    const previous = points[points.length - 1];
+    if (previous && hop.key && previous.key === hop.key) {
+      previous.lastIndex = index;
+      return;
+    }
+    points.push({
+      index,
+      lastIndex: index,
+      lat,
+      lon,
+      key: String(hop.key || ''),
+      label: receiptHopLabel(hop.label, hop.hash),
+      isTerminal: Boolean(hop.isTerminal),
+    });
+  });
+  if (points.length < 2) {
+    return null;
+  }
+  const legs = [];
+  for (let index = 1; index < points.length; index += 1) {
+    const from = points[index - 1];
+    const to = points[index];
+    legs.push({ from, to, skipped: to.index - from.lastIndex - 1 });
+  }
+  return { points, legs, hopCount: hops.length };
+}
+
+// The selected receipt, only while its card is actually listed: same session,
+// observer inside the region filter, and the heard filter not hiding heard rows.
+// Otherwise the selection is dropped, so a path can never sit on the map with no
+// card on screen to explain it or to turn it off.
+function selectedPathReceipt(session) {
+  const selection = state.receiptPath;
+  if (!selection.key) {
+    return null;
+  }
+  const receipts = Array.isArray(session?.receipts) ? session.receipts : [];
+  const receipt = session && session.id === selection.sessionId
+    ? receipts.find((entry) => entry.observerKey === selection.key) || null
+    : null;
+  const listed = receipt
+    && state.receiptHeardFilter !== 'unheard'
+    && observersMatchingRegionFilter(mergedObserverRoster(session).all)
+      .some((observer) => observer.key === receipt.observerKey);
+  if (!listed || !receiptPathMapData(receipt)) {
+    selection.key = '';
+    selection.sessionId = '';
+    return null;
+  }
+  return receipt;
+}
+
+// Above the region outlines (350), below the observer markers (600), so the
+// receiving observer's own marker stays on top of the path's last point.
+function ensureReceiptPathPane(mapInstance) {
+  if (state.map.pathPane) {
+    return state.map.pathPane;
+  }
+  const name = 'receiptPath';
+  mapInstance.createPane(name).style.zIndex = '450';
+  state.map.pathPane = name;
+  return name;
+}
+
+// Draws the selected receipt's path and returns its data (null when nothing is
+// selected). Rebuilt only when the points change, not on every poll.
+function renderReceiptPathLayer(mapInstance, session) {
+  const receipt = selectedPathReceipt(session);
+  const data = receipt ? receiptPathMapData(receipt) : null;
+  const signature = data
+    ? `${receipt.observerKey}:${data.points.map((point) => `${point.index}@${point.lat},${point.lon}`).join('|')}`
+    : '';
+  if (signature === state.map.pathSignature) {
+    return data ? { ...data, signature } : null;
+  }
+  if (state.map.pathLayer) {
+    state.map.pathLayer.remove();
+    state.map.pathLayer = null;
+  }
+  state.map.pathSignature = signature;
+  if (!data) {
+    return null;
+  }
+  const pane = ensureReceiptPathPane(mapInstance);
+  const group = window.L.layerGroup();
+  for (const leg of data.legs) {
+    const line = window.L.polyline([[leg.from.lat, leg.from.lon], [leg.to.lat, leg.to.lon]], {
+      pane,
+      className: `receipt-path-leg${leg.skipped > 0 ? ' receipt-path-leg--gap' : ''}`,
+      interactive: leg.skipped > 0,
+    });
+    if (leg.skipped > 0) {
+      line.bindTooltip(`${leg.skipped} hop${leg.skipped === 1 ? '' : 's'} without a known position`, { sticky: true });
+    }
+    group.addLayer(line);
+  }
+  data.points.forEach((point, index) => {
+    const role = point.isTerminal
+      ? 'Observer'
+      : (index === 0 ? 'First repeater in the path' : 'Repeater');
+    const marker = window.L.circleMarker([point.lat, point.lon], {
+      pane,
+      radius: point.isTerminal ? 7 : 5,
+      className: `receipt-path-point${point.isTerminal ? ' receipt-path-point--observer' : ''}${
+        index === 0 ? ' receipt-path-point--first' : ''}`,
+    });
+    marker.bindTooltip(`${role}: ${point.label}`);
+    group.addLayer(marker);
+  });
+  group.addTo(mapInstance);
+  state.map.pathLayer = group;
+  return { ...data, signature };
+}
+
 function renderObserverMap(session) {
   // The region filter sits above this map and scopes the map, the observer list
   // and the reports list together, so it renders here rather than inside any one
@@ -2043,11 +2198,17 @@ function renderObserverMap(session) {
   // plotted observers. boundsKey names the frame, so it only refits when the
   // frame itself changes: narrowing the filter or switching region refits, a
   // poll that adds or ages out an observer inside a selected region does not.
+  // A drawn receipt path takes the frame while it is shown; clearing it changes
+  // boundsKey back, which refits to the region or observers it replaced.
+  const pathData = renderReceiptPathLayer(mapInstance, session);
   const regionFrame = selectedRegionFrame();
-  const frame = regionFrame || (bounds.length > 0 ? bounds : null);
-  const boundsKey = regionFrame
-    ? `region:${state.selectedRegionGroup}`
-    : locatedObservers.map((observer) => observer.key).join('|');
+  const pathFrame = pathData ? pathData.points.map((point) => [point.lat, point.lon]) : null;
+  const frame = pathFrame || regionFrame || (bounds.length > 0 ? bounds : null);
+  const boundsKey = pathFrame
+    ? `path:${pathData.signature}`
+    : regionFrame
+      ? `region:${state.selectedRegionGroup}`
+      : locatedObservers.map((observer) => observer.key).join('|');
   if (frame && boundsKey !== state.map.boundsKey) {
     mapInstance.fitBounds(frame, { padding: [26, 26], maxZoom: 10 });
     state.map.boundsKey = boundsKey;
@@ -2600,8 +2761,48 @@ function renderReceipts(session) {
       </div>
       ${receiptHasDistanceLegs(receipt) ? '' : `<div class="receipt-path">${pathMarkup}</div>`}
       ${distanceMarkup}
+      ${receiptPathToggleMarkup(receipt, session)}
     `;
     ui.receipts.appendChild(card);
+  }
+}
+
+// Offered only when receiptPathMapData can draw something honest, so a 1-byte
+// or mostly-unlocated path gets no button rather than a misleading map.
+function receiptPathToggleMarkup(receipt, session) {
+  const data = receiptPathMapData(receipt);
+  if (!data) {
+    return '';
+  }
+  const active = state.receiptPath.key === receipt.observerKey
+    && state.receiptPath.sessionId === (session?.id || '');
+  const note = active
+    ? `<p class="small-note receipt-map-note">On the map: straight lines between the ${data.points.length} of ${
+      data.hopCount} hops with a known position, not the radio path. Dashed legs pass through hops with no known position. The sender's position is not part of the path.</p>`
+    : '';
+  return `
+    <div class="receipt-map">
+      <button class="ghost-button receipt-map-button" type="button" data-receipt-path="${escapeHtml(receipt.observerKey)}" aria-pressed="${active ? 'true' : 'false'}">${
+        active ? 'Hide path on map' : 'Show path on map'}</button>
+      ${note}
+    </div>
+  `;
+}
+
+function toggleReceiptPath(observerKey) {
+  const session = currentSession();
+  const selection = state.receiptPath;
+  const turningOn = !(selection.key === observerKey && selection.sessionId === (session?.id || ''));
+  selection.key = turningOn ? observerKey : '';
+  selection.sessionId = turningOn ? (session?.id || '') : '';
+  render();
+  // The map sits above the list, so on a phone the path would be drawn
+  // off-screen. Bring it into view only when it is not already visible.
+  if (turningOn && ui.observerMap) {
+    const rect = ui.observerMap.getBoundingClientRect();
+    if (rect.bottom < 0 || rect.top > window.innerHeight) {
+      ui.observerMap.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
   }
 }
 
@@ -3263,6 +3464,11 @@ document.addEventListener('click', (event) => {
     event.preventDefault();
     openDrawer(action.dataset.drawerAction || '');
     return;
+  }
+  const pathToggle = event.target.closest('[data-receipt-path]');
+  if (pathToggle) {
+    event.preventDefault();
+    toggleReceiptPath(pathToggle.dataset.receiptPath || '');
   }
 });
 

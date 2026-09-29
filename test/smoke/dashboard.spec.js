@@ -137,7 +137,7 @@ function boundaryFeature(group, west, south, east, north) {
   };
 }
 
-function mapSession(expectedObservers, seenKeys = []) {
+function mapSession(expectedObservers, seenKeys = [], receipts = []) {
   const seen = new Set(seenKeys);
   const now = Date.now();
   return {
@@ -162,7 +162,7 @@ function mapSession(expectedObservers, seenKeys = []) {
       label: observer.label,
       seen: seen.has(observer.key),
     })),
-    receipts: [],
+    receipts,
   };
 }
 
@@ -171,7 +171,7 @@ async function openMockMapSession(
   observerDirectory,
   expectedObservers,
   cartoBasemapKey = 'test-carto-key',
-  { seenKeys = [], boundaries = null } = {},
+  { seenKeys = [], boundaries = null, receipts = [] } = {},
 ) {
   await page.addInitScript(() => {
     window.WebSocket = class {
@@ -185,7 +185,7 @@ async function openMockMapSession(
   }));
   await page.route('**/api/sessions/map-session', (route) => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify(mapSession(expectedObservers, seenKeys)),
+    body: JSON.stringify(mapSession(expectedObservers, seenKeys, receipts)),
   }));
   await page.route('**/api/region-boundaries', (route) => route.fulfill({
     contentType: 'application/json',
@@ -681,6 +681,114 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       'red', 'red', 'red', 'red',
       'background', 'background', 'background', 'background',
     ]);
+  });
+}
+
+// A heard receipt with the fields the card and the path map read. Hops carry a
+// position only when the server resolved them to exactly one located node.
+function pathReceipt(observer, hops, firstSeenAt) {
+  return {
+    observerKey: observer.key,
+    observerLabel: observer.label,
+    observerHash: observer.key.slice(0, 4).toUpperCase(),
+    observerShortKey: observer.shortKey,
+    firstSeenAt,
+    lastSeenAt: firstSeenAt,
+    count: 1,
+    path: hops.map((hop) => hop.hash),
+    pathHops: hops.map((hop, index) => ({
+      hash: hop.hash,
+      label: hop.label || hop.hash,
+      key: hop.key || '',
+      resolved: Boolean(hop.key),
+      hasLocation: hop.lat != null,
+      lat: hop.lat ?? null,
+      lon: hop.lon ?? null,
+      isTerminal: index === hops.length - 1,
+    })),
+  };
+}
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+  test(`a 2-byte receipt path is drawn on the coverage map at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const west = mapObserver(MAP_TEST_KEYS.target, 'West Observer', 0, 2, 'West County', 'West');
+    const east = mapObserver(MAP_TEST_KEYS.outside, 'East Observer', 0.5, 6, 'East County', 'East');
+    const now = Date.now();
+    const twoByte = pathReceipt(west, [
+      { hash: 'AAAA', label: 'Alpha Rptr', key: 'a'.repeat(64), lat: 0, lon: -2 },
+      { hash: 'BBBB' },
+      { hash: 'CCCC', label: 'Charlie Rptr', key: 'c'.repeat(64), lat: 0, lon: 0 },
+      { hash: '1111', label: west.label, key: west.key, lat: 0, lon: 2 },
+    ], now - 5000);
+    // Every hop located, but 1-byte: no map is offered.
+    const oneByte = pathReceipt(east, [
+      { hash: 'AA', label: 'Alpha Rptr', key: 'a'.repeat(64), lat: 0, lon: -2 },
+      { hash: '22', label: east.label, key: east.key, lat: 0.5, lon: 6 },
+    ], now - 4000);
+    await openMockMapSession(page, [west, east], [west, east], 'test-carto-key', {
+      seenKeys: [west.key, east.key],
+      receipts: [twoByte, oneByte],
+    });
+    await page.locator('#additional-info-toggle').click();
+
+    const card = (label) => page.locator('#receipts .receipt-card', { hasText: label });
+    const westButton = card('West Observer').locator('[data-receipt-path]');
+    await expect(westButton).toHaveText('Show path on map');
+    await expect(westButton).toHaveAttribute('aria-pressed', 'false');
+    await expect(card('East Observer').locator('[data-receipt-path]')).toHaveCount(0);
+    await expect(page.locator('#observer-map .receipt-path-point')).toHaveCount(0);
+
+    await westButton.click();
+    await expect(westButton).toHaveText('Hide path on map');
+    await expect(westButton).toHaveAttribute('aria-pressed', 'true');
+    await expect(card('West Observer').locator('.receipt-map-note')).toContainText(
+      'straight lines between the 3 of 4 hops with a known position, not the radio path',
+    );
+
+    // Three located hops, BBBB has no position: Alpha to Charlie is dashed
+    // because it passes through it, Charlie to the observer is solid.
+    const points = page.locator('#observer-map .receipt-path-point');
+    await expect(points).toHaveCount(3);
+    await expect(page.locator('#observer-map .receipt-path-point--first')).toHaveCount(1);
+    await expect(page.locator('#observer-map .receipt-path-point--observer')).toHaveCount(1);
+    const legs = page.locator('#observer-map path.receipt-path-leg');
+    await expect(legs).toHaveCount(2);
+    expect(await legs.evaluateAll((paths) => paths.map((path) => path.classList.contains('receipt-path-leg--gap'))))
+      .toEqual([true, false]);
+    expect(await page.locator('#observer-map .receipt-path-leg--gap').evaluate((path) => getComputedStyle(path).strokeDasharray))
+      .not.toBe('none');
+
+    // The map frames the path: every point inside the map. Map and points are
+    // measured in one evaluate, polled, because the toggle may still be
+    // smooth-scrolling the map into view.
+    const pointsInsideMap = () => page.evaluate(() => {
+      const map = document.querySelector('#observer-map').getBoundingClientRect();
+      return [...document.querySelectorAll('#observer-map .receipt-path-point')].every((el) => {
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        return x > map.left && x < map.right && y > map.top && y < map.bottom;
+      });
+    });
+    await expect.poll(pointsInsideMap, { timeout: 5000 }).toBe(true);
+
+    // Toggling off removes it.
+    await westButton.click();
+    await expect(westButton).toHaveText('Show path on map');
+    await expect(points).toHaveCount(0);
+    await expect(legs).toHaveCount(0);
+
+    // A region filter that hides the card drops the path with it, and clearing
+    // the filter does not bring it back.
+    await westButton.click();
+    await expect(points).toHaveCount(3);
+    await page.locator('.region-btn--group', { hasText: 'East' }).first().click();
+    await expect(card('West Observer')).toHaveCount(0);
+    await expect(points).toHaveCount(0);
+    await page.locator('#region-filter .region-btn', { hasText: 'All' }).first().click();
+    await expect(card('West Observer').locator('[data-receipt-path]')).toHaveText('Show path on map');
+    await expect(points).toHaveCount(0);
   });
 }
 

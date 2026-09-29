@@ -1376,6 +1376,39 @@ body[data-page-mode="share"] .status-pill::before {
   stroke: var(--region-status-unknown);
 }
 
+/* The selected receipt's path (app.js renderReceiptPathLayer). Accent, not a
+   region status colour, so a path can never be read as a region's result.
+   Solid legs join hops adjacent in the path; dashed legs pass through hops with
+   no known position. */
+.receipt-path-leg {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-opacity: 0.95;
+}
+
+.receipt-path-leg--gap {
+  stroke-dasharray: 2 7;
+  stroke-opacity: 0.8;
+}
+
+.receipt-path-point {
+  fill: var(--bg-deep);
+  fill-opacity: 1;
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+
+.receipt-path-point--first {
+  fill: var(--accent);
+}
+
+.receipt-path-point--observer {
+  fill: none;
+  stroke-width: 3;
+}
+
 /* Same dot, reused inline before a receipt card's title (always green there,
    since only heard observers produce a receipt at all). */
 .receipt-title .region-btn__status {
@@ -1777,6 +1810,26 @@ body[data-page-mode="share"] .status-pill::before {
 
 .receipt-distance--unknown strong {
   display: none;
+}
+
+.receipt-map {
+  margin-top: 10px;
+}
+
+.receipt-map-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.receipt-map-note {
+  margin: 6px 0 0;
+  /* A sentence, not a label: .small-note's uppercase tracking made it hard
+     to read. */
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--muted);
 }
 
 .receipt-distance {

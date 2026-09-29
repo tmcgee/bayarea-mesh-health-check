@@ -872,6 +872,11 @@ test('session distance falls back to observer span, but a receipt reports its ow
   assert.equal(receipt.pathHops[2].label, 'Span Observer One');
   assert.equal(receipt.pathHops[2].hasLocation, true);
   assert.equal(receipt.pathHops[2].isTerminal, true);
+  // Only a hop resolved to exactly one located node carries a position.
+  assert.deepEqual(
+    receipt.pathHops.map((hop) => [hop.lat, hop.lon]),
+    [[null, null], [null, null], [1, 0]],
+  );
   assert.match(session.longestPacketDistanceText, / mi$/);
   assert.ok(session.longestPacketDistance > 200);
   assert.ok(session.longestPacketDistance < 210);
