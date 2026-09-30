@@ -880,8 +880,9 @@ function ringArea(ring) {
 // and stitching what is left back into closed rings. This is a topological
 // dissolve: it only ever deletes and reconnects existing vertices, so it needs
 // no geometry library and cannot invent coordinates. It relies on neighbours
-// sharing exact vertices, which the bundled county file does (450 of its 2,080
-// segments cancel this way).
+// sharing exact vertices and winding the same way, which the bundled county
+// file does (16,220 of its 21,160 segments cancel this way);
+// test/region-outline.test.js fails if a boundary edit breaks that.
 function dissolveRings(rings) {
   const pointKey = (point) => `${point[0]},${point[1]}`;
   const counts = new Map();
@@ -4380,6 +4381,7 @@ export function ingestMqttMessage(topic, payload) {
 
 export {
   computeRegionFingerprint,
+  regionBoundaryCollection,
   loadLastReseedFingerprint,
   runObserverReseed,
   app,
