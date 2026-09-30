@@ -4,6 +4,50 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.13
+
+- region outlines are 2px, down from 3px: `.region-shape` goes from `stroke-width`
+  6 to 4, of which the half inside the boundary shows. Two neighbouring outlines
+  now make a 4px band along a shared border, not 6px. An outline with no
+  neighbour (a coast, the edge of the area) shows about 2.5px, because of the
+  mask below.
+- a dark hairline of map showed between two neighbouring outlines, often but not
+  always, at either width. It is not the data: the served outlines have no gap
+  and no overlap between regions, and 96% to 99.9% of each shared land border
+  matches its neighbour to within 1 m (median deviation 0.00 m). It is two things at
+  draw time. Leaflet simplifies each polygon on its own, at a 1px tolerance, so
+  the two copies of a shared border are not quite the same line: at zoom 7 that
+  leaves 203 px2 of gap and 185 px2 of overlap along 1,647 px of shared border,
+  against 0.0 and 0.0 at tolerance 0. And each outline was clipped to its own
+  polygon, and the two clip edges on one line are antialiased separately, so each
+  covers part of a boundary pixel and neither all of it: along a diagonal border
+  the weakest pixel was 0.786 of full stroke colour, with the geometry exact.
+- each outline is now masked, not clipped: the mask is the polygon plus its own
+  outline stroked 1px wide (`REGION_MASK_GROW_PX`), so it reaches 0.5px past the
+  boundary. Neighbours overlap by a pixel and no pixel is left bare. The mask is
+  a `<mask class="region-mask">` with id `region-mask-N`, kept in step with the
+  outline's `d` by the same observer the clip used; `clipToInnerStroke` is now
+  `maskToInnerStroke`. Before this, in a browser against the live map, the seam
+  was gone in the blocks sampled with the mask in place of the clip; this build
+  is covered by the tests below.
+- not changed: Leaflet's simplification tolerance stays at 1px. Tolerance 0 cost
+  nothing measurable (4.6 ms against 4.5 ms to re-project every outline at zoom
+  7) but makes the outline paths about 13 times longer (85,111 characters against
+  6,294) and, with the mask, is not needed. `shape-rendering: crispEdges` was
+  tried and did not help. No server, data or API change.
+- tests: new smoke test, at 1440 and 390px, for two same-status triangles
+  sharing a diagonal border, sampling the pixels along it: weakest coverage 0.786
+  on the previous code, 1.0 now, and 0.787 again with `REGION_MASK_GROW_PX` set
+  to 0. The axis-aligned squares in the existing outline test fall on the pixel
+  grid and could not show this. That test now checks each outline's `mask` (and
+  that it has no `clip-path`), that masks are released with their outlines (3
+  masks for 3 outlines, 1 after selecting one region), and probes 1px inside an
+  outline, the middle of the 2px stroke, where it probed 1.5px, the middle of the
+  3px one.
+- checks: `npm run check` clean, `npm test` 80/80, `npm run test:smoke` 37/37.
+- nothing in this release touches the boundary file, so the region fingerprint
+  is unchanged and the first boot arms no observer re-seed.
+
 ## v1.3.8+bayarea.12
 
 - Sierra Foothills drew as three shapes on the coverage map, and San Joaquin
