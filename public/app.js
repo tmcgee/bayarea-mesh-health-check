@@ -1839,8 +1839,12 @@ function regionBoundaryVisible(properties) {
 // Least to most urgent: later entries draw on top.
 const REGION_STROKE_ORDER = { unknown: 0, all: 1, some: 2, none: 3 };
 
-// Unique ids for the per-outline <clipPath> elements (see clipToInnerStroke).
-let regionClipSequence = 0;
+// Unique ids for the per-outline <mask> elements (see maskToInnerStroke).
+let regionMaskSequence = 0;
+
+// Width of the stroke that grows each outline's mask past its polygon: half of
+// it, 0.5px, on either side.
+const REGION_MASK_GROW_PX = 1;
 
 // Stroke colour lives in CSS (.region-shape--*) against the same custom
 // properties as the region filter dots, so the palette is defined once. Leaflet's
@@ -1863,7 +1867,7 @@ function renderRegionBoundaries(mapInstance, session) {
     const next = wanted.get(group);
     if (!next || next.status !== entry.status) {
       entry.shape.remove();
-      entry.clips.forEach(releaseInnerStroke);
+      entry.masks.forEach(releaseInnerStroke);
       state.map.regionShapes.delete(group);
     }
   }
@@ -1885,15 +1889,15 @@ function renderRegionBoundaries(mapInstance, session) {
     }).addTo(mapInstance);
     // Name the drawn path so the outline set is identifiable from the DOM, which
     // is what the smoke test asserts against.
-    const clips = [];
+    const masks = [];
     shape.eachLayer((sub) => {
       const element = sub.getElement();
       if (!element) return;
       element.setAttribute('data-region-group', group);
-      const clip = clipToInnerStroke(element);
-      if (clip) clips.push(clip);
+      const mask = maskToInnerStroke(element);
+      if (mask) masks.push(mask);
     });
-    state.map.regionShapes.set(group, { shape, status: entry.status, clips });
+    state.map.regionShapes.set(group, { shape, status: entry.status, masks });
   }
 
   // Neighbouring regions share borders, and before inner strokes the last-drawn
@@ -1910,16 +1914,27 @@ function renderRegionBoundaries(mapInstance, session) {
 
 // Inner stroke: the outline's stroke is centred on the boundary, so two regions
 // sharing a border painted the same pixels and one colour hid the other. Each
-// outline is clipped to its own polygon and drawn at double width
+// outline is masked to its own polygon and drawn at double width
 // (.region-shape), leaving only the inside half - neighbours then sit side by
 // side along a shared border, each showing its own colour, at any zoom.
 //
-// The clip is a separate path, not a <use> of the outline: a clone of the
-// outline would carry the outline's own clip-path and reference itself. Leaflet
+// A mask and not a clip-path, because the edge has to be grown. A clip edge is
+// antialiased on its own: two neighbours whose edges meet exactly each cover
+// only part of a boundary pixel, and between the two strokes a hairline of map
+// shows (0.79 of full coverage along a diagonal border). Leaflet also thins each
+// polygon separately, so a shared border is never quite the same line on both
+// sides. The mask is the polygon plus its own outline stroked REGION_MASK_GROW_PX
+// wide, half a pixel past the boundary, so neighbours overlap instead of
+// touching and no pixel is left bare. An outer edge, with no neighbour, shows
+// that half pixel outside its boundary.
+//
+// The mask is a separate path, not a <use> of the outline: a clone of the
+// outline would carry the outline's own mask and reference itself. Leaflet
 // rewrites the outline's d on every zoom and pan, so an observer copies it
-// across; clipPathUnits default to the outline's own user space, so the copy
-// lines up without any transform.
-function clipToInnerStroke(pathElement) {
+// across; maskContentUnits default to the outline's own user space, so the copy
+// lines up without any transform. The mask region is set in that same space and
+// made far larger than any view, so it never crops the outline.
+function maskToInnerStroke(pathElement) {
   const svg = pathElement.ownerSVGElement;
   if (!svg || typeof MutationObserver === 'undefined') return null;
   const ns = 'http://www.w3.org/2000/svg';
@@ -1928,28 +1943,37 @@ function clipToInnerStroke(pathElement) {
     defs = document.createElementNS(ns, 'defs');
     svg.insertBefore(defs, svg.firstChild);
   }
-  regionClipSequence += 1;
-  const id = `region-clip-${regionClipSequence}`;
-  const clipPath = document.createElementNS(ns, 'clipPath');
-  clipPath.setAttribute('id', id);
+  regionMaskSequence += 1;
+  const id = `region-mask-${regionMaskSequence}`;
+  const mask = document.createElementNS(ns, 'mask');
+  mask.setAttribute('id', id);
+  mask.setAttribute('maskUnits', 'userSpaceOnUse');
+  mask.setAttribute('x', '-100000');
+  mask.setAttribute('y', '-100000');
+  mask.setAttribute('width', '200000');
+  mask.setAttribute('height', '200000');
   const source = document.createElementNS(ns, 'path');
-  source.setAttribute('class', 'region-clip');
-  // Leaflet draws polygons evenodd, so holes clip out exactly as they render.
-  source.setAttribute('clip-rule', 'evenodd');
+  source.setAttribute('class', 'region-mask');
+  // Leaflet draws polygons evenodd, so holes mask out exactly as they render.
+  source.setAttribute('fill', '#fff');
+  source.setAttribute('fill-rule', 'evenodd');
+  source.setAttribute('stroke', '#fff');
+  source.setAttribute('stroke-width', String(REGION_MASK_GROW_PX));
+  source.setAttribute('stroke-linejoin', 'round');
   source.setAttribute('d', pathElement.getAttribute('d') || '');
-  clipPath.appendChild(source);
-  defs.appendChild(clipPath);
+  mask.appendChild(source);
+  defs.appendChild(mask);
   const observer = new MutationObserver(() => {
     source.setAttribute('d', pathElement.getAttribute('d') || '');
   });
   observer.observe(pathElement, { attributes: true, attributeFilter: ['d'] });
-  pathElement.setAttribute('clip-path', `url(#${id})`);
-  return { clipPath, observer };
+  pathElement.setAttribute('mask', `url(#${id})`);
+  return { mask, observer };
 }
 
-function releaseInnerStroke(clip) {
-  clip.observer.disconnect();
-  clip.clipPath.remove();
+function releaseInnerStroke(entry) {
+  entry.observer.disconnect();
+  entry.mask.remove();
 }
 
 // The outline bounds of the selected region, or null when the map should frame

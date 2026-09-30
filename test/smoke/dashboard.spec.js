@@ -619,15 +619,18 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     );
     expect(order[order.length - 1]).toBe('Middle');
 
-    // Every outline is clipped by its own clipPath, whose path tracks the
-    // outline's geometry.
-    const clipsInStep = () => page.locator('#observer-map path.region-shape').evaluateAll((paths) => paths.every((path) => {
-      const id = (path.getAttribute('clip-path') || '').match(/url\(#([^)]+)\)/)?.[1];
+    // Every outline is masked by its own mask, whose path tracks the outline's
+    // geometry and is stroked so as to reach past it.
+    const masksInStep = () => page.locator('#observer-map path.region-shape').evaluateAll((paths) => paths.every((path) => {
+      const id = (path.getAttribute('mask') || '').match(/url\(#([^)]+)\)/)?.[1];
       const source = id ? document.getElementById(id)?.querySelector('path') : null;
       return Boolean(source) && source.getAttribute('d') === path.getAttribute('d')
-        && source.getAttribute('clip-rule') === 'evenodd';
+        && source.getAttribute('fill-rule') === 'evenodd'
+        && Number(source.getAttribute('stroke-width')) > 0
+        && !path.hasAttribute('clip-path');
     }));
-    expect(await clipsInStep()).toBe(true);
+    expect(await masksInStep()).toBe(true);
+    await expect(page.locator('#observer-map mask')).toHaveCount(3);
 
     const palette = {
       green: parseRgb(await outline('West').evaluate((path) => getComputedStyle(path).stroke)),
@@ -635,9 +638,9 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       background: parseRgb(await page.locator('#observer-map').evaluate((map) => getComputedStyle(map).backgroundColor)),
     };
 
-    // Both sides of each shared border, 1.5px in: each region's own colour.
-    // A centred stroke paints one colour across the line and leaves 1.5px
-    // outside it bare. 8px in is past the 3px inner stroke: bare map.
+    // Both sides of each shared border, 1px in (the middle of the 2px inner
+    // stroke): each region's own colour. A centred stroke paints one colour across
+    // the line and leaves the other side bare. 8px in is past the stroke: bare map.
     const bordersShowBothColours = async () => {
       const rect = await outline('Middle').evaluate((path) => {
         const r = path.getBoundingClientRect();
@@ -645,18 +648,18 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       });
       const y = (rect.top + rect.bottom) / 2;
       const samples = await sampleMapColours(page, [
-        [rect.left - 1.5, y], [rect.left + 1.5, y], [rect.left + 8, y],
-        [rect.right + 1.5, y], [rect.right - 1.5, y], [rect.right - 8, y],
+        [rect.left - 1, y], [rect.left + 1, y], [rect.left + 8, y],
+        [rect.right + 1, y], [rect.right - 1, y], [rect.right - 8, y],
       ]);
       return samples.map((rgb) => nearestColour(rgb, palette));
     };
     await expect.poll(bordersShowBothColours, { timeout: 5000 })
       .toEqual(['green', 'red', 'background', 'green', 'red', 'background']);
 
-    // Zooming out rewrites every outline's d; the clips must follow or the
+    // Zooming out rewrites every outline's d; the masks must follow or the
     // strokes are cut away.
     await page.locator('#observer-map .leaflet-control-zoom-out').click();
-    await expect.poll(clipsInStep, { timeout: 5000 }).toBe(true);
+    await expect.poll(masksInStep, { timeout: 5000 }).toBe(true);
     await expect.poll(bordersShowBothColours, { timeout: 5000 })
       .toEqual(['green', 'red', 'background', 'green', 'red', 'background']);
 
@@ -664,6 +667,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     // it inside the boundary and nothing outside.
     await page.locator('.region-btn--group', { hasText: 'Middle' }).first().click();
     await expect(page.locator('#observer-map path.region-shape')).toHaveCount(1);
+    // The other two outlines' masks went with them.
+    await expect(page.locator('#observer-map mask')).toHaveCount(1);
     const ring = async () => {
       const r = await outline('Middle').evaluate((path) => {
         const b = path.getBoundingClientRect();
@@ -672,7 +677,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       const cx = (r.left + r.right) / 2;
       const cy = (r.top + r.bottom) / 2;
       const samples = await sampleMapColours(page, [
-        [r.left + 1.5, cy], [r.right - 1.5, cy], [cx, r.top + 1.5], [cx, r.bottom - 1.5],
+        [r.left + 1, cy], [r.right - 1, cy], [cx, r.top + 1], [cx, r.bottom - 1],
         [r.left - 2, cy], [r.right + 2, cy], [cx, r.top - 2], [cx, r.bottom + 2],
       ]);
       return samples.map((rgb) => nearestColour(rgb, palette));
@@ -681,6 +686,65 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       'red', 'red', 'red', 'red',
       'background', 'background', 'background', 'background',
     ]);
+  });
+}
+
+// Two outlines that share a border, each clipped to its own side, both antialias
+// the same edge: where the line does not fall on the pixel grid, each covers only
+// part of the pixel and the two partial coverages leave a dark hairline of map
+// between two strokes. A diagonal border is off the grid at almost every pixel,
+// so it shows what the axis-aligned squares above cannot. Both triangles are the
+// same status, so a pixel on the border should read as the stroke colour.
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+  test(`outlines sharing a diagonal border leave no bare line between them at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const northwest = mapObserver(MAP_TEST_KEYS.target, 'NW Observer', 1.2, -1.2, 'NW County', 'NW');
+    const southeast = mapObserver(MAP_TEST_KEYS.neighbour, 'SE Observer', -1.2, 1.2, 'SE County', 'SE');
+    const observers = [northwest, southeast];
+    const triangle = (group, ring) => ({
+      type: 'Feature',
+      properties: { group },
+      geometry: { type: 'MultiPolygon', coordinates: [[ring]] },
+    });
+    await openMockMapSession(page, observers, observers, 'test-carto-key', {
+      seenKeys: [northwest.key, southeast.key],
+      boundaries: [
+        triangle('NW', [[-2, -2], [2, 2], [-2, 2], [-2, -2]]),
+        triangle('SE', [[-2, -2], [2, -2], [2, 2], [-2, -2]]),
+      ],
+    });
+    await page.addStyleTag({ content: '.leaflet-tile-pane, .leaflet-marker-pane, .leaflet-shadow-pane { visibility: hidden !important; }' });
+
+    const outlines = page.locator('#observer-map path.region-shape');
+    await expect(outlines).toHaveCount(2);
+    await expect(outlines.first()).toHaveClass(/region-shape--all/);
+    await expect(outlines.last()).toHaveClass(/region-shape--all/);
+    await page.locator('#observer-map').scrollIntoViewIfNeeded();
+
+    const stroke = parseRgb(await outlines.first().evaluate((path) => getComputedStyle(path).stroke));
+    const background = parseRgb(await page.locator('#observer-map').evaluate((map) => getComputedStyle(map).backgroundColor));
+    // How much of a pixel is stroke rather than map: 1 is all stroke, 0 is bare.
+    // The observers sit symmetrically about (0, 0), so the map is centred there
+    // and the border through (0, 0) runs at 45 degrees through the middle of the
+    // view, however much of the square the zoom leaves in frame.
+    const weakestCoverage = async () => {
+      const box = await page.locator('#observer-map').boundingBox();
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      const reach = Math.min(box.width, box.height) / 2 - 30;
+      const points = [];
+      for (let offset = -reach; offset <= reach; offset += reach / 40) {
+        points.push([cx + offset, cy - offset]);
+      }
+      const samples = await sampleMapColours(page, points);
+      const axis = stroke.map((value, index) => value - background[index]);
+      const span = axis.reduce((sum, value) => sum + value * value, 0);
+      const coverage = samples.map((rgb) => (rgb
+        ? rgb.reduce((sum, value, index) => sum + (value - background[index]) * axis[index], 0) / span
+        : 1));
+      return Math.min(...coverage);
+    };
+    await expect.poll(weakestCoverage, { timeout: 5000 }).toBeGreaterThan(0.92);
   });
 }
 

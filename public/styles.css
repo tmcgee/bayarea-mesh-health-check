@@ -1352,12 +1352,13 @@ body[data-page-mode="share"] .status-pill::before {
    dots above and the same custom properties, so there is one palette: gray
    until a session has results, then green/yellow/red. Fill stays off so only
    the border shows and the interior never covers an observer point. */
-/* Double width, clipped to the region's own polygon in app.js
-   (clipToInnerStroke), so 3px shows - all of it inside the boundary. */
+/* Double width, masked to the region's own polygon in app.js
+   (maskToInnerStroke), so 2px shows inside the boundary. The mask reaches half
+   a pixel past it, so neighbours overlap rather than leave a hairline of map. */
 .region-shape {
   fill: none;
   stroke: var(--region-status-unknown);
-  stroke-width: 6;
+  stroke-width: 4;
 }
 
 .region-shape--all {
