@@ -4,6 +4,49 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.12
+
+- Sierra Foothills drew as three shapes on the coverage map, and San Joaquin
+  South carried stray lines through its interior. The server builds one outline
+  per region by deleting every county border that two counties of the same region
+  trace in opposite directions, so a border only disappears where both sides
+  agree exactly. Seven counties in `regions/us-ca-bay-area.geojson` did not:
+  Mariposa, Alpine, Fresno, Madera, Kings, Tulare and Kern were each simplified
+  on their own, so their borders with neighbours kept different vertices, up to
+  about 300 m apart, and they wound counter-clockwise where the other 23 wind
+  clockwise. None of their borders cancelled. Mariposa and Alpine were the
+  visible ones: their borders with Tuolumne, El Dorado, Amador and Calaveras
+  cut them off from the rest of the region.
+- each of the seven is now wound clockwise and every border it shares with an
+  already-consistent neighbour uses that neighbour's own vertices, fitted in the
+  order Fresno, Madera, Tulare, Kings, Kern, Mariposa, Alpine so each was fitted
+  to counties already settled. The other 23 features are unchanged. No vertex
+  moved more than 86 m (Mariposa) and no county's area changed by more than
+  0.016%. The file goes from 21,293 to 21,196 vertices.
+- the same mismatch left 407 slivers of gap between counties and 3.3 km2 of
+  overlap. A node inside a gap counted as outside every county, and one inside an
+  overlap went to whichever county was checked first. Both are now zero. None of
+  the 899 located CoreScope nodes and observers tested changes county, so no
+  observer's region changes with this release.
+- served outlines: Sierra Foothills goes from 2,670 vertices in one invalid ring
+  enclosing three areas to 1,274 in one valid ring; San Joaquin South from 1,954
+  in an invalid ring to 1,887 in a valid one. The other eight regions are
+  unchanged.
+- a changed `REGIONS_FILE` changes the region fingerprint, so the first boot on
+  this release arms one observer re-seed pass 60 s after start. That is the
+  existing behaviour for any boundary edit, not new.
+- `regionBoundaryCollection` is exported from `server.js` for the new test, and
+  the comment above `dissolveRings` now says neighbours must also wind the same
+  way and gives the current cancelling count, 16,220 of 21,160 segments.
+- tests: `test/region-outline.test.js` checks every region group's served
+  outline for a point visited twice, crossing edges, and edges with the region on
+  both sides (an interior border that did not cancel) or neither (a gap). It
+  fails on the previous boundary file for Sierra Foothills and San Joaquin South
+  and passes on this one. It also caught each of four deliberately broken copies
+  of the new file: Mariposa's ring reversed, Alpine restored to its old borders,
+  a stretch of Mariposa's border with Tuolumne shifted by about 300 m, and an
+  extra county drawn inside El Dorado. Smoke is unchanged at 35.
+
 ## v1.3.8+bayarea.11
 
 - a region chip now frames the region's outline rather than the observers
