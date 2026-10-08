@@ -4,6 +4,53 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.14
+
+- the dashboard kept a laptop's GPU busy while idle. Three decorative CSS
+  animations ran forever (`drift` on `.screen-glow` and `.splash-scene__mesh`,
+  `pulse` on `.brand-orb::after`) under 12 panels with
+  `backdrop-filter: blur(26px) saturate(140%)`, so every animation frame made
+  the compositor re-blur each panel. Measured over 30 s idle in Chromium at
+  1512x982, DPR 2, with the production observer directory (35 markers), mean
+  of 3 rounds: total browser CPU 101.9% of one core before (GPU process 98.3%,
+  11 frames/s reached), 4.7% after (GPU process 1.1%, 60 frames/s).
+- the three decorative animations are gone; each element keeps its resting
+  position. The status-pill dot `pulse` and the heard-marker `pulseRing` run 3
+  times instead of `infinite`. Animations alone took the load to 12.4%.
+- `backdrop-filter` is removed from `.command-dock`, `.toolbar`, `.hero-panel`,
+  `.glance-card`, `.panel`, `.detail-drawer` and `.splash-scene__badge`, taking
+  the load from 12.4% to 4.6%. The panels were already 86% to 88% opaque
+  (`--panel`), so the blur behind them barely showed: before/after screenshots
+  differ on 0.17% of pixels in dark mode and 0.14% in light, nearly all of it the
+  random session code.
+- each poll and socket snapshot called `setLatLng`, `setIcon` and `bindPopup` on
+  every map marker, rebuilding each icon's DOM and restarting its animation every
+  5 s. A marker is now touched only when its position, heard state or popup HTML
+  changes.
+- the receipts list was emptied and rebuilt on every render, even while
+  collapsed inside Additional Information. It is now built off-DOM and swapped in
+  with `replaceChildren` only when its markup differs (`commitReceiptList`).
+  Clicks are delegated from `document`, so no listeners are lost. With the two
+  marker and receipt changes, idle DOM mutations fall from 126.4/s to 26.0/s; the
+  CPU difference while idle is within noise.
+- `render()` returns early while `document.visibilityState` is `hidden`, keeping
+  the snapshot current; the existing `visibilitychange` handler renders on
+  return. The 1 s code-life clock is unchanged.
+- not changed: `sw.js` and its cache name. `.css` and `.js` are served
+  network-first, so open tabs pick up the new styles on the next load. No server,
+  data or API change.
+- tests: `outlineFraming()` in the dashboard smoke suite now treats a zero-size
+  outline as not inside the map. Without the blur the map's pan momentum runs at
+  full frame rate and carries the Europe outline wholly off-screen, where Leaflet
+  clips it to an empty path whose zero-size box passed the "inside" check, so
+  "a region chip zooms to the region outline, a county chip to its observers"
+  failed on its last assertion though the map had not snapped back. The previous
+  build passed only because the starved compositor cut the pan short; the
+  corrected test passes on both builds.
+- checks: `npm run check` clean, `npm test` 80/80, `npm run test:smoke` 37/37.
+- nothing in this release touches the boundary file, so the region fingerprint
+  is unchanged and the first boot arms no observer re-seed.
+
 ## v1.3.8+bayarea.13
 
 - region outlines are 2px, down from 3px: `.region-shape` goes from `stroke-width`

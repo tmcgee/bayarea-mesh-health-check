@@ -470,8 +470,11 @@ async function outlineFraming(page, group) {
     if (!path || !map) return null;
     const o = path.getBoundingClientRect();
     const m = map.getBoundingClientRect();
+    // Leaflet clips an outline that is panned wholly off-screen to an empty
+    // path, whose zero-size box would otherwise read as "inside" the map.
+    const empty = o.width === 0 && o.height === 0;
     return {
-      inside: o.left >= m.left - 1 && o.right <= m.right + 1 && o.top >= m.top - 1 && o.bottom <= m.bottom + 1,
+      inside: !empty && o.left >= m.left - 1 && o.right <= m.right + 1 && o.top >= m.top - 1 && o.bottom <= m.bottom + 1,
       // How much of the padded viewport the outline fills on its tighter axis.
       // Leaflet snaps to whole zoom levels, so a fitted outline lands between
       // 0.5 and 1; the world view at zoom 2 would be near 0.1.

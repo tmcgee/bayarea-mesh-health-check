@@ -2204,18 +2204,34 @@ function renderObserverMap(session) {
     const latLng = [observer.lat, observer.lon];
     bounds.push(latLng);
     let marker = state.map.markers.get(observer.key);
+    const seen = Boolean(observer.seen);
     if (!marker) {
       marker = window.L.marker(latLng, { icon: markerIcon(observer) }).addTo(mapInstance);
+      marker.healthSeen = seen;
       state.map.markers.set(observer.key, marker);
     } else {
-      marker.setLatLng(latLng);
-      marker.setIcon(markerIcon(observer));
+      // Every poll used to setLatLng + setIcon + bindPopup on every marker, which
+      // rebuilt each icon's DOM (restarting its CSS animation) and its popup
+      // every five seconds whether or not anything had changed. Touch a marker
+      // only when its position, heard state or popup text actually moved.
+      const current = marker.getLatLng();
+      if (current.lat !== observer.lat || current.lng !== observer.lon) {
+        marker.setLatLng(latLng);
+      }
+      if (marker.healthSeen !== seen) {
+        marker.setIcon(markerIcon(observer));
+        marker.healthSeen = seen;
+      }
     }
-    marker.bindPopup(`
+    const popupHtml = `
       <strong>${escapeHtml(observer.label)}</strong><br>
-      ${observer.seen ? 'Heard by this check' : 'Not heard by this check'}<br>
+      ${seen ? 'Heard by this check' : 'Not heard by this check'}<br>
       ${escapeHtml(observer.hash || '--')} · ${escapeHtml(observer.shortKey)}
-    `);
+    `;
+    if (marker.healthPopupHtml !== popupHtml) {
+      marker.bindPopup(popupHtml);
+      marker.healthPopupHtml = popupHtml;
+    }
   }
 
   // A region chip frames the region's outline; everything else frames the
@@ -2571,9 +2587,19 @@ function renderReceiptHeardFilter(heardCount, unheardCount) {
   }
 }
 
+function commitReceiptList(list) {
+  if (ui.receipts.innerHTML === list.innerHTML) {
+    return;
+  }
+  ui.receipts.replaceChildren(...list.childNodes);
+}
+
 function renderReceipts(session) {
   const allReceipts = Array.isArray(session?.receipts) ? session.receipts : [];
-  ui.receipts.innerHTML = '';
+  // Built off-DOM and committed only when the markup changed: the list was
+  // emptied and rebuilt on every five-second poll and every socket snapshot,
+  // even while it sat collapsed inside Additional Information.
+  const list = document.createElement('div');
 
   // Roster framing, inherited from the deleted Observers panel. Set before the
   // no-session guard so it is populated on a cold load: this sentence describes
@@ -2590,6 +2616,7 @@ function renderReceipts(session) {
     renderReceiptHeardFilter(0, 0);
     ui.receiptsEmpty.classList.remove('hidden');
     ui.receiptsEmpty.textContent = 'No observer reports yet.';
+    commitReceiptList(list);
     return;
   }
 
@@ -2663,7 +2690,7 @@ function renderReceipts(session) {
     note.className = 'small-note receipts-filter-note';
     note.textContent = `Showing ${rows.length} of ${all.length} observers. `
       + `${heardCount} of ${inRegion.length} heard${scope ? ` in ${scope}` : ''}.`;
-    ui.receipts.appendChild(note);
+    list.appendChild(note);
   }
 
   for (const observer of rows) {
@@ -2731,7 +2758,7 @@ function renderReceipts(session) {
     // exist, so the quiet card stops after the head.
     if (!receipt) {
       card.innerHTML = head;
-      ui.receipts.appendChild(card);
+      list.appendChild(card);
       continue;
     }
 
@@ -2787,8 +2814,9 @@ function renderReceipts(session) {
       ${distanceMarkup}
       ${receiptPathToggleMarkup(receipt, session)}
     `;
-    ui.receipts.appendChild(card);
+    list.appendChild(card);
   }
+  commitReceiptList(list);
 }
 
 // Offered only when receiptPathMapData can draw something honest, so a 1-byte
@@ -3111,6 +3139,13 @@ function render() {
   if (!snapshot) {
     return;
   }
+  // A background tab still gets the five-second poll and socket snapshots; keep
+  // the data current but leave painting to the visibilitychange handler.
+  if (document.visibilityState === 'hidden') {
+    state.renderDeferred = true;
+    return;
+  }
+  state.renderDeferred = false;
   applyUiTheme();
 
   const channelLabel = `#${snapshot.testChannel.name}`;
@@ -3521,6 +3556,9 @@ document.addEventListener('visibilitychange', () => {
     return;
   }
   renderCodeLife();
+  if (state.renderDeferred) {
+    render();
+  }
   refreshFromServer().catch(() => {
     // The poll will try again in a moment; renderCodeLife has already told the
     // truth about the code from the payload we still hold.
