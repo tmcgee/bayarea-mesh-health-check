@@ -272,6 +272,7 @@ def main():
         seeded = {r["key"] for r in inside}
         now_located = {k for k in uplinks if store.get(k, {}).get("lat") is not None}
         out_of_area_uplinks = [uplinks[r["key"]] for r in outside if r["key"] in uplinks]
+        outside_keys = {r["key"] for r in outside if r["key"] in uplinks}
         print(f"\nMQTT uplink observers: {len(uplinks)}")
         print(f"  located before: {len(located_before)}")
         print(f"  located after:  {len(now_located)}")
@@ -284,6 +285,17 @@ def main():
                 uplinks[k]["label"] for k in (now_located - located_before)
             ),
             "stillUnlocated": len(uplinks) - len(now_located),
+            # Names as well as the count, so the public status route can say
+            # which observers still need a position set in CoreScope. Uplinks
+            # CoreScope places outside the boundary are counted, never named:
+            # out-of-area observers are not shown anywhere.
+            "stillUnlocatedNames": sorted(
+                uplinks[k]["label"] for k in uplinks
+                if k not in now_located and k not in outside_keys
+            ),
+            "stillUnlocatedOutside": sum(
+                1 for k in uplinks if k not in now_located and k in outside_keys
+            ),
         }
         print(f"  still unlocated ({len(still)}): {', '.join(sorted(still)) or 'none'}")
         print(f"  uplinks CoreScope places OUTSIDE the GeoJSON "

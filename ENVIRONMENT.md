@@ -39,10 +39,10 @@ tile request URLs, so scope it to this project and its deployment hostnames.
 | `OBSERVER_RESEED_HOUR` | `4` | Local-time hour after which the daily pass runs. Checked every ten minutes, once per calendar day, so a restart cannot make the day's pass skip. |
 | `OBSERVER_RESEED_SCRIPT` | `seed-observers.py` | Script the refresh runs, resolved against the app directory. |
 | `OBSERVER_RESEED_PYTHON` | `python3` | Interpreter used to run it. |
-| `OBSERVER_RESEED_LOG` | `data/reseed-log.jsonl` | One JSON line per pass: counts, newly located observers, hash-width moves, duration. |
+| `OBSERVER_RESEED_LOG` | `data/reseed-log.jsonl` | One JSON line per pass: counts, newly located and still-unlocated observers, hash-width moves, duration. |
 | `OBSERVER_RESEED_TIMEOUT_MS` | `240000` | Hard timeout for the script. |
 | `OBSERVER_RESEED_BOOT_DELAY_MS` | `60000` | Delay before the boot pass that fires when `REGIONS_FILE` or `UPLINK_CODES_FILE` no longer match the fingerprint recorded by the last successful pass. Ignores `OBSERVER_RESEED_HOUR`, needs `OBSERVER_RESEED_ENABLED`, and does not consume the day's scheduled run. |
-| `ADMIN_TOKEN` | blank | When set, exposes `POST /api/admin/reseed` and `GET /api/admin/reseed`, authenticated with an `x-admin-token` header, so an outside scheduler can drive or inspect the refresh. Both routes 404 while it is blank. |
+| `ADMIN_TOKEN` | blank | When set, exposes `POST /api/admin/reseed` and `GET /api/admin/reseed`, authenticated with an `x-admin-token` header, so an outside scheduler can drive or inspect the refresh. Both routes 404 while it is blank. `GET /api/reseed-status` is always public and read-only: whether the last pass ran and succeeded, with counts and observer names but no paths or error text. |
 | `SEED_BACKUPS_KEEP` | `14` | Backups of `OBSERVERS_FILE` the script keeps; older `.bak-*` files are pruned after each write. |
 
 Keep these paths under the mounted `data/` directory if data should survive

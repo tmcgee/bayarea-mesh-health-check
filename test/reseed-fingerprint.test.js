@@ -30,7 +30,7 @@ JSON
 echo 'SEED_JSON {"wrote":true,"backup":null,"profiles":{"total":0},"uplinks":{"total":0,"locatedBefore":0,"locatedAfter":0,"newlyLocated":[],"stillUnlocated":0},"hashWidth":{"newlyRecorded":0,"changed":[],"cleared":0}}'
 `;
 
-async function withApp(run, { reseedEnabled = true, seedLog = [] } = {}) {
+async function withApp(run, { reseedEnabled = true, seedLog = [], adminToken = 'reseed-test-token' } = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-health-reseed-test-'));
   const files = {
     observers: path.join(tempDir, 'observer.json'),
@@ -69,7 +69,7 @@ async function withApp(run, { reseedEnabled = true, seedLog = [] } = {}) {
   process.env.RESULTS_FILE = files.results;
   process.env.REGIONS_FILE = files.regions;
   process.env.UPLINK_CODES_FILE = files.codes;
-  process.env.ADMIN_TOKEN = 'reseed-test-token';
+  process.env.ADMIN_TOKEN = adminToken;
   process.env.OBSERVER_RESEED_ENABLED = reseedEnabled ? 'true' : 'false';
   process.env.OBSERVER_RESEED_LOG = files.log;
   process.env.OBSERVER_RESEED_SCRIPT = files.stub;
@@ -182,4 +182,127 @@ test('a scheduled or api pass still claims the day key', async () => {
     const after = await status(baseUrl);
     assert.equal(after.lastDayKey, result.dayKey);
   });
+});
+
+function publicStatus(baseUrl) {
+  return fetch(`${baseUrl}/api/reseed-status`).then(async (response) => ({
+    status: response.status,
+    cache: response.headers.get('cache-control'),
+    body: await response.json(),
+  }));
+}
+
+test('the public status needs no token and reports counts and observer names', async () => {
+  const seedLog = [
+    { ok: true, trigger: 'schedule', dayKey: '2026-10-27', regionFingerprint: 'aaaaaaaaaaaaaaaa' },
+    {
+      ok: true, trigger: 'boot', dayKey: '2026-10-28', regionFingerprint: 'bbbbbbbbbbbbbbbb',
+      at: '2026-10-28T14:03:30.000Z', ms: 4120, profilesChangedInMemory: 3,
+      profiles: { total: 48, located: 41 },
+      uplinks: {
+        total: 40, locatedBefore: 33, locatedAfter: 35, newlyLocated: ['Mt Diablo', 'Napa Ridge'],
+        stillUnlocated: 3, stillUnlocatedNames: ['Chico North', 'Yuba City'], stillUnlocatedOutside: 1,
+      },
+      hashWidth: {
+        newlyRecorded: 1, cleared: 0,
+        changed: [{ name: 'Vollmer Peak', from: 1, to: 2, extra: 'dropped' }],
+        examples: [{ name: 'Mt Diablo', bytes: 2 }],
+      },
+      backup: '/opt/mesh-health-check/data/observer.json.bak-20261028-0703',
+    },
+  ];
+  await withApp(async ({ baseUrl }) => {
+    const { status, cache, body } = await publicStatus(baseUrl);
+    assert.equal(status, 200);
+    assert.equal(cache, 'no-store');
+    assert.equal(body.lastSeededFingerprint, 'bbbbbbbbbbbbbbbb', 'a restart must still see the logged pass');
+    assert.equal(body.upToDate, false, 'the test inputs do not match the logged fingerprint');
+    assert.deepEqual(body.last, {
+      ok: true, trigger: 'boot', at: '2026-10-28T14:03:30.000Z', ms: 4120, profilesChangedInMemory: 3,
+      profiles: { total: 48, located: 41 },
+      uplinks: {
+        total: 40, locatedBefore: 33, locatedAfter: 35, newlyLocated: ['Mt Diablo', 'Napa Ridge'],
+        stillUnlocated: 3, stillUnlocatedNames: ['Chico North', 'Yuba City'], stillUnlocatedOutside: 1,
+      },
+      hashWidth: {
+        newlyRecorded: 1, cleared: 0,
+        changed: [{ name: 'Vollmer Peak', from: 1, to: 2 }],
+        examples: [{ name: 'Mt Diablo', bytes: 2 }],
+      },
+    });
+    const text = JSON.stringify(body);
+    for (const secret of ['/opt/', 'backup', 'logPath', 'dayKey', 'dropped']) {
+      assert.equal(text.includes(secret), false, `public status must not carry ${secret}`);
+    }
+  }, { seedLog });
+});
+
+test('a failed last pass shows as failed without its error text', async () => {
+  const seedLog = [
+    { ok: true, trigger: 'schedule', dayKey: '2026-10-27', regionFingerprint: 'aaaaaaaaaaaaaaaa' },
+    {
+      ok: false, trigger: 'boot', dayKey: '2026-10-28', regionFingerprint: 'bbbbbbbbbbbbbbbb',
+      at: '2026-10-28T14:03:30.000Z', ms: 900,
+      error: 'Command failed: python3 /app/seed-observers.py', stderr: 'urlopen error | /app/data/observer.json',
+    },
+  ];
+  await withApp(async ({ baseUrl }) => {
+    const { body } = await publicStatus(baseUrl);
+    assert.equal(body.lastSeededFingerprint, 'aaaaaaaaaaaaaaaa', 'only a successful pass counts as seeded');
+    assert.equal(body.last.ok, false);
+    assert.equal(body.last.trigger, 'boot');
+    assert.equal(body.last.profilesChangedInMemory, null);
+    const text = JSON.stringify(body);
+    assert.equal(text.includes('urlopen'), false);
+    assert.equal(text.includes('/app/'), false);
+  }, { seedLog });
+});
+
+test('a successful pass makes the public status up to date', async () => {
+  await withApp(async ({ module, baseUrl }) => {
+    const before = (await publicStatus(baseUrl)).body;
+    assert.equal(before.last, null);
+    assert.equal(before.lastSeededFingerprint, null);
+    assert.equal(before.upToDate, false);
+    assert.equal(before.bootPassPending, false);
+    assert.equal(before.running, false);
+    assert.equal(before.regionFingerprint, module.computeRegionFingerprint());
+
+    const result = await module.runObserverReseed('boot');
+    assert.equal(result.ok, true, result.error || 'boot pass should succeed');
+
+    const after = (await publicStatus(baseUrl)).body;
+    assert.equal(after.upToDate, true);
+    assert.equal(after.lastSeededFingerprint, result.regionFingerprint);
+    assert.equal(after.last.ok, true);
+    assert.equal(after.last.trigger, 'boot');
+    assert.equal(after.last.at, result.at);
+  });
+});
+
+test('the public status works with the admin routes disabled', async () => {
+  await withApp(async ({ baseUrl }) => {
+    assert.equal((await fetch(`${baseUrl}/api/admin/reseed`)).status, 404);
+    const { status, body } = await publicStatus(baseUrl);
+    assert.equal(status, 200);
+    assert.equal(body.enabled, true);
+    const posted = await fetch(`${baseUrl}/api/reseed-status`, { method: 'POST' });
+    assert.notEqual(posted.status, 200, 'the public route must not start a pass');
+  }, { adminToken: '' });
+});
+
+test('a pass logged before names were recorded reports null name lists', async () => {
+  const seedLog = [{
+    ok: true, trigger: 'schedule', dayKey: '2026-10-27', regionFingerprint: 'aaaaaaaaaaaaaaaa',
+    uplinks: { total: 3, locatedBefore: 3, locatedAfter: 3, newlyLocated: [], stillUnlocated: 0 },
+    hashWidth: { newlyRecorded: 0, changed: [], cleared: 0 },
+  }];
+  await withApp(async ({ baseUrl }) => {
+    const { body } = await publicStatus(baseUrl);
+    assert.deepEqual(body.last.uplinks.newlyLocated, []);
+    assert.equal(body.last.uplinks.stillUnlocatedNames, null, 'an absent list is unknown, not empty');
+    assert.equal(body.last.uplinks.stillUnlocatedOutside, null);
+    assert.deepEqual(body.last.hashWidth.changed, []);
+    assert.equal(body.last.hashWidth.examples, null);
+  }, { seedLog });
 });

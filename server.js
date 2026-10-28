@@ -1208,6 +1208,10 @@ let reseedLastDayKey = null;
 let reseedLastResult = null;
 let reseedInterval = null;
 let reseedBootTimer = null;
+// Public status cache (GET /api/reseed-status). undefined = not loaded yet.
+let reseedBootFingerprint;
+let reseedLastSeededFingerprint;
+let reseedLastLoggedPass;
 let observerActivityWriteTimer = null;
 let resultsWriteTimer = null;
 
@@ -1699,6 +1703,7 @@ async function runObserverReseed(trigger = 'manual') {
     );
     appendReseedLog(result);
     reseedLastResult = result;
+    reseedLastSeededFingerprint = regionFingerprint || reseedLastSeededFingerprint;
     // A boot pass is extra work, not the day's pass: claiming the day key here
     // would let a deploy suppress the scheduled run.
     if (trigger !== 'boot') {
@@ -4038,6 +4043,127 @@ app.get('/api/admin/reseed', (request, response) => {
   });
 });
 
+// Bounds each name list in the public status; a first pass can record a
+// hash width for every observer in the directory.
+const PUBLIC_RESEED_LIST_MAX = 200;
+
+// The last pass of any outcome, read from the log once so a restart does not
+// blank the public status until the next pass runs.
+function loadLastLoggedReseedPass() {
+  try {
+    const lines = fs.readFileSync(OBSERVER_RESEED_LOG_PATH, 'utf8').trim().split('\n');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const entry = JSON.parse(lines[index]);
+      if (entry && typeof entry === 'object' && entry.trigger) {
+        return entry;
+      }
+    }
+  } catch {
+    // no log yet
+  }
+  return null;
+}
+
+function countOrNull(value) {
+  if (Array.isArray(value)) {
+    return value.length;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function nameList(value) {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  return value
+    .filter((name) => typeof name === 'string' && name)
+    .slice(0, PUBLIC_RESEED_LIST_MAX);
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return value !== null && value !== undefined && Number.isFinite(number) ? number : null;
+}
+
+// Counts and observer names, nothing else. Names are already public through
+// /api/bootstrap and CoreScope. File paths, dayKey, and a failure's error and
+// stderr stay on the admin route: an error message can carry a droplet path or
+// a CoreScope response.
+function publicReseedPass(entry) {
+  if (!entry) {
+    return null;
+  }
+  const uplinks = entry.uplinks || null;
+  const profiles = entry.profiles || null;
+  const hashWidth = entry.hashWidth || null;
+  const pairs = (value, map) => (Array.isArray(value)
+    ? value.filter((item) => item && typeof item === 'object' && typeof item.name === 'string')
+      .slice(0, PUBLIC_RESEED_LIST_MAX)
+      .map(map)
+    : null);
+  return {
+    ok: Boolean(entry.ok),
+    trigger: entry.trigger || null,
+    at: entry.at || null,
+    ms: countOrNull(entry.ms),
+    profilesChangedInMemory: entry.ok ? countOrNull(entry.profilesChangedInMemory) : null,
+    profiles: profiles ? { total: countOrNull(profiles.total), located: countOrNull(profiles.located) } : null,
+    uplinks: uplinks ? {
+      total: countOrNull(uplinks.total),
+      locatedBefore: countOrNull(uplinks.locatedBefore),
+      locatedAfter: countOrNull(uplinks.locatedAfter),
+      newlyLocated: nameList(uplinks.newlyLocated),
+      stillUnlocated: countOrNull(uplinks.stillUnlocated),
+      // null for passes logged before the seed script recorded names.
+      stillUnlocatedNames: nameList(uplinks.stillUnlocatedNames),
+      // Unlocated uplinks CoreScope places outside the boundary: counted, not named.
+      stillUnlocatedOutside: countOrNull(uplinks.stillUnlocatedOutside),
+    } : null,
+    hashWidth: hashWidth ? {
+      newlyRecorded: countOrNull(hashWidth.newlyRecorded),
+      changed: pairs(hashWidth.changed, (item) => ({
+        name: item.name, from: numberOrNull(item.from), to: numberOrNull(item.to),
+      })),
+      cleared: countOrNull(hashWidth.cleared),
+      examples: pairs(hashWidth.examples, (item) => ({ name: item.name, bytes: numberOrNull(item.bytes) })),
+    } : null,
+  };
+}
+
+function publicReseedStatus() {
+  // The region inputs are read at boot, so the boot fingerprint is the one the
+  // running app is using; hashing the 0.5 MB boundary file per request would
+  // also hand anyone a cheap way to load the host.
+  if (reseedBootFingerprint === undefined) {
+    reseedBootFingerprint = computeRegionFingerprint();
+  }
+  if (reseedLastSeededFingerprint === undefined) {
+    reseedLastSeededFingerprint = loadLastReseedFingerprint();
+  }
+  if (reseedLastLoggedPass === undefined) {
+    reseedLastLoggedPass = loadLastLoggedReseedPass();
+  }
+  const regionFingerprint = reseedBootFingerprint;
+  const lastSeededFingerprint = reseedLastSeededFingerprint;
+  return {
+    enabled: OBSERVER_RESEED_ENABLED,
+    hour: OBSERVER_RESEED_HOUR,
+    running: reseedInFlight,
+    bootPassPending: reseedBootTimer !== null,
+    regionFingerprint,
+    lastSeededFingerprint,
+    upToDate: Boolean(regionFingerprint && regionFingerprint === lastSeededFingerprint),
+    last: publicReseedPass(reseedLastResult || reseedLastLoggedPass),
+  };
+}
+
+// Public and read-only: lets anyone confirm after a deploy that the observer
+// refresh ran, without the admin token. Running a pass stays admin-only.
+app.get('/api/reseed-status', (request, response) => {
+  response.json(publicReseedStatus());
+});
+
 app.get('/api/bootstrap', (request, response) => {
   response.json(serializeBootstrap(request));
 });
@@ -4295,6 +4421,8 @@ function startRuntime() {
     // because the pass itself records the new one.
     const fingerprint = computeRegionFingerprint();
     const seeded = loadLastReseedFingerprint();
+    reseedBootFingerprint = fingerprint;
+    reseedLastSeededFingerprint = seeded;
     if (fingerprint && fingerprint !== seeded) {
       reseedBootTimer = setTimeout(() => {
         reseedBootTimer = null;
