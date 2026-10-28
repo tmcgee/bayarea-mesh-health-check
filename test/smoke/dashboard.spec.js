@@ -1049,8 +1049,11 @@ test('step 1 offers the regional channels when the server lists them', async ({ 
     await expect(note).toBeVisible();
     await expect(page.locator('#regional-channel-pattern')).toHaveText('#region-health-check');
     await expect(page.locator('#regional-channel-example')).toHaveText('#slo-health-check');
+    await expect(note.locator('summary')).toHaveText('Testing within a region?');
+    await expect(page.locator('#regional-channel-pattern')).toBeHidden();
     await expect(page.locator('#regional-channel-names')).toBeHidden();
     await note.locator('summary').click();
+    await expect(page.locator('#regional-channel-pattern')).toBeVisible();
     await expect(page.locator('#regional-channel-names')).toHaveText('sf, slo, sonoma');
   }
 });

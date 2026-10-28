@@ -4,6 +4,13 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.20
+
+- step 1's regional note is now one collapsed line, "Testing within a region?". The
+  instructions ("Send the code to #region-healthcheck instead, for example
+  #slo-healthcheck, scoped to that region.") and the region list sit inside it.
+- service worker cache `mesh-health-check-pwa-v8-bayarea`.
+
 ## v1.3.8+bayarea.19
 
 - regional test channels. `#healthcheck` stays the promoted channel; a code sent

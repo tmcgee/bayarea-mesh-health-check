@@ -84,13 +84,11 @@
                     <li class="session-step" id="session-step-one">
                       Add the <strong id="session-step-channel">#health-check</strong> channel to your MeshCore companion. You can use the QR code to add the channel.
                       <!-- Regional test channels (bayarea.19): filled in from the snapshot. -->
-                      <div class="regional-channel-note" id="regional-channel-note" hidden>
-                        Testing a region? Send to <strong id="regional-channel-pattern">#region-health-check</strong> instead, for example <strong id="regional-channel-example">#slo-health-check</strong>, and send it scoped to that region.
-                        <details class="regional-channel-list">
-                          <summary>Region names</summary>
-                          <p id="regional-channel-names"></p>
-                        </details>
-                      </div>
+                      <details class="regional-channel-note regional-channel-list" id="regional-channel-note" hidden>
+                        <summary>Testing within a region?</summary>
+                        <p>Send the code to <strong id="regional-channel-pattern">#region-health-check</strong> instead, for example <strong id="regional-channel-example">#slo-health-check</strong>, scoped to that region.</p>
+                        <p>Regions: <span id="regional-channel-names"></span></p>
+                      </details>
                     </li>
                     <li class="session-step session-instructions" id="session-instructions">
                       Loading session…
