@@ -872,7 +872,11 @@ test('coverage map omits observers with 0,0 coordinates', async ({ page }) => {
 test('dark coverage map requests CARTO tiles with the configured key', async ({ page }) => {
   const target = mapObserver(MAP_TEST_KEYS.target, 'Target Observer', 37.8044, -122.2712, 'East Bay');
   const cartoRequests = [];
+  const cartoReferers = [];
   await page.route('https://*.basemaps.cartocdn.com/**', async (route) => {
+    // Read the header first so a request and its referer are recorded together.
+    const referer = await route.request().headerValue('referer');
+    cartoReferers.push(referer);
     cartoRequests.push(route.request().url());
     await route.abort();
   });
@@ -880,6 +884,12 @@ test('dark coverage map requests CARTO tiles with the configured key', async ({ 
   await openMockMapSession(page, [target], [target]);
 
   await expect.poll(() => cartoRequests.length).toBeGreaterThan(0);
+  // Upstream dc3fe057: a website-restricted key needs the origin, and only the
+  // origin; the page itself keeps no-referrer.
+  const origin = `${new URL(page.url()).origin}/`;
+  expect(cartoReferers.length).toBeGreaterThan(0);
+  expect(cartoReferers.every((referer) => referer === origin)).toBe(true);
+  await expect(page.locator('#observer-map img.leaflet-tile').first()).toHaveAttribute('referrerpolicy', 'strict-origin');
   expect(cartoRequests[0]).toContain('dark_all');
   expect(cartoRequests[0]).toContain('key=test-carto-key');
   // CARTO does serve a fourth subdomain, so the layer is entitled to use it.
@@ -897,7 +907,10 @@ test('dark dashboard falls back to OpenStreetMap without a CARTO key', async ({ 
     cartoRequests.push(route.request().url());
     await route.abort();
   });
+  const osmReferers = [];
   await page.route('https://*.tile.openstreetmap.org/**', async (route) => {
+    const referer = await route.request().headerValue('referer');
+    osmReferers.push(referer);
     osmRequests.push(route.request().url());
     await route.abort();
   });
@@ -906,6 +919,9 @@ test('dark dashboard falls back to OpenStreetMap without a CARTO key', async ({ 
 
   await expect.poll(() => osmRequests.length).toBeGreaterThan(0);
   expect(cartoRequests).toHaveLength(0);
+  // Only CARTO tiles get the origin; OpenStreetMap keeps the page's no-referrer.
+  expect(osmReferers.length).toBeGreaterThan(0);
+  expect(osmReferers.every((referer) => referer === null)).toBe(true);
   // d.tile.openstreetmap.org has no DNS record, so requesting it means roughly a
   // quarter of the basemap silently fails to load for real users. The layer used
   // to hardcode CARTO's 'abcd' for both providers.
@@ -914,6 +930,33 @@ test('dark dashboard falls back to OpenStreetMap without a CARTO key', async ({ 
   for (const host of osmHosts) {
     expect(host).toMatch(/^[abc]\.tile\.openstreetmap\.org$/);
   }
+});
+
+// Upstream 6126ea28, adapted to the fork's healthMeasured flag.
+test('signal quality separates waiting, unavailable readings and reported readings', async ({ page }) => {
+  const target = mapObserver(MAP_TEST_KEYS.target, 'Signal Observer', 37.8044, -122.2712, 'East Bay');
+  await openMockMapSession(page, [target], [target]);
+  const session = (extra) => ({ ...mapSession([target]), healthMeasured: false, healthLabel: 'WAITING', ...extra });
+  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: session() }));
+  await page.reload();
+  await expect(page.locator('#signal-quality')).toHaveText('--');
+  await expect(page.locator('#signal-quality-label')).toHaveText('Awaiting telemetry.');
+
+  const receipt = { observerKey: target.key, firstSeenAt: Date.now(), lastSeenAt: Date.now(), path: [], rssi: null, snr: null };
+  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: session({
+    healthMeasured: true, healthLabel: 'POOR', matchedAt: Date.now(), observedCount: 1, receipts: [receipt],
+  }) }));
+  await page.reload();
+  await expect(page.locator('#signal-quality')).toHaveText('--');
+  await expect(page.locator('#signal-quality-label')).toHaveText('Signal data unavailable.');
+
+  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: session({
+    healthMeasured: true, healthLabel: 'POOR', matchedAt: Date.now(), observedCount: 1,
+    receipts: [{ ...receipt, rssi: -90, snr: 0 }],
+  }) }));
+  await page.reload();
+  await expect(page.locator('#signal-quality')).toHaveText(/\d+%/);
+  await expect(page.locator('#signal-quality-label')).not.toHaveText(/Awaiting|unavailable/);
 });
 
 // The lede is prose with an inline channel chip in the middle. It was styled by a

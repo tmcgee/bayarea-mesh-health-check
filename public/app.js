@@ -623,9 +623,11 @@ function signalSummary(session) {
     .map((receipt) => receiptSignalScore(receipt))
     .filter((value) => Number.isFinite(value));
   if (points.length === 0) {
+    // Upstream 6126ea28: once a message has landed, no reading means the
+    // receipts carried no RSSI/SNR, not that telemetry is still on its way.
     return {
       value: '--',
-      label: 'Awaiting telemetry.',
+      label: session && isHealthMeasured(session) ? 'Signal data unavailable.' : 'Awaiting telemetry.',
       tone: 'neutral',
       points: [],
     };
@@ -1744,6 +1746,10 @@ function currentTileLayer() {
   return window.L.tileLayer(url, {
     maxZoom: 19,
     subdomains: tileSubdomains(url),
+    // Upstream dc3fe057: a website-restricted CARTO key checks the Referer, and
+    // the page-wide no-referrer policy sends none. Send the origin only, never
+    // the path or query; other providers keep no-referrer.
+    ...(url.includes('cartocdn.com') ? { referrerPolicy: 'strict-origin' } : {}),
     attribution,
   });
 }

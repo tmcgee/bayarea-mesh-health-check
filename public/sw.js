@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mesh-health-check-pwa-v3-bayarea';
+const CACHE_NAME = 'mesh-health-check-pwa-v4-bayarea';
 const CORE_ASSETS = [
   '/',
   '/app',
@@ -28,30 +28,67 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+// Upstream 9efe04a0: a failed, redirected or HTML response (a login or error
+// page) must never replace a good cached script or stylesheet, and an offline
+// script request must never be answered with the dashboard HTML.
+async function cachedResponse(request) {
+  try {
+    return await caches.match(request);
+  } catch {
+    return undefined;
+  }
+}
+
+async function storeResponse(request, response) {
+  const asset = /\.(?:m?js|css)$/.test(new URL(request.url).pathname);
+  if (!response.ok || response.redirected
+    || (asset && /(?:text\/html|application\/xhtml\+xml)/i.test(response.headers.get('Content-Type') || ''))) {
+    return;
+  }
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.put(request, response.clone());
+  } catch {
+    // Cache storage is best effort; never discard a successful network response.
+  }
+}
+
 async function cacheFirst(request) {
-  const cached = await caches.match(request);
+  const cached = await cachedResponse(request);
   if (cached) {
     return cached;
   }
   const response = await fetch(request);
-  const cache = await caches.open(CACHE_NAME);
-  cache.put(request, response.clone());
+  await storeResponse(request, response);
   return response;
 }
 
 async function networkFirst(request) {
+  let response;
   try {
-    const response = await fetch(new Request(request, { cache: 'no-store' }));
-    const cache = await caches.open(CACHE_NAME);
-    cache.put(request, response.clone());
-    return response;
-  } catch {
-    const cached = await caches.match(request);
+    response = await fetch(new Request(request, { cache: 'no-store' }));
+  } catch (error) {
+    const cached = await cachedResponse(request);
     if (cached) {
       return cached;
     }
-    return caches.match('/app');
+    // Only document navigations may fall back to the dashboard shell.
+    if (request.mode === 'navigate') {
+      const shell = await cachedResponse('/app');
+      if (shell) {
+        return shell;
+      }
+    }
+    throw error;
   }
+  if ([500, 502, 503, 504].includes(response.status)) {
+    const cached = await cachedResponse(request);
+    if (cached) {
+      return cached;
+    }
+  }
+  await storeResponse(request, response);
+  return response;
 }
 
 self.addEventListener('fetch', (event) => {

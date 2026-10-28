@@ -1491,6 +1491,40 @@ The fork's richer implementation survives: the server still resolves per-theme t
 
 **Still pointing upstream.** The footer's version link is `${REPO_URL}/blob/main/CHANGES.md` with `REPO_URL` hardcoded to upstream GitHub, so it now links to a changelog that does not contain a `v1.3.8+bayarea.1` section. Repointing it at this fork's GitLab copy only helps once that project is public — while it is private the link redirects visitors to a sign-in page, which is worse than an incomplete changelog. It is bundled with the visibility decision in §8.
 
+### 6ab. Upstream fixes taken without merging v1.4.x (`bayarea.16`)
+
+Reviewed 2026-10-28: upstream is 93 commits ahead of `v1.3.8`, with `v1.3.9`
+(Node 24, dependency bumps), `v1.4.0` (a large feature release) and `v1.4.1`
+(dependencies, MapLibre). The fork stays on `1.3.8` and takes four things:
+
+- **Dependency advisories.** `npm audit --omit=dev` flagged four transitive
+  packages. Only `body-parser` was clearly reachable here (it sits under
+  `express.json()`); `proxy-addr` matters for subnet trust rather than the
+  default `TRUST_PROXY=1` hop count; `qs` and `ip-address` sit on paths the app
+  does not use. `npm audit fix` changes only the lock file. Upstream's own
+  `v1.3.9` `qs` 6.16.0 is itself still flagged, so taking upstream's lock would
+  not have been enough.
+- **`6126ea28` signal label**, re-keyed from upstream's `hasMeasuredResult` to
+  the fork's `isHealthMeasured()`.
+- **`dc3fe057` CARTO referrer.** The fork's single `currentTileLayer()` serves
+  both providers, so the `strict-origin` option is applied only when the URL is
+  CARTO's. Production's key loads tiles today, so this only matters if the key is
+  ever restricted to the site.
+- **`9efe04a0` service-worker recovery**, applied to the fork's own `sw.js`
+  (which routes only `.js`, `.css`, `.png`, the manifest and Leaflet through the
+  worker, so upstream's `.mjs` case is dropped from the tests).
+
+Left out on purpose: `ALLOWED_REGIONS` / `INITIAL_REGION` and nearby-location
+selection (overlap the fork's region system), the dashboard refocus (the map
+layout is fixed here), OpenFreeMap/MapLibre vector maps, `CODE_PREFIX`, longer
+codes and MeshCore scope recognition. Node is not an issue: the fork already
+runs `node:26`. Merging `v1.4.x` would make the version `1.4.1+bayarea.1`.
+
+A trap from writing the referrer smoke test: recording the URL before awaiting
+`headerValue('referer')` let the assertion run against an empty referer list
+and pass with the fix removed. The URL and its referer are now recorded together
+and the test asserts the list is non-empty; with the fix removed it fails.
+
 ## 7. Deployment
 
 Nothing region-specific here, but for your setup: Docker Compose on port 3090 behind Cloudflare, `TRUST_PROXY=1`, Turnstile keys set since it'll be internet-facing, and keep `./data` mounted so observer profiles, activity history, and share links survive rebuilds.

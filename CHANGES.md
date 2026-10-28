@@ -4,6 +4,42 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.16
+
+- new public, read-only `GET /api/reseed-status`, so a deploy's boot re-seed can
+  be confirmed without `ADMIN_TOKEN`. It reports `enabled`, `hour`, `running`,
+  `bootPassPending`, the boot-time region fingerprint, the last seeded
+  fingerprint, `upToDate`, and the last pass: counts plus observer names
+  (`newlyLocated`, `stillUnlocatedNames`, hash-width `changed` and `examples`,
+  each capped at 200). File paths, `dayKey`, and a failure's `error` and
+  `stderr` stay on the admin route. It cannot start a pass.
+- `seed-observers.py` writes `stillUnlocatedNames` into its summary. Uplinks
+  CoreScope places outside the boundary are counted in `stillUnlocatedOutside`
+  and never named.
+- dependency security update, lock file only (`package.json` unchanged):
+  `body-parser` 2.3.0 to 2.4.0 (high: denial of service via trailing bytes after
+  a compressed request body), `proxy-addr` 2.0.7 to 2.0.8 (critical: IP spoofing
+  through an IPv4-mapped IPv6 trust subnet), `qs` 6.15.2 to 6.17.0 and
+  `ip-address` 10.4.0 to 10.7.5 (moderate), with `content-type` 2.1.0 and
+  `iconv-lite` 0.7.3. `npm audit` reports 0 vulnerabilities.
+- from upstream `6126ea28`, adapted: once a message has landed, a code whose
+  receipts carry no RSSI/SNR shows `Signal data unavailable.` instead of
+  `Awaiting telemetry.`. The fork keys this on its own `healthMeasured`.
+- from upstream `dc3fe057`: CARTO map tiles are requested with
+  `referrerPolicy: 'strict-origin'`, so a website-restricted CARTO key receives
+  the site origin and never the page path or query. The page-wide
+  `Referrer-Policy: no-referrer` is unchanged and OpenStreetMap tiles still send
+  no referrer.
+- from upstream `9efe04a0`: the service worker no longer lets a failed,
+  redirected or HTML response replace a good cached script or stylesheet, serves
+  the cached copy on a 500/502/503/504, falls back to the dashboard shell only
+  for page navigations (an offline script request now fails rather than receiving
+  HTML), and treats cache storage errors as best effort. Cache name moves to
+  `mesh-health-check-pwa-v4-bayarea`, so installed apps fetch the new worker.
+- tests: `test/sw.test.js` (24 cases, adapted from upstream; 18 fail against the
+  previous worker), five reseed-status cases, a signal-label smoke test, and
+  referrer assertions on both basemap smoke tests.
+
 ## v1.3.8+bayarea.15
 
 - Placer moves from Sierra Foothills to Sacramento Valley. All 22 of its active
