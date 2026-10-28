@@ -4,6 +4,26 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.19
+
+- regional test channels. `#healthcheck` stays the promoted channel; a code sent
+  to `#<region>-healthcheck` (e.g. `#slo-healthcheck`), where `<region>` is any
+  of the 73 scope names, is now heard too. The server cannot read a channel it
+  has no name for (a packet carries only a 1-byte hash of the key), so every
+  valid name is built at start-up from `MESHCORE_REGION_SCOPES_FILE`; 73 names
+  over 66 hash bytes, the 2-byte MAC settles the seven shared bytes. Other
+  channels, and names off the list, are still dropped unread. New
+  `REGIONAL_TEST_CHANNELS` (default on; off without scope names).
+- intended versus heard scope. A session on a regional channel carries
+  `intendedScope` (`#slo`) and `scopeCheck` {verdict `as-intended`, `mixed`,
+  `not-as-intended`, `unrecorded` or `waiting`; per-copy counts; other names
+  heard}. Shown as an `Intended scope:` line under `MeshCore scope:` on the
+  dashboard and share page; null and hidden on `#healthcheck`. Display only.
+- step 1 adds "Testing a region? Send to #region-healthcheck instead, for
+  example #slo-healthcheck" with a collapsible list of region names, from the
+  snapshot's `testChannel.regional`.
+- service worker cache `mesh-health-check-pwa-v7-bayarea`.
+
 ## v1.3.8+bayarea.18
 
 - repeater scope evidence, passive, display only. Two sources from the packets

@@ -2656,8 +2656,60 @@ function renderScopeEvidence() {
     + `${plural(Number(evidence.forwarderHops) || 0, 'path hop')} heard forwarding scoped traffic`;
 }
 
+// Regional channel (bayarea.19): the scope the channel name says was meant, against the
+// scopes the copies were heard under. The server classifies (compareIntendedScope).
+function scopeCheckText(check) {
+  const intended = String(check.intended || '').replace(/^#/, '');
+  const counts = check.counts || {};
+  const plural = (count) => `${count} ${count === 1 ? 'copy' : 'copies'}`;
+  const matched = (counts.asIntended || 0) + (counts.ambiguous || 0);
+  const ambiguousNote = counts.ambiguous ? `, ${counts.ambiguous} through an ambiguous match` : '';
+  const misses = [];
+  if (counts.unscoped) misses.push(`${plural(counts.unscoped)} unscoped`);
+  if (counts.other) {
+    const names = (check.otherNames || []).map((name) => String(name).replace(/^#/, ''));
+    misses.push(`${plural(counts.other)} under ${names.join(' or ') || 'another scope'}`);
+  }
+  switch (check.verdict) {
+    case 'as-intended': return `${intended}, heard as intended (${plural(matched)}${ambiguousNote})`;
+    case 'mixed': return `${intended}, mixed: ${plural(matched)} as intended${ambiguousNote}, ${misses.join(', ')}`;
+    case 'not-as-intended': return `${intended}, not as intended: ${misses.join(', ')}`;
+    case 'unrecorded': return `${intended}, scope not recorded for the heard copies`;
+    default: return `${intended}, waiting for receipts`;
+  }
+}
+
+function renderScopeCheck(session) {
+  const note = document.querySelector('#scope-check-note');
+  const element = document.querySelector('#scope-check');
+  if (!note || !element) return;
+  const check = session?.scopeCheck;
+  note.hidden = !check;
+  if (!check) return;
+  element.textContent = scopeCheckText(check);
+  note.dataset.verdict = check.verdict;
+}
+
+function renderRegionalChannelNote(snapshot) {
+  const note = document.querySelector('#regional-channel-note');
+  if (!note) return;
+  const regional = snapshot?.testChannel?.regional;
+  const base = snapshot?.testChannel?.name || '';
+  note.hidden = !regional?.names?.length || !base;
+  if (note.hidden) return;
+  const names = regional.names;
+  const example = names.find((name) => name.startsWith(`slo-`)) || names[0];
+  document.querySelector('#regional-channel-pattern').textContent = `#region-${base}`;
+  document.querySelector('#regional-channel-example').textContent = `#${example}`;
+  const suffix = `-${base}`;
+  document.querySelector('#regional-channel-names').textContent = names
+    .map((name) => (name.endsWith(suffix) ? name.slice(0, -suffix.length) : name))
+    .join(', ');
+}
+
 function renderReceipts(session) {
   renderMeshcoreScopes(session);
+  renderScopeCheck(session);
   renderScopeEvidence();
   const allReceipts = Array.isArray(session?.receipts) ? session.receipts : [];
   // Built off-DOM and committed only when the markup changed: the list was
@@ -3234,6 +3286,7 @@ function render() {
   if (ui.sessionStepChannel) {
     ui.sessionStepChannel.textContent = channelLabel;
   }
+  renderRegionalChannelNote(snapshot);
   // Tapping the code on a phone hands the channel straight to the app; the QR
   // is for the common case of reading this page on a desktop.
   if (ui.channelQr) {

@@ -142,6 +142,7 @@ it is not part of the re-seed fingerprint.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `REGIONAL_TEST_CHANNELS` | on | Also read `#<region>-<TEST_CHANNEL_NAME>` for every scope name (`#slo-healthcheck`). Needs `MESHCORE_REGION_SCOPES_FILE`; without it, or with `false`, only the primary channel is read. |
 | `MESHCORE_SCOPE_EVIDENCE_FILE` | `meshcore-scope-evidence.json` beside `OBSERVER_ACTIVITY_FILE` | Where per-repeater scope evidence is kept (7 days). Created on the first scoped or advert packet; an unreadable file is logged and ignored. |
 
 Scope evidence needs no setting to run. It records each advertiser heard by an

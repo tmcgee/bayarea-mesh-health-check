@@ -1003,6 +1003,58 @@ test('MeshCore scope lines summarise the code and label each heard copy', async 
   await expect(scopeLine('Scope Observer B')).toHaveText('Scope: Scoped, name not listed · Ambiguous: a or b');
 });
 
+// Regional test channels (bayarea.19): intended scope against heard scope, from the
+// server's scopeCheck. Hidden on the primary channel, where scopeCheck is null.
+test('intended-scope line reports a regional channel session against its heard copies', async ({ page }) => {
+  const first = mapObserver(MAP_TEST_KEYS.target, 'Region Observer A', 37.8044, -122.2712, 'East Bay');
+  await openMockMapSession(page, [first], [first]);
+  // The share page keeps this panel collapsed, so the attribute is what is checked.
+  const note = page.locator('#scope-check-note');
+  await expect(note).toHaveAttribute('hidden', '');
+  const session = (scopeCheck) => ({
+    ...mapSession([first]), healthMeasured: true, matchedAt: Date.now(),
+    channelName: 'slo-healthcheck', intendedScope: '#slo', scopeCheck,
+  });
+  const counts = (values) => ({ asIntended: 0, ambiguous: 0, unscoped: 0, other: 0, unrecorded: 0, ...values });
+  for (const [check, text] of [
+    [{ verdict: 'waiting', counts: counts({}), otherNames: [] }, 'slo, waiting for receipts'],
+    [{ verdict: 'as-intended', counts: counts({ asIntended: 3, ambiguous: 1 }), otherNames: [] },
+      'slo, heard as intended (4 copies, 1 through an ambiguous match)'],
+    [{ verdict: 'not-as-intended', counts: counts({ unscoped: 1 }), otherNames: [] },
+      'slo, not as intended: 1 copy unscoped'],
+    [{ verdict: 'mixed', counts: counts({ asIntended: 2, unscoped: 1, other: 2 }), otherNames: ['#sf', '(unlisted)'] },
+      'slo, mixed: 2 copies as intended, 1 copy unscoped, 2 copies under sf or (unlisted)'],
+  ]) {
+    await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: session({ intended: '#slo', ...check }) }));
+    await page.reload();
+    await expect(page.locator('#scope-check')).toHaveText(text);
+    await expect(note).not.toHaveAttribute('hidden', '');
+  }
+});
+
+test('step 1 offers the regional channels when the server lists them', async ({ page }) => {
+  await page.goto('/app');
+  // The smoke server loads no scope names, so the note stays hidden by default.
+  await expect(page.locator('#regional-channel-note')).toBeHidden();
+  await page.route('**/api/bootstrap', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.testChannel.regional = { count: 3, names: ['sf-health-check', 'slo-health-check', 'sonoma-health-check'] };
+    await route.fulfill({ response, json: body });
+  });
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.reload();
+    const note = page.locator('#regional-channel-note');
+    await expect(note).toBeVisible();
+    await expect(page.locator('#regional-channel-pattern')).toHaveText('#region-health-check');
+    await expect(page.locator('#regional-channel-example')).toHaveText('#slo-health-check');
+    await expect(page.locator('#regional-channel-names')).toBeHidden();
+    await note.locator('summary').click();
+    await expect(page.locator('#regional-channel-names')).toHaveText('sf, slo, sonoma');
+  }
+});
+
 // The lede is prose with an inline channel chip in the middle. It was styled by a
 // rule shared with .session-share-invite, which made the paragraph a flex
 // container: its three spans became flex items, so a 390px viewport rendered them

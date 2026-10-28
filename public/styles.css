@@ -448,6 +448,34 @@ code {
   display: none;
 }
 
+/* Regional test channels (bayarea.19). Sits inside step 1, under its sentence. */
+.regional-channel-note {
+  margin-top: 6px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.regional-channel-note[hidden] {
+  display: none;
+}
+
+#scope-check-note[hidden] {
+  display: none;
+}
+
+.regional-channel-list summary {
+  cursor: pointer;
+  color: var(--muted-strong);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  width: fit-content;
+}
+
+.regional-channel-list p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
 .session-instructions,
 .receipt-meta,
 .history-item p,
@@ -3373,6 +3401,7 @@ body[data-ui-theme="light"] .additional-info[open] > .additional-info__summary {
 }
 
 .scope-summary #meshcore-scopes,
+.scope-summary #scope-check,
 .scope-summary #scope-evidence {
   text-transform: none;
   letter-spacing: 0.04em;

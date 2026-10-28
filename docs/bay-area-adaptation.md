@@ -1644,6 +1644,30 @@ treats protocol violations. `startMqtt()` passes `clientId`, `clean`,
 Tests: `test/scope-evidence.test.js` (5, through `ingestMqttMessage`, including
 out-of-area exclusion with the shipped uplink table and a restart).
 
+### 6ae. Regional test channels and intended scope (`+bayarea.19`)
+
+Requested by the user on 2026-10-28, with the comparison, as the brief for this
+change to the channel gate in `handlePacketMessage`.
+
+- `#healthcheck` stays promoted. `lib/regional-test-channels.js` builds
+  `#<region>-<TEST_CHANNEL_NAME>` for each scope name: key `sha256("#name")[:16]`,
+  hash byte `sha256(key)[0]`. A packet names only that byte, so a channel the
+  server has no name for can never be read; "any channel containing
+  healthcheck" is not possible, a fixed pattern is.
+- Shipped list: 73 names over 66 hash bytes, none sharing `#healthcheck`'s `02`.
+  Seven pairs share a byte (e.g. `siskiyou`/`sacramento`); the GroupText MAC is
+  checked first and settles them. Decryption reuses `decryptAesEcbTruncated` and
+  `evaluateDecodedGroupText`.
+- The decoder's key store still holds only the primary key, and regional keys
+  stay out of `channelHashToInfo`, so a shared byte can never hand the primary
+  fallback decoder a regional key. A packet the decoder could not open on an
+  accepted regional byte goes to `decodeRegionalGroupText`.
+- `compareIntendedScope(intended, receipts)` puts every heard copy in one bucket
+  (`asIntended`, `ambiguous` with the intended name among the candidates,
+  `unscoped`, `other`, `unrecorded`) and gives a verdict. The channel name does
+  not set the scope; the user still picks it in the app.
+- Tests: `test/regional-test-channels.test.js` (6) and two smoke tests.
+
 ## 7. Deployment
 
 Nothing region-specific here, but for your setup: Docker Compose on port 3090 behind Cloudflare, `TRUST_PROXY=1`, Turnstile keys set since it'll be internet-facing, and keep `./data` mounted so observer profiles, activity history, and share links survive rebuilds.

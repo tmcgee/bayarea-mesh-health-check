@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 
 import { loadMeshcoreScopes, recognizeMeshcoreScope, recordedMeshcoreScopes } from './lib/meshcore-scopes.js';
 import { createScopeEvidence, advertRoleName } from './lib/scope-evidence.js';
+import { buildRegionalChannels, compareIntendedScope } from './lib/regional-test-channels.js';
 import express from 'express';
 import qrcode from 'qrcode-generator';
 import mqtt from 'mqtt';
@@ -657,6 +658,51 @@ if (!testChannelHash) {
       break;
     }
   }
+}
+
+// Regional test channels (bayarea.19, lib/regional-test-channels.js): #<region>-<name>
+// for every scope name, e.g. #slo-healthcheck. #healthcheck stays the promoted channel.
+// Off with REGIONAL_TEST_CHANNELS=false, and off whenever scope names are not loaded.
+const REGIONAL_TEST_CHANNELS = envBool('REGIONAL_TEST_CHANNELS', true);
+const regionalChannels = buildRegionalChannels(
+  REGIONAL_TEST_CHANNELS && meshcoreScopes.enabled ? meshcoreScopes.regions : [],
+  testChannelName,
+);
+// Kept out of channelHashToInfo: a shared hash byte must never hand the primary
+// channel's fallback decoder a regional key. The channel name comes from the decode.
+
+function isPrimaryTestChannel(channelHash) {
+  return shouldDecodeChannel(testChannelHash, channelHash);
+}
+
+function isAcceptedTestChannel(channelHash) {
+  return isPrimaryTestChannel(channelHash)
+    || regionalChannels.byHash.has(String(channelHash || '').toLowerCase());
+}
+
+function intendedScopeForChannel(channelName) {
+  return regionalChannels.byName.get(String(channelName || '').toLowerCase())?.scope || null;
+}
+
+// MAC first: it is cheap, and it is what settles names that share a hash byte.
+function decodeRegionalGroupText(packetBytes) {
+  const group = parseGroupTextPayload(packetBytes);
+  if (!group) return null;
+  for (const entry of regionalChannels.byHash.get(group.channelHash) || []) {
+    if (!hasValidGroupTextMac(entry.hmacKey, group.macBytes, group.encryptedBytes)) continue;
+    const decoded = evaluateDecodedGroupText(decryptAesEcbTruncated(entry.aesKey, group.encryptedBytes));
+    if (decoded) {
+      return {
+        channelHash: group.channelHash,
+        channelName: entry.name,
+        sender: decoded.sender,
+        message: decoded.message,
+        timestamp: decoded.timestamp,
+        macValid: true,
+      };
+    }
+  }
+  return null;
 }
 
 function buildDecoderKeyCandidate(secretHex, channelHash = '') {
@@ -3359,6 +3405,10 @@ function serializeSession(session, request = null) {
     messageBody: session.messageBody,
     channelHash: session.channelHash,
     channelName: session.channelName,
+    // Regional channel (#slo-healthcheck): the scope the sender meant, and how the heard
+    // copies compare with it. Null on the primary channel.
+    intendedScope: intendedScopeForChannel(session.channelName),
+    scopeCheck: compareIntendedScope(intendedScopeForChannel(session.channelName), reports),
     observedCount: seen.length,
     repeaterCount: repeaters.length,
     distanceUnit: DISTANCE_UNIT,
@@ -3473,6 +3523,10 @@ function snapshotPayload() {
       configured: Boolean(testChannelHash),
       inviteUri: testChannelInviteUri,
       qrAvailable: Boolean(testChannelQrSvg),
+      // Regional channels: the names are public (they are the scope names plus a suffix).
+      regional: regionalChannels.names.length
+        ? { count: regionalChannels.names.length, names: regionalChannels.names }
+        : null,
     },
   };
 }
@@ -3909,13 +3963,15 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
     return;
   }
   const groupPayload = packet.payload.decoded;
-  if (!shouldDecodeChannel(testChannelHash, groupPayload.channelHash)) {
+  if (!isAcceptedTestChannel(groupPayload.channelHash)) {
     logger.debug(
       `[mqtt] ignore channel ${groupPayload.channelHash || 'unknown'} on ${shortKey(observer.key)}`,
     );
     return;
   }
-  const decodedGroup = groupPayload?.decrypted
+  // The decoder's key store holds only the primary channel. A regional channel can share
+  // its hash byte, so a packet the decoder could not open is offered to the regional keys.
+  let decodedGroup = groupPayload?.decrypted && isPrimaryTestChannel(groupPayload.channelHash)
     ? {
         channelHash: groupPayload.channelHash,
         sender: String(groupPayload.decrypted.sender || '').trim(),
@@ -3924,8 +3980,11 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
         macValid: true,
       }
     : null;
+  if (!decodedGroup && regionalChannels.byHash.has(String(groupPayload.channelHash || '').toLowerCase())) {
+    decodedGroup = decodeRegionalGroupText(parsePacketHex(raw));
+  }
   const channelHash = decodedGroup?.channelHash || groupPayload?.channelHash || '';
-  const channelName = channelDisplay(channelHash);
+  const channelName = decodedGroup?.channelName || channelDisplay(channelHash);
   const messageBody = String(decodedGroup?.message || '').trim();
   const sender = String(decodedGroup?.sender || '').trim();
   const messageHash = normalizeMessageHash(
@@ -3966,9 +4025,10 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
   };
 
   let session = null;
-  const isTestChannel = testChannelHash
-    ? shouldDecodeChannel(testChannelHash, channelHash)
-    : channelName.toLowerCase() === testChannelName;
+  const isTestChannel = Boolean(decodedGroup?.channelName)
+    || (testChannelHash
+      ? isPrimaryTestChannel(channelHash)
+      : channelName.toLowerCase() === testChannelName);
   const hadExistingMapping = messageHash ? messageToSession.has(messageHash) : false;
 
   if (isTestChannel && messageBody) {
