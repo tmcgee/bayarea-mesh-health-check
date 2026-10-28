@@ -4,6 +4,42 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.15
+
+- Placer moves from Sierra Foothills to Sacramento Valley. All 22 of its active
+  CoreScope repeaters sit west of longitude -121.0 (Roseville, Rocklin, Lincoln,
+  Granite Bay), which is the Sacramento metro rather than the foothills. El
+  Dorado stays in Sierra Foothills.
+- Butte, Sutter and Yuba are added to `regions/us-ca-bay-area.geojson` in
+  Sacramento Valley, taking the file from 30 to 33 counties. An observer outside
+  the boundary is excluded without notice, and CoreScope now hears 14 repeaters
+  in Butte (Chico) and 1 in Yuba. Sutter has none but is the only link between
+  Yolo and Butte.
+- geometry is TIGERweb `State_County` layer 1, GEOIDs 06007, 06101 and 06115.
+  Every border with an existing county, or with one added earlier in this pass
+  (order Sutter, Yuba, Butte), uses that neighbour's own vertices, so all seven
+  new borders cancel in the dissolve: Sutter with Placer 19 segments, Sacramento
+  6, Yolo 189; Yuba with Placer 52, Sutter 177; Butte with Sutter 8, Yuba 201.
+  Every other edge is reduced with RDP at 0.0003 degrees, with junction vertices
+  pinned. Sutter 586, Yuba 596, Butte 658 vertices, all wound clockwise, zero
+  overlap with any county. The other 30 features are byte-identical apart from
+  Placer's `group`. The file goes from 21,196 to 23,036 vertices.
+- served outlines: Sacramento Valley goes from 1,142 vertices to 2,460 in one
+  valid ring, and Sierra Foothills from 1,274 to 1,203 in one valid ring. The
+  other regions are unchanged.
+- no observer in the production directory changes region. Of CoreScope's
+  located nodes, 27 move from Sierra Foothills to Sacramento Valley (Placer),
+  and 15 that were outside every county now resolve (14 Butte, 1 Yuba).
+- uplink code `AUN` (Auburn, Placer's county seat) moves from Sierra Foothills
+  to Sacramento Valley in `regions/us-ca-uplink-codes.json`, so an Auburn
+  observer lands in the same group whether or not it publishes a position. It
+  stays `anticipated`.
+- a changed `REGIONS_FILE` changes the region fingerprint, so the first boot on
+  this release arms one observer re-seed pass 60 s after start.
+- the comment above `dissolveRings` gives the new cancelling count, 17,524 of
+  22,996 segments.
+- checks: `npm run check` clean, `npm test` 80/80, `npm run test:smoke` 37/37.
+
 ## v1.3.8+bayarea.14
 
 - the dashboard kept a laptop's GPU busy while idle. Three decorative CSS

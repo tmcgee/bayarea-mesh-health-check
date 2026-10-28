@@ -881,7 +881,7 @@ function ringArea(ring) {
 // dissolve: it only ever deletes and reconnects existing vertices, so it needs
 // no geometry library and cannot invent coordinates. It relies on neighbours
 // sharing exact vertices and winding the same way, which the bundled county
-// file does (16,220 of its 21,160 segments cancel this way);
+// file does (17,524 of its 22,996 segments cancel this way);
 // test/region-outline.test.js fails if a boundary edit breaks that.
 function dissolveRings(rings) {
   const pointKey = (point) => `${point[0]},${point[1]}`;

@@ -161,7 +161,7 @@ Since `#healthcheck` is joinable by name alone, publishing is easy: tell people 
 
 The bundled files are country-level (`us-states.geojson`) or 32,656 Census places (`us-places.geojson`), neither of which gives useful Bay Area grouping. I generated a purpose-built file for you:
 
-**`regions/us-ca-bay-area.geojson`** — 30 counties, 498 KB, with `name` = county and `group` = subregion:
+**`regions/us-ca-bay-area.geojson`** — 33 counties, 539 KB, with `name` = county and `group` = subregion:
 
 | Group | Counties | Live IATA codes seen |
 |---|---|---|
@@ -171,14 +171,16 @@ The bundled files are country-level (`us-states.geojson`) or 32,656 Census place
 | East Bay | Alameda, Contra Costa | OAK |
 | North Bay | Marin, Napa, Solano, Sonoma | STS |
 | Central Coast | Santa Cruz, San Benito, Monterey, San Luis Obispo | MRY, PRB, SBP |
-| Sacramento Valley | Sacramento, Yolo | SMF, MHR |
+| Sacramento Valley | Butte, Placer, Sacramento, Sutter, Yolo, Yuba | SMF, MHR |
 | San Joaquin North | San Joaquin, Stanislaus, Merced | SCK, MOD, MCE |
 | San Joaquin South | Kern, Fresno, Madera, Kings, Tulare | BFL, FAT, MAE, HJO, VIS |
-| Sierra Foothills | Alpine, Amador, Calaveras, El Dorado, Mariposa, Placer, Tuolumne | COA |
+| Sierra Foothills | Alpine, Amador, Calaveras, El Dorado, Mariposa, Tuolumne | COA |
 
 The county list is not guesswork — it was fitted to the broker census in Section 1. The original 16-county draft left PRB, SBP, MCE, and COA observers unmatched, so San Luis Obispo and Merced were added and a Sierra Foothills group created. Kern was added later (2026-09-10): it was originally excluded as out of area, but CoreScope shows a live 16-node cluster there — Tehachapi (`TEH -` prefix), Frazier Park (`FP -`), and Bakersfield itself — all within reach of the network, so it is now in the boundary file and `BFL` moved from the exclusion list into `codes`. The single **Central Valley** group was split three ways on the same day. It had grown to six counties spanning about 300 miles, and it conflated the state's two distinct valleys: Sacramento and Yolo are in the Sacramento Valley, everything else in the group is San Joaquin Valley ([Central Valley](https://en.wikipedia.org/wiki/Central_Valley_(California))). The San Joaquin line follows standard usage — San Joaquin, Stanislaus and Merced are the [North San Joaquin Valley](https://www.labor.ca.gov/wp-content/uploads/sites/338/2024/11/North-San-Joaquin-Valley-RPP2.pdf), and Kern is the valley's south end ([Fresno State CRPC](https://socialsciences.fresnostate.edu/geography/crpc/scope.html)). `San Joaquin North` and `San Joaquin South` are named that way round so they sort adjacently: groups are ordered by `localeCompare` (`server.js:2577`, `2833`), nothing hardcodes an order, and no group name appears anywhere outside these two data files.
 
 Adding Kern left a ~200 mile hole between Merced and Kern, so **Fresno, Madera, Kings and Tulare were added the same day** and the San Joaquin Valley is now complete at its standard eight counties. That was not a theoretical gap: point-testing CoreScope's 846 nodes against Census polygons for those four counties found 15 real nodes inside them — 7 in Fresno (including `KJA_RPT_Fresno_01`, `KJA_RPT_CLOVIS_2` and `K6US-Repeater`), 4 in Madera, 1 in Kings, 3 in Tulare, several heard within the hour. All 15 now resolve to `San Joaquin South`, which holds five counties rather than Kern alone. Madera sits in the south group with the other four; the north group stays at the three counties the standard definition gives it.
+
+**2026-10-27: Placer moved to Sacramento Valley; Butte, Sutter and Yuba added.** CoreScope's active repeaters in Placer (22 heard within 7 days) all sit west of longitude −121.0 — Roseville, Rocklin, Lincoln, Granite Bay — which is the Sacramento metro, not the foothills, so the county joins `Sacramento Valley`. El Dorado stays in `Sierra Foothills`: 7 of its 12 are on the valley side, too close to call. Uplink code `AUN` (Auburn) moves with Placer, so position-less Auburn observers land in the same group. Butte (14 repeaters, a Chico cluster), Yuba (1) and Sutter (0, but it is the only link between Yolo and Butte) were outside the boundary, where an observer would have been excluded silently; they are added so the first northern observer lands in a region. No GoMesh uplink code north of Sacramento was seen in a 120 s broker sample, and no observer in the directory changes region. Geometry is the same TIGERweb `State_County` layer 1 (GEOIDs 06007, 06101, 06115), each border with an existing or earlier-added neighbour taken from that neighbour's own vertices, the rest reduced with RDP at 0.0003°; Sutter 586, Yuba 596, Butte 658 vertices, wound clockwise, zero overlap with any county.
 
 **Mariposa and Alpine were added on 2026-09-10** after point-testing all 692 located CoreScope nodes against every California county. Only six landed outside the boundary, and two of those were bad data — one node at longitude `+122.48` (western Pacific) and one coastal node in a polygon seam. The rest: `Bullion Repeater` and `Bullion Room (hello)` in Mariposa, heard by twelve observers between them including armooo, C0ffee SF and KO6JOT; `SIERRA Lake Alpine` in Alpine, part of the same Highway 4 SIERRA chain that already fills Calaveras. Mariposa is enclosed on three sides by Tuolumne, Merced and Madera, so it was a hole rather than an extension.
 
