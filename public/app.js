@@ -93,6 +93,9 @@ const state = {
   sharedSessionId: sharedSessionIdFromLocation(),
   sharedSessionMissing: false,
   trackedSessionIds: loadTrackedSessionIds(),
+  // A parent region (bayarea.21) selects every group under it at once; it is
+  // only ever set with selectedRegionGroup and selectedRegion both null.
+  selectedRegionParent: null,
   selectedRegionGroup: null,
   selectedRegion: null,
   // 'all' | 'heard' | 'unheard'. Visibility only, like the region chips: it
@@ -1275,33 +1278,67 @@ function renderRegionFilter(session = currentSession()) {
   const inferredObserverCount = regions.reduce((sum, entry) => sum + (entry.inferredCount || 0), 0);
   groupRow.appendChild(createRegionButton({
     className: 'region-btn--all',
-    active: state.selectedRegionGroup === null && state.selectedRegion === null,
+    active: state.selectedRegionParent === null
+      && state.selectedRegionGroup === null && state.selectedRegion === null,
     label: hasGroups ? 'All regions' : 'All',
     count: locatedObserverCount,
     inferredCount: inferredObserverCount,
     status: regionStatusFromTally(allTally),
     onClick: () => {
+      state.selectedRegionParent = null;
       state.selectedRegionGroup = null;
       state.selectedRegion = null;
       applyRegionSelection();
     },
   }));
 
+  const groupButton = (entry) => createRegionButton({
+    className: 'region-btn--group',
+    active: state.selectedRegionGroup === entry.group && state.selectedRegion === null,
+    label: entry.group,
+    count: entry.count,
+    inferredCount: entry.inferredCount || 0,
+    status: regionStatusFromTally(byGroup.get(entry.group)),
+    onClick: () => {
+      state.selectedRegionParent = null;
+      state.selectedRegionGroup = entry.group;
+      state.selectedRegion = null;
+      applyRegionSelection();
+    },
+  });
+
   if (hasGroups) {
-    for (const entry of regions.filter((item) => item.group)) {
-      groupRow.appendChild(createRegionButton({
-        className: 'region-btn--group',
-        active: state.selectedRegionGroup === entry.group && state.selectedRegion === null,
-        label: entry.group,
-        count: entry.count,
-        inferredCount: entry.inferredCount || 0,
-        status: regionStatusFromTally(byGroup.get(entry.group)),
+    for (const item of regionGroupItems(regions)) {
+      if (!item.parent) {
+        groupRow.appendChild(groupButton(item.entry));
+        continue;
+      }
+      // A parent region is a labelled cluster in the same row, not a row of its
+      // own: the label selects every group in it, the chips inside work as
+      // before. Only parents that name at least one group with observers show.
+      const cluster = document.createElement('div');
+      cluster.className = 'region-parent';
+      if (item.groups.some((entry) => entry.group === state.selectedRegionGroup)) {
+        cluster.classList.add('region-parent--within');
+      }
+      cluster.setAttribute('role', 'group');
+      cluster.setAttribute('aria-label', item.parent);
+      cluster.appendChild(createRegionButton({
+        className: 'region-btn--parent',
+        active: state.selectedRegionParent === item.parent,
+        label: item.parent,
+        count: item.groups.reduce((sum, entry) => sum + (entry.count || 0), 0),
+        inferredCount: item.groups.reduce((sum, entry) => sum + (entry.inferredCount || 0), 0),
+        status: regionStatusFromTally(sumRegionTallies(item.groups.map((entry) => byGroup.get(entry.group)))),
         onClick: () => {
-          state.selectedRegionGroup = entry.group;
+          state.selectedRegionParent = item.parent;
+          state.selectedRegionGroup = null;
           state.selectedRegion = null;
           applyRegionSelection();
         },
       }));
+      item.groups.forEach((entry) => cluster.appendChild(groupButton(entry)));
+      groupRow.appendChild(cluster);
     }
   }
   ui.regionFilter.appendChild(groupRow);
@@ -1340,6 +1377,7 @@ function renderRegionFilter(session = currentSession()) {
         count: region.count,
         status: regionStatusFromTally(byRegion.get(region.name)),
         onClick: () => {
+          state.selectedRegionParent = null;
           state.selectedRegion = region.name;
           if (!state.selectedRegionGroup && hasGroups) {
             const parent = regions.find((entry) => entry.regions.some((item) => item.name === region.name));
@@ -1351,6 +1389,45 @@ function renderRegionFilter(session = currentSession()) {
     }
     ui.regionFilter.appendChild(subregionRow);
   }
+}
+
+// The group row in display order: standalone groups and parent clusters sorted
+// together by the name shown first, so "Bay Area" sits where B falls and its
+// groups keep the server's order inside it.
+function regionGroupItems(regions) {
+  const items = [];
+  const clusters = new Map();
+  regions.filter((entry) => entry.group).forEach((entry) => {
+    if (!entry.parent) {
+      items.push({ key: entry.group, entry });
+      return;
+    }
+    if (!clusters.has(entry.parent)) {
+      const cluster = { key: entry.parent, parent: entry.parent, groups: [] };
+      clusters.set(entry.parent, cluster);
+      items.push(cluster);
+    }
+    clusters.get(entry.parent).groups.push(entry);
+  });
+  return items.sort((left, right) => left.key.localeCompare(right.key));
+}
+
+function sumRegionTallies(tallies) {
+  const present = tallies.filter(Boolean);
+  if (present.length === 0) return null;
+  return present.reduce((sum, tally) => ({
+    seen: sum.seen + tally.seen,
+    total: sum.total + tally.total,
+  }), { seen: 0, total: 0 });
+}
+
+// Groups under the selected parent region, or null when none is selected.
+function selectedParentGroups(snapshot = state.snapshot) {
+  if (!state.selectedRegionParent) return null;
+  const { regions } = regionFilterOptions(snapshot);
+  return new Set(regions
+    .filter((entry) => entry.group && entry.parent === state.selectedRegionParent)
+    .map((entry) => entry.group));
 }
 
 function regionFilterOptions(snapshot = state.snapshot) {
@@ -1415,6 +1492,10 @@ function createRegionButton({
 
 function reconcileRegionSelection(snapshot) {
   const { hasGroups, regions } = regionFilterOptions(snapshot);
+  if (state.selectedRegionParent !== null
+    && (!hasGroups || !regions.some((entry) => entry.parent === state.selectedRegionParent))) {
+    state.selectedRegionParent = null;
+  }
   if (!hasGroups && state.selectedRegionGroup !== null) {
     state.selectedRegionGroup = null;
   }
@@ -1463,6 +1544,9 @@ function activeRegionScopeLabel() {
   if (state.selectedRegionGroup) {
     return state.selectedRegionGroup;
   }
+  if (state.selectedRegionParent) {
+    return state.selectedRegionParent;
+  }
   return null;
 }
 
@@ -1470,6 +1554,10 @@ function activeRegionScopeLabel() {
 // they show under their group chip and disappear under a county chip - which is
 // exactly right: a group is all their uplink code can tell us.
 function observersMatchingRegionFilter(observers) {
+  const parentGroups = selectedParentGroups();
+  if (parentGroups) {
+    return observers.filter((observer) => parentGroups.has(observer.regionGroup));
+  }
   if (state.selectedRegion === null && state.selectedRegionGroup === null) {
     return observers;
   }
@@ -1836,6 +1924,10 @@ function ensureRegionPane(mapInstance) {
 // sets selectedRegionGroup too (renderRegionFilter fills in the parent), so the
 // outline stays put through a drill-down.
 function regionBoundaryVisible(properties) {
+  const parentGroups = selectedParentGroups();
+  if (parentGroups) {
+    return parentGroups.has(properties?.group);
+  }
   if (state.selectedRegionGroup) {
     return properties?.group === state.selectedRegionGroup;
   }
@@ -1991,16 +2083,20 @@ function releaseInnerStroke(entry) {
 // wherever it was. Null until the geometry arrives - the fetch re-enters
 // renderObserverMap, and the changed boundsKey then refits to the outline.
 function selectedRegionFrame() {
-  if (!state.selectedRegionGroup || state.selectedRegion || !window.L) {
+  const parentGroups = selectedParentGroups();
+  if ((!state.selectedRegionGroup && !parentGroups) || state.selectedRegion || !window.L) {
     return null;
   }
   const features = Array.isArray(state.map.regionFeatures) ? state.map.regionFeatures : [];
-  const feature = features.find((item) => item?.properties?.group === state.selectedRegionGroup);
-  if (!feature) {
+  // A parent region frames all of its groups' outlines together.
+  const selected = features.filter((item) => (parentGroups
+    ? parentGroups.has(item?.properties?.group)
+    : item?.properties?.group === state.selectedRegionGroup));
+  if (selected.length === 0) {
     return null;
   }
   try {
-    const bounds = window.L.geoJSON(feature).getBounds();
+    const bounds = window.L.geoJSON({ type: 'FeatureCollection', features: selected }).getBounds();
     return bounds.isValid() ? bounds : null;
   } catch {
     return null;
@@ -2253,7 +2349,7 @@ function renderObserverMap(session) {
   const boundsKey = pathFrame
     ? `path:${pathData.signature}`
     : regionFrame
-      ? `region:${state.selectedRegionGroup}`
+      ? `region:${state.selectedRegionParent ? `parent:${state.selectedRegionParent}` : state.selectedRegionGroup}`
       : locatedObservers.map((observer) => observer.key).join('|');
   if (frame && boundsKey !== state.map.boundsKey) {
     mapInstance.fitBounds(frame, { padding: [26, 26], maxZoom: 10 });

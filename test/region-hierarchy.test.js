@@ -49,11 +49,13 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
       squareFeature('Beta', 'North', 1, 0, 2, 1),
       // Deliberately long decimals: the boundary endpoint rounds drawing
       // geometry, while region detection keeps using the full precision.
-      squareFeature('Gamma', 'South', 0.1234567891, -1, 1, 0),
+      // South sits under a parent region (bayarea.21), read from the default
+      // `parentRegion` property; North has none and must come back unchanged.
+      { ...squareFeature('Gamma', 'South', 0.1234567891, -1, 1, 0), properties: { label: 'Gamma', macro: 'South', parentRegion: 'Hemisphere' } },
       squareFeature('Outside Census places', 'North', 0, 0, 3, 1),
       // No observer ever falls inside Delta, but it belongs to a group that has
       // one, so it forms part of that region's outline.
-      squareFeature('Delta', 'South', 5, 5, 6, 6),
+      { ...squareFeature('Delta', 'South', 5, 5, 6, 6), properties: { label: 'Delta', macro: 'South', parentRegion: 'Hemisphere' } },
       // Epsilon's whole group is observerless, so none of it is ever served.
       squareFeature('Epsilon', 'West', 9, 9, 10, 10),
     ],
@@ -149,6 +151,7 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
         regions: [
           { name: 'Gamma', count: 1, packetCount: 1 },
         ],
+        parent: 'Hemisphere',
       },
     ]);
 

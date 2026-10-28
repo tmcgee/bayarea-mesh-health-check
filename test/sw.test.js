@@ -140,5 +140,5 @@ for (const response of [
 
 test('the cache revision moved so installed apps pick up the new worker', () => {
   const source = fs.readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
-  assert.match(source, /const CACHE_NAME = 'mesh-health-check-pwa-v8-bayarea';/);
+  assert.match(source, /const CACHE_NAME = 'mesh-health-check-pwa-v9-bayarea';/);
 });

@@ -1306,6 +1306,35 @@ body[data-page-mode="share"] .status-pill::before {
   font-size: 0.82rem;
 }
 
+/* Parent regions (bayarea.21): a labelled cluster inside the group row. The
+   label is a button that selects every group in the cluster; it reads as a
+   heading, not a chip, so the cluster still looks like one row of regions. */
+.region-parent {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  max-width: 100%;
+}
+
+.region-parent--within {
+  border-color: color-mix(in srgb, var(--good) 30%, var(--line));
+}
+
+.region-btn--parent {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted-strong);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 5px 8px;
+}
+
 .region-btn--child {
   font-size: 0.75rem;
   padding: 4px 10px;

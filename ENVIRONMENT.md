@@ -115,6 +115,7 @@ only receipt observer coordinates are available.
 | `REGIONS_FILE` | blank | GeoJSON FeatureCollection used to assign observer regions. |
 | `REGION_NAME_PROPERTY` | `name` | Feature property used as the child region label. |
 | `REGION_GROUP_PROPERTY` | `group` | Feature property used as the parent group label. |
+| `REGION_PARENT_PROPERTY` | `parentRegion` | Optional feature property naming a parent region above the group (e.g. Bay Area over North Bay). Shown as a labelled cluster of group chips that selects them all. Absent or empty: no parent level. |
 
 Bundled examples include:
 

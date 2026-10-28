@@ -184,3 +184,45 @@ test('the Bay Area env example points at files that exist', () => {
     assert.ok(fs.existsSync(target), `${key} points at ${match[1].trim()}, which does not exist`);
   }
 });
+
+test('Yuba and Sutter are one Yuba-Sutter subregion, as in the scope tree', () => {
+  // matkam/meshcore-settings has one place for the two counties, `yubasutter`,
+  // under `sacramentofoothills`. Separate features would show two subregion
+  // chips where that tree, and the repeaters following it, have one.
+  const boundary = readJson(BOUNDARY_PATH);
+  const names = boundary.features.map((feature) => feature.properties.name);
+  assert.ok(!names.includes('Yuba') && !names.includes('Sutter'), 'Yuba or Sutter is still a feature of its own');
+  const merged = boundary.features.filter((feature) => feature.properties.name === 'Yuba-Sutter');
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].properties.group, 'Sacramento Foothills');
+  assert.deepEqual(merged[0].properties.fipsAll, ['06101', '06115']);
+  assert.equal(merged[0].geometry.type, 'Polygon');
+  assert.equal(merged[0].geometry.coordinates.length, 1, 'the shared border did not dissolve into one ring');
+});
+
+test('parent regions group the Bay Area, Sierra Nevada and San Joaquin Valley regions', () => {
+  // `parentRegion` (bayarea.21) is a property of the group, repeated on each of
+  // its features, so every feature of a group must name the same parent.
+  const boundary = readJson(BOUNDARY_PATH);
+  const parents = new Map();
+  for (const feature of boundary.features) {
+    const { group, parentRegion = null } = feature.properties;
+    if (parents.has(group)) {
+      assert.equal(parentRegion, parents.get(group), `${feature.properties.name} disagrees with the rest of ${group}`);
+    }
+    parents.set(group, parentRegion);
+  }
+  const byParent = {};
+  for (const [group, parent] of parents) {
+    if (parent) (byParent[parent] ||= []).push(group);
+  }
+  for (const groups of Object.values(byParent)) groups.sort();
+  assert.deepEqual(byParent, {
+    'Bay Area': ['East Bay', 'North Bay', 'Peninsula', 'San Francisco', 'South Bay'],
+    'San Joaquin Valley': ['San Joaquin North', 'San Joaquin South'],
+    'Sierra Nevada': ['Eastern Sierra', 'Gold Country'],
+  });
+  assert.equal(parents.get('Central Coast'), null);
+  assert.equal(parents.get('Sacramento Foothills'), null);
+  assert.equal(parents.get('North California'), null);
+});

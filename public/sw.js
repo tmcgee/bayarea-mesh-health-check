@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mesh-health-check-pwa-v8-bayarea';
+const CACHE_NAME = 'mesh-health-check-pwa-v9-bayarea';
 const CORE_ASSETS = [
   '/',
   '/app',

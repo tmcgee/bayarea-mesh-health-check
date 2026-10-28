@@ -426,6 +426,10 @@ loadScopeEvidenceFile();
 const REGION_FALLBACK = envValue('REGION_FALLBACK', '').trim().toLowerCase();
 const REGION_NAME_PROPERTY = envValue('REGION_NAME_PROPERTY', 'name');
 const REGION_GROUP_PROPERTY = envValue('REGION_GROUP_PROPERTY', 'group');
+// Optional level above the group (bayarea.21): "Bay Area" over San Francisco,
+// Peninsula, South Bay, East Bay and North Bay. Not `parent`, which the group
+// lookup below already accepts as a fallback name for the group itself.
+const REGION_PARENT_PROPERTY = envValue('REGION_PARENT_PROPERTY', 'parentRegion');
 const RESULTS_FILE = envValue('RESULTS_FILE', path.join('data', 'session-results.json'));
 const RESULTS_FILE_PATH = resolveAppPath(RESULTS_FILE);
 const APP_TITLE = envValue('APP_TITLE', 'Mesh Health Check');
@@ -880,9 +884,13 @@ function loadRegionBoundaries() {
       'regionGroup',
       'region_group',
     ]);
+    const parentRegion = REGION_PARENT_PROPERTY
+      ? regionProperty(properties, [REGION_PARENT_PROPERTY])
+      : '';
     return {
       name,
       group,
+      parentRegion: group && parentRegion && parentRegion !== group ? parentRegion : '',
       geometry: feature?.geometry || null,
       type,
       bounds: geometryBounds(feature?.geometry || null),
@@ -893,6 +901,35 @@ function loadRegionBoundaries() {
 }
 
 const regionBoundaries = loadRegionBoundaries();
+
+// Group -> parent region, from the features. A parent is a property of the
+// group, so the first feature that names one decides it; a feature of the same
+// group naming a different parent is a data error, logged and ignored.
+const regionGroupParents = (() => {
+  const parents = new Map();
+  regionBoundaries.forEach((boundary) => {
+    if (!boundary.group || !boundary.parentRegion) {
+      return;
+    }
+    const existing = parents.get(boundary.group);
+    if (existing && existing !== boundary.parentRegion) {
+      logger.warn(`[regions] ${boundary.name} puts group ${boundary.group} under ${boundary.parentRegion}, but it is already under ${existing}; keeping ${existing}`);
+      return;
+    }
+    parents.set(boundary.group, boundary.parentRegion);
+  });
+  if (parents.size > 0) {
+    logger.info(`[regions] ${parents.size} groups under ${new Set(parents.values()).size} parent regions`);
+  }
+  return parents;
+})();
+
+// `parent` only where the group has one, so a boundary file without parents
+// produces exactly the hierarchy it always did.
+function withRegionParent(entry) {
+  const parent = entry.group ? regionGroupParents.get(entry.group) : null;
+  return parent ? { ...entry, parent } : entry;
+}
 
 // Boundary geometry served to the map layer. One outline per region group, not
 // per subregion: the map is meant to show region shapes, and the subregion
@@ -3032,7 +3069,7 @@ function buildRegionHierarchy(directory) {
     });
   }
 
-  return out;
+  return out.map(withRegionParent);
 }
 
 function sharePathForSession(session) {

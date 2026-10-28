@@ -4,6 +4,24 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.21
+
+- parent regions: Bay Area (San Francisco, Peninsula, South Bay, East Bay,
+  North Bay), Sierra Nevada (Gold Country, Eastern Sierra) and San Joaquin Valley
+  (San Joaquin North and South, still two regions; the scope tree calls it
+  `centralvalley`). Each shows as a labelled
+  cluster in the region row; the label selects all of its regions on the list
+  and map. New feature property `parentRegion`, named by
+  `REGION_PARENT_PROPERTY`; `regionHierarchy` entries gain `parent` where set.
+  Scoring still counts regions.
+- service worker cache `mesh-health-check-pwa-v9-bayarea`.
+- Yuba and Sutter are one subregion, `Yuba-Sutter`, matching `yubasutter` in
+  matkam/meshcore-settings. `regions/us-ca-bay-area.geojson` goes from 33 to
+  32 features (still 33 counties): the two are dissolved along their shared
+  vertices into one 827-vertex ring, `fips` 06101 with `counties` and `fipsAll`
+  listing both. Region outlines are unchanged. The region fingerprint changes,
+  so the boot pass re-seeds observer regions after start.
+
 ## v1.3.8+bayarea.20
 
 - step 1's regional note is now one collapsed line, "Testing within a region?". The

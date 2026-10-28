@@ -161,22 +161,22 @@ Since `#healthcheck` is joinable by name alone, publishing is easy: tell people 
 
 The bundled files are country-level (`us-states.geojson`) or 32,656 Census places (`us-places.geojson`), neither of which gives useful Bay Area grouping. I generated a purpose-built file for you:
 
-**`regions/us-ca-bay-area.geojson`** — 33 counties, 539 KB, with `name` = county and `group` = subregion:
+**`regions/us-ca-bay-area.geojson`** — 33 counties in 32 features (Yuba and Sutter are one, `Yuba-Sutter`, unreleased), 531 KB, with `name` = county or area and `group` = region:
 
-| Group | Counties | Live IATA codes seen |
-|---|---|---|
-| San Francisco | San Francisco | SFO |
-| Peninsula | San Mateo | SQL |
-| South Bay | Santa Clara | SJC |
-| East Bay | Alameda, Contra Costa | OAK |
-| North Bay | Marin, Napa, Solano, Sonoma | STS |
-| Central Coast | Santa Cruz, San Benito, Monterey, San Luis Obispo | MRY, PRB, SBP |
-| Sacramento Foothills | Placer, Sacramento, Sutter, Yolo, Yuba | SMF, MHR, AUN |
-| North California | Butte | none |
-| San Joaquin North | San Joaquin, Stanislaus, Merced | SCK, MOD, MCE |
-| San Joaquin South | Kern, Fresno, Madera, Kings, Tulare | BFL, FAT, MAE, HJO, VIS |
-| Gold Country | Amador, Calaveras, El Dorado, Mariposa, Tuolumne | COA, PVF, JAQ, TVL, MPI |
-| Eastern Sierra | Alpine | none |
+| Parent | Group | Counties | Live IATA codes seen |
+|---|---|---|---|
+| Bay Area | San Francisco | San Francisco | SFO |
+| Bay Area | Peninsula | San Mateo | SQL |
+| Bay Area | South Bay | Santa Clara | SJC |
+| Bay Area | East Bay | Alameda, Contra Costa | OAK |
+| Bay Area | North Bay | Marin, Napa, Solano, Sonoma | STS |
+| | Central Coast | Santa Cruz, San Benito, Monterey, San Luis Obispo | MRY, PRB, SBP |
+| | Sacramento Foothills | Placer, Sacramento, Yolo, Yuba-Sutter | SMF, MHR, AUN |
+| | North California | Butte | none |
+| San Joaquin Valley | San Joaquin North | San Joaquin, Stanislaus, Merced | SCK, MOD, MCE |
+| San Joaquin Valley | San Joaquin South | Kern, Fresno, Madera, Kings, Tulare | BFL, FAT, MAE, HJO, VIS |
+| Sierra Nevada | Gold Country | Amador, Calaveras, El Dorado, Mariposa, Tuolumne | COA, PVF, JAQ, TVL, MPI |
+| Sierra Nevada | Eastern Sierra | Alpine | none |
 
 **`bayarea.17`: groups renamed to the California scope tree.** The
 group names now follow the regions and areas of
@@ -231,6 +231,7 @@ Enable it with:
 REGIONS_FILE=regions/us-ca-bay-area.geojson
 REGION_NAME_PROPERTY=name
 REGION_GROUP_PROPERTY=group
+# REGION_PARENT_PROPERTY=parentRegion   # default; level above the group (`+bayarea.21`)
 ```
 
 Source geometry: legal county boundaries from the [Census TIGERweb State_County service](https://tigerweb.geo.census.gov/arcgisrest/) (`STATE='06'`, GeoJSON, EPSG:4326), reduced with Ramer–Douglas–Peucker at 0.0009° (~100 m) — 7,259 vertices, 287 KB. Rebuild with `build_bayarea_geojson.py`.
@@ -1667,6 +1668,64 @@ change to the channel gate in `handlePacketMessage`.
   `unscoped`, `other`, `unrecorded`) and gives a verdict. The channel name does
   not set the scope; the user still picks it in the app.
 - Tests: `test/regional-test-channels.test.js` (6) and two smoke tests.
+
+### 6af. Yuba-Sutter as one subregion (`+bayarea.21`)
+
+User request 2026-10-28, after comparing the app's subregions with
+[matkam/meshcore-settings](https://github.com/matkam/meshcore-settings)
+(`data/regions.json`, still `7ec46658`): that tree has one place for the two
+counties, `yubasutter` "Yuba-Sutter", under `sacramentofoothills`. Every other
+county in the 33-county boundary already sat under the same region as there.
+
+- The `Sutter` (06101) and `Yuba` (06115) features become one `Yuba-Sutter`
+  feature in `Sacramento Foothills`: `fips` `06101` (the test wants one
+  five-digit code per feature), plus `counties` `["Sutter","Yuba"]` and
+  `fipsAll` `["06101","06115"]`, which nothing reads.
+- Geometry is the same dissolve the server runs for region outlines: Yuba's
+  border with Sutter reused Sutter's vertices, so its 177 segments cancel in
+  both directions, leaving one clockwise ring of 827 vertices with no new
+  coordinates. The Sacramento Foothills, North California and Gold Country
+  outlines are edge-for-edge identical before and after (2,220, 657 and 1,131
+  edges), and 50,000 random points over the two counties land the same way.
+- The region fingerprint changes, so the boot pass re-seeds observer regions
+  about 60 s after start; an observer recorded as `Sutter` or `Yuba` becomes
+  `Yuba-Sutter`. Share links saved before keep the old name.
+- Still different from that tree, by choice or for lack of polygons: no Bay Area
+  or Sierra Nevada parent level, no Lake Tahoe, SLO County not split into its
+  four local areas, Nevada County outside the boundary, and the Central Valley
+  kept as San Joaquin North and South.
+
+### 6ag. Parent regions (`+bayarea.21`)
+
+User request 2026-10-28: show the scope tree's parent regions `bayarea` and
+`sierranevada`, and `centralvalley` too, keeping San Joaquin North and South as
+two regions under it. Labelled "San Joaquin Valley", not the tree's "Central
+Valley": the eight counties are the San Joaquin Valley, and the Central Valley
+also takes in the Sacramento Valley (Sacramento Foothills and North California
+here). User decision 2026-10-28; a rename of `centralvalley` is proposed
+upstream, and until it lands the scope name stays `centralvalley`.
+
+- Data: an optional `parentRegion` property on each feature, the same for every
+  feature of a group. Bay Area over San Francisco, Peninsula, South Bay, East
+  Bay and North Bay; Sierra Nevada over Gold Country and Eastern Sierra;
+  San Joaquin Valley over San Joaquin North and South. Central Coast, Sacramento
+  Foothills and North California have none.
+- `REGION_PARENT_PROPERTY` (default `parentRegion`) names the property. Not
+  `parent`: the group lookup already accepts `parent` as a fallback name for the
+  group itself. A file without the property behaves exactly as before.
+- Server: `regionGroupParents` maps group to parent, first feature wins, a
+  conflicting feature is logged. `regionHierarchy` entries gain `parent` only
+  where there is one, so payloads for files without parents are unchanged.
+  `/api/region-boundaries` still carries `group` only.
+- UI: no third row. A parent is a bordered cluster inside the group row: an
+  uppercase label button (count and status summed over its groups) followed by
+  its group chips. Clusters and plain chips sort together by their first name.
+  The label selects every group in it: list, markers, outlines and map frame
+  cover all of them, and no subregion row shows. A group chip inside works as
+  before and clears the parent; the cluster border tints while one of its
+  groups is selected. A parent only shows when one of its groups has observers.
+- Scoring, "Regions Reached" and outline width are unchanged: they still count
+  and draw groups.
 
 ## 7. Deployment
 

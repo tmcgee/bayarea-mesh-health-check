@@ -58,6 +58,11 @@ function regionHierarchy(observerDirectory) {
     }
     if (!groups.has(observer.regionGroup)) {
       groups.set(observer.regionGroup, { group: observer.regionGroup, count: 0, inferredCount: 0, regions: [] });
+      // Test-only field: the server takes a group's parent from the boundary
+      // file, which these mocks do not have.
+      if (observer.regionParent) {
+        groups.get(observer.regionGroup).parent = observer.regionParent;
+      }
     }
     const entry = groups.get(observer.regionGroup);
     // Placed by uplink code alone: no county, so the server tallies it at group
@@ -459,6 +464,56 @@ test('region outlines draw under the markers, colour by status, and follow the r
 
   await page.locator('.region-btn--all').first().click();
   await expect(outlines).toHaveCount(2);
+});
+
+// Parent regions (bayarea.21): a group's parent shows as a labelled cluster in
+// the group row. The label selects every group under it, on the list and the
+// map; a group chip inside works exactly as before and clears the parent.
+test('a parent region selects all of its groups at once', async ({ page }) => {
+  const boston = mapObserver(MAP_TEST_KEYS.target, 'Boston Observer', 42.3601, -71.0589, 'Boston', 'North America');
+  const lowell = mapObserver(MAP_TEST_KEYS.neighbour, 'Lowell Observer', 42.65, -71.3, 'Lowell', 'New England');
+  const paris = mapObserver(MAP_TEST_KEYS.outside, 'Paris Observer', 48.8566, 2.3522, 'Paris', 'Europe');
+  boston.regionParent = 'Americas';
+  lowell.regionParent = 'Americas';
+  const observers = [boston, lowell, paris];
+
+  await openMockMapSession(page, observers, observers, 'test-carto-key', {
+    boundaries: [
+      boundaryFeature('North America', -71.2, 42, -70.5, 42.5),
+      boundaryFeature('New England', -71.5, 42.5, -71, 42.9),
+      boundaryFeature('Europe', 2, 48.5, 2.7, 49.2),
+    ],
+  });
+
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const cluster = page.locator('.region-filter--map .region-parent');
+    await expect(cluster).toHaveCount(1);
+    await expect(cluster).toHaveAttribute('aria-label', 'Americas');
+    await expect(cluster.locator('.region-btn--parent')).toContainText('Americas');
+    await expect(cluster.locator('.region-btn--parent .region-btn__count')).toHaveText('2');
+    await expect(cluster.locator('.region-btn--group')).toHaveText([/North America/, /New England/]);
+    // Europe has no parent and stays a plain chip outside any cluster.
+    await expect(page.locator('.region-filter--map .region-btn--group', { hasText: 'Europe' })).toHaveCount(1);
+
+    await cluster.locator('.region-btn--parent').click();
+    await expect(cluster.locator('.region-btn--parent')).toHaveClass(/active/);
+    await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(2);
+    await expect(page.locator('#observer-map path.region-shape')).toHaveCount(2);
+    await expect(page.locator('#observer-map path[data-region-group="Europe"]')).toHaveCount(0);
+    await expect(page.locator('#map-observer-note')).toContainText('Americas');
+    // No subregion row: the groups to narrow to are the chips in the cluster.
+    await expect(page.locator('.region-filter--map .region-filter__row--subregions')).toHaveCount(0);
+
+    await cluster.locator('.region-btn--group', { hasText: 'New England' }).click();
+    await expect(cluster.locator('.region-btn--parent')).not.toHaveClass(/active/);
+    await expect(cluster).toHaveClass(/region-parent--within/);
+    await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
+
+    await page.locator('.region-filter--map .region-btn--all').click();
+    await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(3);
+    await expect(cluster).not.toHaveClass(/region-parent--within/);
+  }
 });
 
 // Screen-space rectangles of a region outline and of the map, for asserting what
