@@ -125,6 +125,21 @@ Bundled examples include:
 
 Leave `REGIONS_FILE` blank to disable region detection.
 
+## MeshCore routing scopes
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MESHCORE_REGION_SCOPES_FILE` | blank | JSON file `{"regions": ["name", ...]}` of MeshCore region scope names to recognise in matched receipts. Resolved against the app directory. Blank turns name matching off; scoped receipts are still marked as scoped. A configured file that is missing or invalid stops startup. |
+
+Each matched receipt records its transport code. A code that matches one listed
+name shows that name, a code matching more than one shows `Ambiguous: a or b`,
+an unlisted code shows `Scoped, name not listed`, and a flood or direct packet
+shows `Unscoped`. Names follow the firmware rules: at most 30 bytes, no
+duplicates, at most 1024 names, file at most 64 KiB. Written with or without the
+leading `#`. The Bay Area file is `regions/us-ca-meshcore-scopes.json`, 73 names
+copied from [matkam/meshcore-settings](https://github.com/matkam/meshcore-settings);
+it is not part of the re-seed fingerprint.
+
 ## Turnstile
 
 | Variable | Default | Purpose |

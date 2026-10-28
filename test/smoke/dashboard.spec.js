@@ -959,6 +959,50 @@ test('signal quality separates waiting, unavailable readings and reported readin
   await expect(page.locator('#signal-quality-label')).not.toHaveText(/Awaiting|unavailable/);
 });
 
+// MeshCore routing scope (bayarea.17): one summary line for the code and one line per
+// receipt card. Display only, so the score fields are left exactly as the server sent them.
+test('MeshCore scope lines summarise the code and label each heard copy', async ({ page }) => {
+  const first = mapObserver(MAP_TEST_KEYS.target, 'Scope Observer A', 37.8044, -122.2712, 'East Bay');
+  const second = mapObserver(MAP_TEST_KEYS.neighbour, 'Scope Observer B', 37.7749, -122.4194, 'San Francisco');
+  await openMockMapSession(page, [first, second], [first, second]);
+  const now = Date.now();
+  const receipt = (observer, meshcoreScopes) => ({
+    observerKey: observer.key, observerLabel: observer.name, observerName: observer.name,
+    firstSeenAt: now, lastSeenAt: now, count: 1, path: [], rssi: -80, snr: 5, meshcoreScopes,
+  });
+  const session = (receipts) => ({
+    ...mapSession([first, second]), healthMeasured: true, healthLabel: 'POOR', matchedAt: now,
+    observedCount: receipts.length, receipts,
+  });
+
+  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: session([]) }));
+  await page.reload();
+  await expect(page.locator('#meshcore-scopes')).toHaveText('No receipts yet.');
+
+  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: session([
+    receipt(first, [{ state: 'known', names: ['#bayarea'] }, { state: 'unscoped', names: [] }]),
+    receipt(second, [{ state: 'unscoped', names: [] }]),
+  ]) }));
+  await page.reload();
+  await expect(page.locator('#meshcore-scopes')).toHaveText('Unscoped (2) · bayarea (1)');
+  const scopeLine = (name) => page.locator('#receipts .receipt-card', { hasText: name }).locator('.receipt-scope');
+  await expect(page.locator('#receipts .receipt-scope')).toHaveCount(2);
+  await expect(scopeLine('Scope Observer A')).toHaveText('Scope: bayarea · Unscoped');
+  await expect(scopeLine('Scope Observer B')).toHaveText('Scope: Unscoped');
+
+  // Receipts stored before scopes were recorded, and scoped copies with no matching name.
+  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: session([
+    receipt(first, undefined),
+    receipt(second, [{ state: 'unknown', names: [] }, { state: 'ambiguous', names: ['#a', '#b'] }]),
+  ]) }));
+  await page.reload();
+  await expect(page.locator('#meshcore-scopes')).toHaveText(
+    'Ambiguous: a or b (1) · Not recorded (1) · Scoped, name not listed (1)',
+  );
+  await expect(scopeLine('Scope Observer A')).toHaveText('Scope: Not recorded');
+  await expect(scopeLine('Scope Observer B')).toHaveText('Scope: Scoped, name not listed · Ambiguous: a or b');
+});
+
 // The lede is prose with an inline channel chip in the middle. It was styled by a
 // rule shared with .session-share-invite, which made the paragraph a flex
 // container: its three spans became flex items, so a 390px viewport rendered them

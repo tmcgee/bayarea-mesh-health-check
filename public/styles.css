@@ -3356,3 +3356,19 @@ body[data-ui-theme="light"] .additional-info[open] > .additional-info__summary {
   line-height: 1.45;
   text-align: left;
 }
+
+/* MeshCore scope lines (bayarea.17). Names can be long and unbroken, and keep the case
+   they were configured with, so only the label is set in the small-note capitals. */
+.receipt-scope,
+.scope-summary {
+  overflow-wrap: anywhere;
+}
+
+.reports-panel .scope-summary {
+  margin: 6px 0 14px;
+}
+
+.scope-summary #meshcore-scopes {
+  text-transform: none;
+  letter-spacing: 0.04em;
+}

@@ -2600,7 +2600,51 @@ function commitReceiptList(list) {
   ui.receipts.replaceChildren(...list.childNodes);
 }
 
+// MeshCore routing scope, recorded per heard copy by the server (lib/meshcore-scopes.js).
+// Stored names carry the key's leading '#'; MeshCore clients show them without it.
+function meshcoreScopeLabel(scope) {
+  const names = (Array.isArray(scope?.names) ? scope.names : [])
+    .map((name) => String(name).replace(/^#/, ''));
+  switch (scope?.state) {
+    case 'known': return names[0] || 'Unavailable';
+    case 'ambiguous': return `Ambiguous: ${names.join(' or ')}`;
+    case 'unscoped': return 'Unscoped';
+    case 'unknown': return 'Scoped, name not listed';
+    case 'disabled': return 'Scoped (name matching off)';
+    case 'not-present': return 'Not recorded';
+    default: return 'Unavailable';
+  }
+}
+
+function receiptScopeLabels(receipt) {
+  const scopes = Array.isArray(receipt?.meshcoreScopes) && receipt.meshcoreScopes.length
+    ? receipt.meshcoreScopes
+    : [{ state: 'not-present', names: [] }];
+  return [...new Set(scopes.map(meshcoreScopeLabel))];
+}
+
+// One line for the whole code: each distinct label with the number of observers whose
+// copies carried it, most common first. An observer heard under two scopes counts in both.
+function meshcoreScopeSummary(receipts) {
+  if (!receipts.length) return 'No receipts yet.';
+  const counts = new Map();
+  for (const receipt of receipts) {
+    for (const label of receiptScopeLabels(receipt)) counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([label, count]) => `${label} (${count})`)
+    .join(' · ');
+}
+
+function renderMeshcoreScopes(session) {
+  const element = document.querySelector('#meshcore-scopes');
+  if (!element) return;
+  element.textContent = meshcoreScopeSummary(Array.isArray(session?.receipts) ? session.receipts : []);
+}
+
 function renderReceipts(session) {
+  renderMeshcoreScopes(session);
   const allReceipts = Array.isArray(session?.receipts) ? session.receipts : [];
   // Built off-DOM and committed only when the markup changed: the list was
   // emptied and rebuilt on every five-second poll and every socket snapshot,
@@ -2799,6 +2843,7 @@ function renderReceipts(session) {
       <p class="receipt-meta">
         Heard ${receipt.count} time${receipt.count === 1 ? '' : 's'}${metrics ? ` · ${metrics}` : ''}
       </p>
+      <p class="receipt-meta receipt-scope">Scope: ${escapeHtml(receiptScopeLabels(receipt).join(' · '))}</p>
       ${arrivalMarkup}
       <div class="receipt-meter-grid">
         <div class="receipt-meter">

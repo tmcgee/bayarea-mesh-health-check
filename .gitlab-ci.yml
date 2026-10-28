@@ -34,6 +34,20 @@ syntax:
     - npm ci --prefer-offline --no-audit --fund=false
     - npm run check
 
+# Dependency advisories. Upstream gets Dependabot on GitHub; this GitLab fork
+# had nothing, which is how four transitive advisories sat in the lock file
+# until a manual upstream review (fixed in bayarea.16). The gate covers runtime
+# dependencies only, at moderate and above. Dev tooling (Playwright) is listed
+# for information and never fails the job. It reads package-lock.json, so no
+# install is needed. A new advisory can fail a commit that changed nothing; the
+# fix is a lock-file update, never --force. To hear about advisories between
+# commits, add a pipeline schedule (CI/CD > Schedules) on main.
+audit:
+  stage: verify
+  script:
+    - npm audit --omit=dev --audit-level=moderate
+    - npm audit || echo "dev-dependency advisories above are informational"
+
 unit:
   stage: verify
   <<: *npm_cache

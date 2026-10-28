@@ -4,6 +4,30 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.17
+
+- MeshCore routing scope recognition, ported from upstream `7b0fb8b9`,
+  `61445069`, `70350c0d` and `ca02b86d`. Each matched receipt records its
+  scope: a configured name, `Ambiguous: a or b`, `Scoped, name not listed`,
+  `Unscoped`, or `Scoped (name matching off)`. The Observer Reports panel shows
+  a `MeshCore scope:` summary with the observer count per label, and each
+  receipt card a `Scope:` line. Scopes are kept in retained share results.
+  New `MESHCORE_REGION_SCOPES_FILE` reads JSON, not upstream's YAML, so no new
+  dependency. `regions/us-ca-meshcore-scopes.json` ships the 73 names of the
+  California tree in matkam/meshcore-settings (`us`, `west`, `california`, then
+  regions, areas and counties such as `bayarea`, `northbay`, `sonoma`).
+  Upstream's change to expire a session on `seenAt >= expiresAt` was not taken.
+- region groups renamed to the same tree; boundary and geometry unchanged.
+  `Sacramento Valley` is now `Sacramento Foothills` without Butte, which is
+  `North California`; `Sierra Foothills` is now `Gold Country` without Alpine,
+  which is `Eastern Sierra`. `San Joaquin North` and `San Joaquin South` stay
+  separate. The re-seed fingerprint changes, so the first boot re-seeds.
+- `express` 5.2.1 to 5.3.0 (`package.json` `^5.3.0`), bringing
+  `content-disposition` 2.0.1. `npm audit` reports 0 vulnerabilities.
+- new GitLab CI `audit` job: fails on a moderate or worse advisory in
+  production dependencies; dev-dependency advisories are printed only.
+- service worker cache `mesh-health-check-pwa-v5-bayarea`.
+
 ## v1.3.8+bayarea.16
 
 - new public, read-only `GET /api/reseed-status`, so a deploy's boot re-seed can

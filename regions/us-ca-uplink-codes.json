@@ -136,12 +136,12 @@
       "confidence": "anticipated"
     },
     "SMF": {
-      "group": "Sacramento Valley",
+      "group": "Sacramento Foothills",
       "label": "Sacramento",
       "confidence": "anticipated"
     },
     "MHR": {
-      "group": "Sacramento Valley",
+      "group": "Sacramento Foothills",
       "label": "Mather",
       "confidence": "anticipated"
     },
@@ -171,32 +171,32 @@
       "confidence": "anticipated"
     },
     "COA": {
-      "group": "Sierra Foothills",
+      "group": "Gold Country",
       "label": "Columbia",
       "confidence": "observed"
     },
     "AUN": {
-      "group": "Sacramento Valley",
+      "group": "Sacramento Foothills",
       "label": "Auburn",
       "confidence": "anticipated"
     },
     "PVF": {
-      "group": "Sierra Foothills",
+      "group": "Gold Country",
       "label": "Placerville",
       "confidence": "anticipated"
     },
     "JAQ": {
-      "group": "Sierra Foothills",
+      "group": "Gold Country",
       "label": "Jackson",
       "confidence": "anticipated"
     },
     "TVL": {
-      "group": "Sierra Foothills",
+      "group": "Gold Country",
       "label": "South Lake Tahoe",
       "confidence": "anticipated"
     },
     "MPI": {
-      "group": "Sierra Foothills",
+      "group": "Gold Country",
       "label": "Mariposa",
       "confidence": "anticipated"
     }

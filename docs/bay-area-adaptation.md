@@ -171,10 +171,41 @@ The bundled files are country-level (`us-states.geojson`) or 32,656 Census place
 | East Bay | Alameda, Contra Costa | OAK |
 | North Bay | Marin, Napa, Solano, Sonoma | STS |
 | Central Coast | Santa Cruz, San Benito, Monterey, San Luis Obispo | MRY, PRB, SBP |
-| Sacramento Valley | Butte, Placer, Sacramento, Sutter, Yolo, Yuba | SMF, MHR |
+| Sacramento Foothills | Placer, Sacramento, Sutter, Yolo, Yuba | SMF, MHR, AUN |
+| North California | Butte | none |
 | San Joaquin North | San Joaquin, Stanislaus, Merced | SCK, MOD, MCE |
 | San Joaquin South | Kern, Fresno, Madera, Kings, Tulare | BFL, FAT, MAE, HJO, VIS |
-| Sierra Foothills | Alpine, Amador, Calaveras, El Dorado, Mariposa, Tuolumne | COA |
+| Gold Country | Amador, Calaveras, El Dorado, Mariposa, Tuolumne | COA, PVF, JAQ, TVL, MPI |
+| Eastern Sierra | Alpine | none |
+
+**`bayarea.17`: groups renamed to the California scope tree.** The
+group names now follow the regions and areas of
+[matkam/meshcore-settings](https://github.com/matkam/meshcore-settings)
+(`data/regions.json`, commit `7ec46658`), the tree its repeater-settings
+generator builds `region def` chains from, so a group chip and a scope name
+describe the same place. The boundary is unchanged (the same 33 counties, same
+geometry); only `group` values moved:
+
+- `Sacramento Valley` became `Sacramento Foothills` (its `sacramentofoothills`),
+  without Butte, which that tree puts in `norcal`, here `North California`.
+- `Sierra Foothills` became `Gold Country` (`goldcountry`), without Alpine, which
+  that tree puts in `eastsierra` with Inyo and Mono, here `Eastern Sierra`.
+- The Bay Area five and Central Coast already matched.
+- Kept on purpose: `San Joaquin North` and `San Joaquin South`, although that
+  tree has one `centralvalley` region for all eight counties. The 2026-09-10
+  split described below stays (the user's decision, 2026-10-28); both groups
+  sit inside its `centralvalley` scope.
+
+Not followed: Nevada County, which that tree has in `sacramentofoothills`, is
+still outside the boundary; that tree's `bayarea` level above the five Bay
+Area groups has no counterpart, because the dashboard has two levels; and its two
+splits that cross county lines (Palo Alto and Stanford counted as Peninsula; a
+Lake Tahoe area taking the basin sides of Placer, El Dorado and Nevada) have no
+polygons in that project, so the file stays on county lines. `TVL` (South Lake
+Tahoe) therefore falls back to `Gold Country`, and `PAO` (Palo Alto) to `South
+Bay`. Butte and Alpine have no uplink code, as before. The edit changes the
+re-seed fingerprint, so the first boot of `.17` runs a re-seed pass. Share links
+saved before it keep the old group names, because each result stores its own.
 
 The county list is not guesswork — it was fitted to the broker census in Section 1. The original 16-county draft left PRB, SBP, MCE, and COA observers unmatched, so San Luis Obispo and Merced were added and a Sierra Foothills group created. Kern was added later (2026-09-10): it was originally excluded as out of area, but CoreScope shows a live 16-node cluster there — Tehachapi (`TEH -` prefix), Frazier Park (`FP -`), and Bakersfield itself — all within reach of the network, so it is now in the boundary file and `BFL` moved from the exclusion list into `codes`. The single **Central Valley** group was split three ways on the same day. It had grown to six counties spanning about 300 miles, and it conflated the state's two distinct valleys: Sacramento and Yolo are in the Sacramento Valley, everything else in the group is San Joaquin Valley ([Central Valley](https://en.wikipedia.org/wiki/Central_Valley_(California))). The San Joaquin line follows standard usage — San Joaquin, Stanislaus and Merced are the [North San Joaquin Valley](https://www.labor.ca.gov/wp-content/uploads/sites/338/2024/11/North-San-Joaquin-Valley-RPP2.pdf), and Kern is the valley's south end ([Fresno State CRPC](https://socialsciences.fresnostate.edu/geography/crpc/scope.html)). `San Joaquin North` and `San Joaquin South` are named that way round so they sort adjacently: groups are ordered by `localeCompare` (`server.js:2577`, `2833`), nothing hardcodes an order, and no group name appears anywhere outside these two data files.
 
@@ -1524,6 +1555,61 @@ A trap from writing the referrer smoke test: recording the URL before awaiting
 `headerValue('referer')` let the assertion run against an empty referer list
 and pass with the fix removed. The URL and its referer are now recorded together
 and the test asserts the list is non-empty; with the fix removed it fails.
+
+### 6ac. MeshCore routing scopes (`bayarea.17`)
+
+The Bay Area is discussing regional scopes. A 240 s GoMesh sample on 2026-10-28
+had 1,793 receipts from 43 observers: 1,676 flood, 117 direct, 0 transport
+(scoped). Scope recognition is in place before repeaters start scoping, so the
+change shows up in the panel as it happens.
+
+Ported from upstream `7b0fb8b9`, `61445069`, `70350c0d` and `ca02b86d` into
+`lib/meshcore-scopes.js`:
+
+- The names file is JSON (`{"regions": [...]}`, optional `_comment`) instead of
+  YAML, so no YAML parser is added. Validation matches upstream: firmware name
+  characters, at most 30 bytes, at most 1024 names, no duplicates, file at most
+  64 KiB, strict UTF-8. A configured file that is bad stops startup.
+- Keys and transport codes come from the decoder (`calcRegionKey`,
+  `calcTransportCode`), looked up at call time, with keys cached per name.
+- `parsePacketHex` now returns `transportCodes`. The scope is set only for
+  receipts that match a session, just before `recordReceipt`; a repeat receipt
+  from the same observer adds a scope it has not already recorded.
+- `meshcoreScopes` is stored per receipt, kept in retained results and served by
+  `/api/session`; the snapshot carries `meshcoreScopes: {enabled, count}`.
+- Not taken: upstream's `seenAt >= session.expiresAt` guard from `ca02b86d`. It
+  changes when a session stops accepting receipts, which is unrelated to scopes
+  and would move the fork's own expiry behaviour.
+
+Labels (UI says heard, never seen): the name without `#`; `Ambiguous: a or b`;
+`Unscoped`; `Scoped, name not listed`; `Scoped (name matching off)`;
+`Not recorded` for receipts from before the change; `Unavailable`. The summary
+line under the observer count lists each label with its observer count, most
+common first. Scope names keep their configured case; only the `MeshCore scope:`
+label uses the small-note capitals.
+
+To turn name matching on, the droplet `.env` needs
+`MESHCORE_REGION_SCOPES_FILE=regions/us-ca-meshcore-scopes.json`, and the file
+already carries the California tree above. Without it, scoped receipts still show
+`Scoped (name matching off)`.
+
+The shipped names file lists 73 names copied unchanged from
+[matkam/meshcore-settings](https://github.com/matkam/meshcore-settings)
+`data/regions.json` (MIT, commit `7ec46658`, dated 2026-10-24): the root chain
+`us`, `west`, `california`, then its 70 regions, areas and counties, for example
+`bayarea`, `northbay`, `sonoma`, `centralcoast`, `slo`, `slonorth`. That project
+calls them a community convention, not a standard; re-copy the list if the Bay
+Area settles on other names. With 73 names a scoped packet's 16-bit code matches
+a second name now and then: 28 of 20,000 random `sonoma` packets (0.14%) read
+`Ambiguous`, and the rest read `sonoma`.
+
+Also in this change: the region groups were renamed to the same tree (section 3),
+`express` 5.3.0, and a GitLab CI `audit` job that fails on
+a moderate or worse production advisory and prints dev advisories only.
+
+Tests: `test/meshcore-scopes.test.js` (8, including an integration test that
+fails with the server hook removed) and the smoke test `MeshCore scope lines
+summarise the code and label each heard copy`.
 
 ## 7. Deployment
 

@@ -13,6 +13,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
+import { loadMeshcoreScopes, recognizeMeshcoreScope, recordedMeshcoreScopes } from './lib/meshcore-scopes.js';
 import express from 'express';
 import qrcode from 'qrcode-generator';
 import mqtt from 'mqtt';
@@ -394,6 +395,13 @@ const OBSERVER_RESEED_TIMEOUT_MS = Math.max(30000, envNumber('OBSERVER_RESEED_TI
 const OBSERVER_RESEED_BOOT_DELAY_MS = Math.max(0, envNumber('OBSERVER_RESEED_BOOT_DELAY_MS', 60000));
 const ADMIN_TOKEN = envValue('ADMIN_TOKEN', '');
 const UPLINK_CODES_FILE = envValue('UPLINK_CODES_FILE', '');
+// Optional list of public MeshCore routing-scope names (ported from upstream v1.4.0, JSON
+// here). Blank disables name matching; a configured file that is missing or invalid fails
+// startup. Display only: recognition never changes scoring, observer selection or the map.
+const MESHCORE_REGION_SCOPES_FILE = envValue('MESHCORE_REGION_SCOPES_FILE', '');
+const meshcoreScopes = loadMeshcoreScopes(
+  MESHCORE_REGION_SCOPES_FILE ? resolveAppPath(MESHCORE_REGION_SCOPES_FILE) : '',
+);
 const REGION_FALLBACK = envValue('REGION_FALLBACK', '').trim().toLowerCase();
 const REGION_NAME_PROPERTY = envValue('REGION_NAME_PROPERTY', 'name');
 const REGION_GROUP_PROPERTY = envValue('REGION_GROUP_PROPERTY', 'group');
@@ -1344,6 +1352,7 @@ function serializeSessionRecord(session) {
       count: Math.max(1, Number(receipt.count || 1)),
       topic: String(receipt.topic || ''),
       messageHash: normalizeMessageHash(receipt.messageHash),
+      meshcoreScopes: recordedMeshcoreScopes(receipt.meshcoreScopes),
       packetType: receipt.packetType,
       channelName: String(receipt.channelName || ''),
       rssi: Number.isFinite(Number(receipt.rssi)) ? Number(receipt.rssi) : null,
@@ -1386,6 +1395,7 @@ function restoreSessionRecord(rawSession) {
       count: Math.max(1, Number(rawReceipt?.count || 1)),
       topic: String(rawReceipt?.topic || ''),
       messageHash: normalizeMessageHash(rawReceipt?.messageHash || rawSession.messageHash || ''),
+      meshcoreScopes: recordedMeshcoreScopes(rawReceipt?.meshcoreScopes),
       packetType: rawReceipt?.packetType ?? null,
       channelName: String(rawReceipt?.channelName || rawSession.channelName || ''),
       rssi: Number.isFinite(Number(rawReceipt?.rssi)) ? Number(rawReceipt.rssi) : null,
@@ -2376,10 +2386,12 @@ function parsePacketHex(rawHex) {
   const payloadType = (header >> 2) & 0x0F;
   offset += 1;
 
+  let transportCodes = null;
   if (routeType === 0 || routeType === 3) {
     if (bytes.length < offset + 4) {
       return null;
     }
+    transportCodes = [bytes.readUInt16LE(offset), bytes.readUInt16LE(offset + 2)];
     offset += 4;
   }
 
@@ -2413,6 +2425,7 @@ function parsePacketHex(rawHex) {
   }
   return {
     routeType,
+    transportCodes,
     payloadType,
     pathHashSize: pathInfo.hashSize,
     path,
@@ -3179,6 +3192,7 @@ function serializeSession(session, request = null) {
         count: report.count,
         topic: report.topic,
         messageHash: report.messageHash,
+        meshcoreScopes: recordedMeshcoreScopes(report.meshcoreScopes),
         packetType: report.packetType,
         channelName: report.channelName,
         rssi: report.rssi,
@@ -3398,6 +3412,7 @@ function snapshotPayload() {
     results: {
       retentionSeconds: Math.round(RESULT_RETENTION_MS / 1000),
     },
+    meshcoreScopes: { enabled: meshcoreScopes.enabled, count: meshcoreScopes.regions.length },
     defaultObserverKeys: defaultTarget.keys,
     defaultObservers,
     defaultObserverSource: defaultTarget.source,
@@ -3680,6 +3695,14 @@ function recordReceipt(session, packetInfo) {
   const observer = observerState.get(packetInfo.observerKey);
   const label = observer?.name || shortKey(packetInfo.observerKey);
   if (existing) {
+    // Distinct scopes accumulate: a later copy forwarded under another scope (or none)
+    // is added beside the first, never written over it.
+    const scopes = recordedMeshcoreScopes(existing.meshcoreScopes);
+    if (packetInfo.meshcoreScope
+      && !scopes.some((scope) => JSON.stringify(scope) === JSON.stringify(packetInfo.meshcoreScope))) {
+      scopes.push(packetInfo.meshcoreScope);
+    }
+    existing.meshcoreScopes = scopes;
     existing.lastSeenAt = packetInfo.seenAt;
     existing.count += 1;
     existing.path = [...packetInfo.path];
@@ -3709,6 +3732,7 @@ function recordReceipt(session, packetInfo) {
     count: 1,
     topic: packetInfo.topic,
     messageHash: packetInfo.messageHash,
+    meshcoreScopes: recordedMeshcoreScopes(packetInfo.meshcoreScope ? [packetInfo.meshcoreScope] : null),
     packetType: packetInfo.packetType,
     channelName: packetInfo.channelName,
     rssi: packetInfo.rssi,
@@ -3913,6 +3937,12 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
     session.sender = sender;
   }
 
+  // Scope comparisons are receipt work, not general channel-traffic work, so they run only
+  // once the packet has matched a live session. Each observer's copy is checked on its own:
+  // a repeater can forward a message under a different scope than the sender used.
+  packetInfo.meshcoreScope = decodedGroup
+    ? recognizeMeshcoreScope(meshcoreScopes, parsePacketHex(raw))
+    : { state: 'unavailable', names: [] };
   if (recordReceipt(session, packetInfo)) {
     logger.debug(
       `[session] receipt ${session.code} from ${shortKey(packetInfo.observerKey)} (${messageHash || 'no-hash'})`,
