@@ -2643,8 +2643,22 @@ function renderMeshcoreScopes(session) {
   element.textContent = meshcoreScopeSummary(Array.isArray(session?.receipts) ? session.receipts : []);
 }
 
+// Passive repeater scope evidence (bayarea.18): network-wide, not per code. The list
+// itself is the public JSON route; this line only counts it.
+function renderScopeEvidence() {
+  const element = document.querySelector('#scope-evidence');
+  const evidence = state.snapshot?.scopeEvidence;
+  if (!element || !evidence) return;
+  const days = Number(evidence.retentionDays) || 7;
+  const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+  element.textContent = `last ${plural(days, 'day')}: ${Number(evidence.scopedAdvertisers) || 0} of `
+    + `${plural(Number(evidence.advertisers) || 0, 'advertiser')} heard with a default scope · `
+    + `${plural(Number(evidence.forwarderHops) || 0, 'path hop')} heard forwarding scoped traffic`;
+}
+
 function renderReceipts(session) {
   renderMeshcoreScopes(session);
+  renderScopeEvidence();
   const allReceipts = Array.isArray(session?.receipts) ? session.receipts : [];
   // Built off-DOM and committed only when the markup changed: the list was
   // emptied and rebuilt on every five-second poll and every socket snapshot,

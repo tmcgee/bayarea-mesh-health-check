@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 import { loadMeshcoreScopes, recognizeMeshcoreScope, recordedMeshcoreScopes } from './lib/meshcore-scopes.js';
+import { createScopeEvidence, advertRoleName } from './lib/scope-evidence.js';
 import express from 'express';
 import qrcode from 'qrcode-generator';
 import mqtt from 'mqtt';
@@ -402,6 +403,25 @@ const MESHCORE_REGION_SCOPES_FILE = envValue('MESHCORE_REGION_SCOPES_FILE', '');
 const meshcoreScopes = loadMeshcoreScopes(
   MESHCORE_REGION_SCOPES_FILE ? resolveAppPath(MESHCORE_REGION_SCOPES_FILE) : '',
 );
+// Passive per-repeater scope evidence (bayarea.18, lib/scope-evidence.js): advert default
+// scopes and repeaters in scoped flood paths. Defaults to a file beside the activity file.
+const MESHCORE_SCOPE_EVIDENCE_FILE_PATH = resolveAppPath(envValue(
+  'MESHCORE_SCOPE_EVIDENCE_FILE',
+  path.join(path.dirname(OBSERVER_ACTIVITY_FILE_PATH), 'meshcore-scope-evidence.json'),
+));
+const scopeEvidence = createScopeEvidence();
+function loadScopeEvidenceFile() {
+  try {
+    if (fs.existsSync(MESHCORE_SCOPE_EVIDENCE_FILE_PATH)) {
+      scopeEvidence.restore(JSON.parse(fs.readFileSync(MESHCORE_SCOPE_EVIDENCE_FILE_PATH, 'utf8')));
+      return;
+    }
+  } catch (error) {
+    console.warn(`[scopes] ignoring unreadable ${MESHCORE_SCOPE_EVIDENCE_FILE_PATH}: ${error.message}`);
+  }
+  scopeEvidence.restore(null);
+}
+loadScopeEvidenceFile();
 const REGION_FALLBACK = envValue('REGION_FALLBACK', '').trim().toLowerCase();
 const REGION_NAME_PROPERTY = envValue('REGION_NAME_PROPERTY', 'name');
 const REGION_GROUP_PROPERTY = envValue('REGION_GROUP_PROPERTY', 'group');
@@ -1222,6 +1242,7 @@ let reseedLastSeededFingerprint;
 let reseedLastLoggedPass;
 let observerActivityWriteTimer = null;
 let resultsWriteTimer = null;
+let scopeEvidenceWriteTimer = null;
 
 function writeJsonFileAtomic(filePath, payload) {
   const body = `${JSON.stringify(payload, null, 2)}\n`;
@@ -1477,6 +1498,11 @@ function flushScheduledWrites() {
     clearTimeout(resultsWriteTimer);
     resultsWriteTimer = null;
     writeResultsFile();
+  }
+  if (scopeEvidenceWriteTimer) {
+    clearTimeout(scopeEvidenceWriteTimer);
+    scopeEvidenceWriteTimer = null;
+    writeJsonFileAtomic(MESHCORE_SCOPE_EVIDENCE_FILE_PATH, scopeEvidence.serialize());
   }
 }
 
@@ -1774,6 +1800,25 @@ function writeObserverActivityFile() {
     version: 1,
     observers,
   });
+}
+
+// Written at most every 30 s: evidence accrues on many packets, losing a few seconds of
+// it on a crash costs nothing.
+function scheduleScopeEvidenceWrite() {
+  if (scopeEvidenceWriteTimer) {
+    return;
+  }
+  scopeEvidenceWriteTimer = setTimeout(() => {
+    scopeEvidenceWriteTimer = null;
+    scopeEvidence.prune();
+    writeJsonFileAtomic(MESHCORE_SCOPE_EVIDENCE_FILE_PATH, scopeEvidence.serialize());
+  }, 30000);
+  scopeEvidenceWriteTimer.unref?.();
+}
+
+function scopeEvidenceExcludedKey(key) {
+  const observer = observerState.get(key);
+  return Boolean(observer && observerIsOutOfArea(observer));
 }
 
 function scheduleObserverActivityWrite() {
@@ -3413,6 +3458,7 @@ function snapshotPayload() {
       retentionSeconds: Math.round(RESULT_RETENTION_MS / 1000),
     },
     meshcoreScopes: { enabled: meshcoreScopes.enabled, count: meshcoreScopes.regions.length },
+    scopeEvidence: scopeEvidence.summary({ isExcludedKey: scopeEvidenceExcludedKey }),
     defaultObserverKeys: defaultTarget.keys,
     defaultObservers,
     defaultObserverSource: defaultTarget.source,
@@ -3834,6 +3880,23 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
     broadcastSnapshot(true);
   }
 
+  // Scope evidence, from in-area observers only (out-of-area observers are never shown).
+  // Only adverts and transport packets are parsed; ordinary traffic costs one check.
+  if (!observerIsOutOfArea(observer)
+    && (packet.payloadType === MeshCorePayloadType.Advert || packet.routeType === 0 || packet.routeType === 3)) {
+    const advert = packet.payloadType === MeshCorePayloadType.Advert && decodedPayloadObserverKey
+      ? {
+          publicKey: decodedPayloadObserverKey,
+          name: decodedAppData?.name ? String(decodedAppData.name).trim().slice(0, 64) : null,
+          role: advertRoleName(decodedAppData?.deviceRole),
+          timestamp: Number.isFinite(Number(decodedPayload?.timestamp)) ? Number(decodedPayload.timestamp) : null,
+        }
+      : null;
+    if (scopeEvidence.notePacket(meshcoreScopes, parsePacketHex(raw), advert)) {
+      scheduleScopeEvidenceWrite();
+    }
+  }
+
   const path = Array.isArray(packet.path)
     ? packet.path.map((value) => normalizePathHop(value)).filter(Boolean)
     : [];
@@ -4194,6 +4257,18 @@ app.get('/api/reseed-status', (request, response) => {
   response.json(publicReseedStatus());
 });
 
+// Public and read-only: per-repeater scope evidence. Names are public (CoreScope lists
+// them). ?all=1 also lists advertisers heard without a scope.
+app.get('/api/meshcore-scope-evidence', (request, response) => {
+  response.json({
+    matching: { enabled: meshcoreScopes.enabled, count: meshcoreScopes.regions.length },
+    ...scopeEvidence.view({
+      includeUnscoped: request.query.all === '1',
+      isExcludedKey: scopeEvidenceExcludedKey,
+    }),
+  });
+});
+
 app.get('/api/bootstrap', (request, response) => {
   response.json(serializeBootstrap(request));
 });
@@ -4508,6 +4583,11 @@ export function resetTestState() {
   if (!DISABLE_RESULTS_FILE_WRITES) {
     writeResultsFile();
   }
+  if (scopeEvidenceWriteTimer) {
+    clearTimeout(scopeEvidenceWriteTimer);
+    scopeEvidenceWriteTimer = null;
+  }
+  scopeEvidence.restore(null);
   lastSnapshotSentAt = 0;
 }
 

@@ -4,6 +4,29 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.18
+
+- repeater scope evidence, passive, display only. Two sources from the packets
+  in-area observers already publish: the default scope a node's own flood
+  adverts carry (`region default`), and the hops in the path of a scoped flood
+  packet, which each repeated that scope. Firmware before v1.10 repeats scoped
+  packets without checking, so a forwarding hop is evidence, not proof. Hops
+  are hash prefixes; candidates are repeaters whose adverts were heard here.
+  Kept 7 days in `data/meshcore-scope-evidence.json` (new
+  `MESHCORE_SCOPE_EVIDENCE_FILE`), written at most every 30 s. New public
+  read-only route `GET /api/meshcore-scope-evidence` (`?all=1` also lists
+  advertisers heard without a scope); the snapshot carries
+  `scopeEvidence {retentionDays, advertisers, scopedAdvertisers, forwarderHops}`
+  and the Observer Reports panel a `Repeater scopes:` line with a link to the
+  route. Out-of-area observers contribute nothing. Never changes scoring.
+- `mqtt` 5.15.2 to 5.16.1 (`package.json` `^5.16.1`). 5.16.0 fixes six
+  broker-side advisories (four High, all reached through MQTT 5; this app
+  connects with the library default, MQTT 3.1.1) and drops `number-allocator`
+  and `js-sdsl`. Its behaviour changes do not touch this app: it never reads
+  negotiated values back off `options`. 5.16.1 reconnects instead of ending a
+  client whose stream is already destroyed.
+- service worker cache `mesh-health-check-pwa-v6-bayarea`.
+
 ## v1.3.8+bayarea.17
 
 - MeshCore routing scope recognition, ported from upstream `7b0fb8b9`,

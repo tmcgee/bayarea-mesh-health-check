@@ -140,6 +140,17 @@ leading `#`. The Bay Area file is `regions/us-ca-meshcore-scopes.json`, 73 names
 copied from [matkam/meshcore-settings](https://github.com/matkam/meshcore-settings);
 it is not part of the re-seed fingerprint.
 
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MESHCORE_SCOPE_EVIDENCE_FILE` | `meshcore-scope-evidence.json` beside `OBSERVER_ACTIVITY_FILE` | Where per-repeater scope evidence is kept (7 days). Created on the first scoped or advert packet; an unreadable file is logged and ignored. |
+
+Scope evidence needs no setting to run. It records each advertiser heard by an
+in-area observer with the scope its own flood advert carried, and each path hop
+of a scoped flood packet with the scopes it repeated. Names are matched with the
+`MESHCORE_REGION_SCOPES_FILE` list; without one, scoped entries read `disabled`.
+A code that matches no listed name is kept as `(unlisted)`. Read it at
+`GET /api/meshcore-scope-evidence` (`?all=1` adds advertisers heard unscoped).
+
 ## Turnstile
 
 | Variable | Default | Purpose |

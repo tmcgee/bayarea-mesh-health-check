@@ -3368,7 +3368,12 @@ body[data-ui-theme="light"] .additional-info[open] > .additional-info__summary {
   margin: 6px 0 14px;
 }
 
-.scope-summary #meshcore-scopes {
+.reports-panel #meshcore-scope-note {
+  margin-bottom: 4px;
+}
+
+.scope-summary #meshcore-scopes,
+.scope-summary #scope-evidence {
   text-transform: none;
   letter-spacing: 0.04em;
 }

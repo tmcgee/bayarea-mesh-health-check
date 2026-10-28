@@ -1611,6 +1611,39 @@ Tests: `test/meshcore-scopes.test.js` (8, including an integration test that
 fails with the server hook removed) and the smoke test `MeshCore scope lines
 summarise the code and label each heard copy`.
 
+### 6ad. Repeater scope evidence and `mqtt` 5.16.1 (`+bayarea.18`)
+
+Approved by the user on 2026-10-28 as the long brief for these ingest hooks.
+MQTT never reports a node's region settings: a 120 s capture of 64 GoMesh status
+messages from 23 observers held no region or scope field. The only direct routes
+are a 0-hop `Discover Regions` request or the admin CLI. This change collects
+what the packet stream does show, in `lib/scope-evidence.js`:
+
+- **Advert default scope.** A node with `region default <name>` sends its own
+  flood adverts as transport packets with that scope's code. Each advertiser is
+  recorded with the scope of its latest advert, counted once per advert
+  timestamp however many observers hear it, with name and role from the advert.
+- **Forwarding.** Every hop in the path of a scoped flood (`TransportFlood`)
+  packet repeated it. Each hop prefix is credited once per distinct packet with
+  the matched name, the candidate names when ambiguous, or `(unlisted)`.
+  Direct-route paths are not used. Firmware before v1.10 repeats scoped
+  packets without checking, so this is evidence, not proof.
+- `recognizeMeshcoreScopeAnyType` in `lib/meshcore-scopes.js` does the same
+  match for any payload type; `recognizeMeshcoreScope` still answers only for
+  GroupText. One recognition per distinct packet (1,024-entry cache).
+- The hook in `handlePacketMessage` runs before the GroupText filter, only for
+  in-area observers and only for adverts or transport packets. A replay of
+  1,283 live GoMesh packets took 101 ms in total; it found 4 adverts (one heard
+  as 86 copies, counted once) and no scoped packets.
+
+`mqtt` 5.16.1: 5.16.0 fixes six broker-side advisories and changes how a client
+treats protocol violations. `startMqtt()` passes `clientId`, `clean`,
+`reconnectPeriod`, `connectTimeout` and credentials and reads nothing back off
+`options`, so no code change.
+
+Tests: `test/scope-evidence.test.js` (5, through `ingestMqttMessage`, including
+out-of-area exclusion with the shipped uplink table and a restart).
+
 ## 7. Deployment
 
 Nothing region-specific here, but for your setup: Docker Compose on port 3090 behind Cloudflare, `TRUST_PROXY=1`, Turnstile keys set since it'll be internet-facing, and keep `./data` mounted so observer profiles, activity history, and share links survive rebuilds.
