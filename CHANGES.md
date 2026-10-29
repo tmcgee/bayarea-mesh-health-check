@@ -4,6 +4,18 @@ Versions of this fork carry the upstream release they are built on plus a
 Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
 adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
 
+## v1.3.8+bayarea.22
+
+- read-only scope drift check, `npm run check:scopes`
+  (`scripts/check-scopes.js`). Fetches matkam/meshcore-settings
+  `data/regions.json` at the pinned commit (`7ec46658`) and at `main` (or
+  `--ref`), and reports whether the shipped 73-name list still matches the pin,
+  codes added, removed or probably renamed (same outline counties), and kept
+  codes whose parent, name, kind or outline changed. Exit 0 no drift, 1 drift,
+  2 failed. Never run by the server or the test suites; writes nothing. New
+  offline `test/check-scopes.test.js` with a byte copy of the pinned file as a
+  fixture. `npm run check` also syntax-checks the script.
+
 ## v1.3.8+bayarea.21
 
 - parent regions: Bay Area (San Francisco, Peninsula, South Bay, East Bay,

@@ -139,7 +139,8 @@ shows `Unscoped`. Names follow the firmware rules: at most 30 bytes, no
 duplicates, at most 1024 names, file at most 64 KiB. Written with or without the
 leading `#`. The Bay Area file is `regions/us-ca-meshcore-scopes.json`, 73 names
 copied from [matkam/meshcore-settings](https://github.com/matkam/meshcore-settings);
-it is not part of the re-seed fingerprint.
+it is not part of the re-seed fingerprint. `npm run check:scopes` reports, read
+only, whether that repo has moved on from the pinned commit.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

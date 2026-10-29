@@ -1727,6 +1727,43 @@ upstream, and until it lands the scope name stays `centralvalley`.
 - Scoring, "Regions Reached" and outline width are unchanged: they still count
   and draw groups.
 
+### 6ah. Scope drift check (`+bayarea.22`)
+
+`regions/us-ca-meshcore-scopes.json` is a hand copy of the codes in
+matkam/meshcore-settings `data/regions.json` at `7ec46658`. Reading that file
+from GitHub at run time was rejected: a fetch failure or a format change would
+stop startup (a configured scope file that is bad is fatal by design), and a
+rename upstream would change matching and the `#<region>-healthcheck` channels
+without a release, while the app's own groups, parent regions and outlines in
+`regions/us-ca-bay-area.geojson` stayed as committed.
+
+Instead the copy stays pinned and `npm run check:scopes`
+(`scripts/check-scopes.js`) reports drift. It is run on purpose only, never by
+the server, `npm test` or the smoke suite, and it writes nothing and sends no
+credentials. It fetches the file at the pin (`PINNED_COMMIT`, full SHA) and at a
+ref (`main` by default, `--ref <sha>`, `--json`), and reports:
+
+- whether the shipped list still equals the pinned codes, in order;
+- codes added or removed, and probable renames (a removed and an added code with
+  the same outline counties, e.g. `centralvalley` -> `sanjoaquinvalley`);
+- kept codes whose parent, display name, kind or outline counties changed, which
+  is where the app's region groups can fall out of step;
+- a `format` other than 2.
+
+Exit 0 no drift, 1 drift, 2 the check failed. Branch names are resolved through
+the unauthenticated GitHub API (60 calls an hour per IP); when that is
+unavailable it notes so and compares the ref as given. On 2026-10-28, `main`
+was still `7ec46658`: no drift. Against `c942659` (before the tree was seeded
+at counties) it reports 183 codes and exits 1.
+
+`test/check-scopes.test.js` runs offline against
+`test/fixtures/meshcore-settings-regions-7ec46658.json`, a byte copy of the
+pinned file: the shipped list equals it in order, the script's pin matches the
+commit named in the shipped file's `_comment`, and synthetic renames, additions,
+removals, moves, outline changes, tags and a new format are each reported. Moving
+the pin means replacing the fixture, the shipped list and `PINNED_COMMIT`
+together, as one reviewed release.
+
 ## 7. Deployment
 
 Nothing region-specific here, but for your setup: Docker Compose on port 3090 behind Cloudflare, `TRUST_PROXY=1`, Turnstile keys set since it'll be internet-facing, and keep `./data` mounted so observer profiles, activity history, and share links survive rebuilds.
