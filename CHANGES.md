@@ -1,8 +1,42 @@
 # Changes
 
-Versions of this fork carry the upstream release they are built on plus a
-Bay Area build identity: `1.3.8+bayarea.1` is upstream `v1.3.8` with the Bay Area
-adaptation applied. Sections named `vX.Y.Z` alone are upstream's own releases.
+From 1.0.0 this fork numbers its own releases with SemVer and carries the
+upstream base as build metadata: `1.0.0+upstream.1.3.8` is fork release 1.0.0,
+built on upstream `v1.3.8`. Major breaks existing setups, minor adds features,
+patch fixes. Releases before 1.0.0 were `1.3.8+bayarea.1` to `1.3.8+bayarea.22`:
+upstream `v1.3.8` plus a Bay Area build counter. Sections named `vX.Y.Z` alone are
+upstream's own releases.
+
+## v1.0.0+upstream.1.3.8
+
+- versioning: the fork's own SemVer from here, `MAJOR.MINOR.PATCH+upstream.X.Y.Z`.
+  `lib/version.js` gains `upstreamBase()`; `npm run docker:tag` prints
+  `1.0.0-upstream.1.3.8` and docker-compose defaults to it. The version link's
+  tooltip reads "Based on yellowcooln/meshcore-health-check v1.3.8 (MIT)".
+- public repository: changes are made on GitLab and mirrored to
+  github.com/tmcgee/bayarea-mesh-health-check. The footer's Version and Source
+  link the GitHub mirror; README and HOWTO clone from it.
+- removed upstream's `.github/FUNDING.yml` (its Sponsor button would appear on
+  the mirror) and `.github/dependabot.yml` (it targets a `dev` branch this fork
+  does not have). The workflows stay; Actions is off on the mirror and the Docker
+  publish job only runs in upstream's repository.
+
+- licensing and attribution. Upstream added an MIT license on 2026-10-29
+  (commit `e9017b4`, in reply to issue #77). New `LICENSE` is upstream's MIT text
+  with its copyright line, "yellowcooln and contributors", plus one for the Bay
+  Area changes. New `NOTICE.md` credits upstream and Boston, and lists bundled
+  data and dependencies: matkam/meshcore-settings (MIT, notice included) for
+  the scope names and test fixture, Census TIGERweb county boundaries (public
+  domain), and the npm packages' licenses. `package.json` and the lockfile gain
+  `"license": "MIT"`; `package.json` gains `repository`.
+- README rewritten as the Bay Area fork: what it is based on, where it branched,
+  the Boston origin and Nick D credit, what changed, and a License section.
+  README and HOWTO clone this repository and say the published Docker images are
+  upstream's, not this fork's.
+- footer: Version links to this fork's CHANGES.md (it linked upstream's, which
+  has no `+bayarea` versions) and Source names this repository. Upstream is
+  credited in the Version tooltip and in README, NOTICE and LICENSE.
+- service worker cache `mesh-health-check-pwa-v10-bayarea`.
 
 ## v1.3.8+bayarea.22
 

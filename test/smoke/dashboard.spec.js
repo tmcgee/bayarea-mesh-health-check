@@ -90,9 +90,9 @@ function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key') {
       eyebrow: 'MeshCore Observer Coverage',
       headline: 'Check your mesh reach.',
       description: 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
-      version: '1.3.8+bayarea.2',
-      repoUrl: 'https://github.com/yellowcooln/meshcore-health-check',
-      changesUrl: 'https://github.com/yellowcooln/meshcore-health-check/blob/main/CHANGES.md',
+      version: '1.0.0+upstream.1.3.8',
+      repoUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check',
+      changesUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md',
       map: mapTiles(cartoBasemapKey),
     },
     mqtt: { connected: false, broker: 'mqtt.example.test', topics: ['meshcore/BOS/#'] },
@@ -205,7 +205,7 @@ test('dashboard loads and creates a session code', async ({ page }) => {
   await expect(page).toHaveTitle(/MeshCore Observer Coverage/i);
   await expect(page.getByText('MeshCore Observer Coverage')).toBeVisible();
   await expect(page.getByRole('button', { name: 'New Code' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'yellowcooln/meshcore-health-check' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'tmcgee/bayarea-mesh-health-check' })).toBeVisible();
   await expect(page.locator('#session-code')).toContainText('MHC-', { timeout: 10000 });
   await expect(page.getByRole('button', { name: 'Copy' })).toBeVisible();
   await expect(page.getByText('Where the observers are')).toBeVisible();
@@ -1146,6 +1146,11 @@ test('footer entries break between items, never inside one', async ({ page }) =>
   await page.goto('/app');
   const entries = page.locator('.site-footer .footer-entry');
   await expect(entries).toHaveCount(2);
+  await expect(page.locator('#site-version-note')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md');
+  await expect(page.locator('#repo-note-link')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check');
+  await expect(page.locator('#upstream-note-link')).toHaveCount(0);
+  await expect(page.locator('#site-version-note')).toHaveText('Version: v1.0.0+upstream.1.3.8');
+  await expect(page.locator('#site-version-note')).toHaveAttribute('title', 'Based on yellowcooln/meshcore-health-check v1.3.8 (MIT)');
 
   const tops = [];
   for (const entry of await entries.all()) {
@@ -1155,16 +1160,18 @@ test('footer entries break between items, never inside one', async ({ page }) =>
     const box = await entry.evaluate((el) => ({
       whiteSpace: getComputedStyle(el).whiteSpace,
       lineTops: [...new Set([...el.getClientRects()].map((rect) => Math.round(rect.top)))],
+      right: el.getBoundingClientRect().right,
     }));
     expect(box.whiteSpace).toBe('nowrap');
     expect(box.lineTops).toHaveLength(1);
+    expect(box.right).toBeLessThanOrEqual(390);
     tops.push(box.lineTops[0]);
   }
 
-  // At 390px the two entries do not fit side by side, so the break has to land
-  // between them. Previously it landed inside the second one, stranding the
+  // At 390px the entries do not all fit side by side, so breaks have to land
+  // between them. Previously one landed inside the second entry, stranding the
   // "Source:" label a line above its repo slug.
-  expect(new Set(tops).size).toBe(2);
+  expect(new Set(tops).size).toBeGreaterThan(1);
 });
 
 test('escapes untrusted observer labels in timeline and map popups', async ({ page }) => {
@@ -1232,8 +1239,8 @@ test('escapes untrusted observer labels in timeline and map popups', async ({ pa
           description: 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
           version: '1.3.5',
           coreScopeUrl: 'https://analyzer.example.test',
-          repoUrl: 'https://github.com/yellowcooln/meshcore-health-check',
-          changesUrl: 'https://github.com/yellowcooln/meshcore-health-check/blob/main/CHANGES.md',
+          repoUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check',
+          changesUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md',
         },
         mqtt: {
           connected: false,

@@ -28,8 +28,8 @@ image directly.
 1. Clone the repo:
 
 ```bash
-git clone https://github.com/yellowcooln/meshcore-health-check.git
-cd meshcore-health-check
+git clone https://github.com/tmcgee/bayarea-mesh-health-check.git
+cd bayarea-mesh-health-check
 ```
 
 2. Copy the template:
@@ -78,9 +78,11 @@ docker compose up -d --build
 
 5. Open `http://localhost:3090` or put the service behind your reverse proxy.
 
-### Run The Published Image
+### Run The Published Image (upstream only)
 
-Use this path when you do not want to keep a git checkout on the host.
+This runs upstream's published image, which does not include the Bay Area
+changes; this fork has no published image. Use this path when you want upstream's
+app without keeping a git checkout on the host.
 
 1. Create a new folder:
 
@@ -119,12 +121,11 @@ docker compose up -d
 
 Image tags:
 
-- `main` is the production branch.
-- `yellowcooln/meshcore-health-check:latest` is the Docker image tag built
-  from `main`.
-- `yellowcooln/meshcore-health-check:dev` is the Docker image tag built from
-  `dev`.
-- Release tags and short-SHA tags are also published by the Docker workflow.
+- This Bay Area fork publishes no image. The `yellowcooln/meshcore-health-check`
+  images (`latest` from upstream `main`, `dev` from upstream `dev`, plus release
+  and short-SHA tags) are upstream's app without the Bay Area changes. To run
+  this fork in Compose, build it from source as above; `docker-compose.yml` tags
+  the build `bayarea-mesh-health-check:<version>`.
 
 ## User Flow
 

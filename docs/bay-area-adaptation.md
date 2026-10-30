@@ -1764,6 +1764,56 @@ removals, moves, outline changes, tags and a new format are each reported. Movin
 the pin means replacing the fixture, the shipped list and `PINNED_COMMIT`
 together, as one reviewed release.
 
+### 6ai. License, attribution and versioning (v1.0.0+upstream.1.3.8)
+
+Until 2026-10-29 upstream had no license, so the default applied: all rights
+reserved, and GitHub's terms allow viewing and forking on GitHub only. That ruled
+out publishing this fork. Issue
+[#77](https://github.com/yellowcooln/meshcore-health-check/issues/77) asked for one;
+yellowcooln added MIT the same evening (commit `e9017b4`, "Copyright (c) 2026
+yellowcooln and contributors") and closed it.
+
+MIT asks only that the copyright and permission notice travel with copies:
+
+- `LICENSE`: upstream's text, unchanged, with a second copyright line for the
+  Bay Area changes. Upstream's line stays first; we cannot relicense its code.
+- `NOTICE.md`: the fork's lineage (branched at `v1.3.7` `b478e83`, merged `v1.3.8`
+  `8bab150`), the Boston origin and Nick D, then bundled data and dependencies.
+  matkam/meshcore-settings is MIT too, and the fork ships a byte copy of its
+  `data/regions.json` as a test fixture, so its notice is quoted in full.
+- `package.json` and the lockfile: `"license": "MIT"`, matching upstream's own
+  change; `repository` points here.
+- README and HOWTO: rewritten so a visitor learns first that this is a fork and
+  of what. Upstream's Docker images are labelled as upstream's: running them gives
+  the Boston app, not this one.
+- Footer: `Version` linked upstream's CHANGES.md, which has no `+bayarea`
+  entries, and `Source` named only upstream (`REPO_URL` was hard-coded). Now
+  both link this fork's GitHub mirror. A third `Based on` entry was tried and
+  dropped: the version string carries the upstream base, and the Version link's
+  tooltip reads "Based on yellowcooln/meshcore-health-check v1.3.8 (MIT)".
+  The MIT notice is one click away through Source.
+
+**Versioning.** `+bayarea.N` was right for a thin patch set on 1.3.8, but every
+release looked the same size: a one-line fix and regional scoring would both
+be N+1. From 1.0.0 the fork has its own SemVer (major breaks setups: env, API
+or stored data; minor adds a feature; patch fixes) and keeps the upstream base
+as build metadata, `1.0.0+upstream.1.3.8`. Build metadata does not affect
+precedence, so our number orders releases while the base still says what to
+diff against. Merging upstream changes the metadata, say to `+upstream.1.4.1`,
+and bumps our number by what the merge brings. `1.0.0` rather than `2.0.0`
+because a 2.0.0 next to upstream's 1.4.1 reads as upstream's next major.
+
+**Hosting.** GitLab stays the source, with CI and the commit path; a push mirror
+keeps github.com/tmcgee/bayarea-mesh-health-check current, where the MeshCore
+community already is. Issues live on GitHub (off on GitLab); Actions is off on
+GitHub so GitLab's pipeline is the only CI. The history is the fork's own, not
+upstream's, so the mirror is not a GitHub fork of yellowcooln's repo.
+
+`test/license.test.js` fails if upstream's copyright line, the MIT notice, the
+package `license` or matkam's notice goes missing, or if upstream's FUNDING or
+Dependabot files come back. The footer smoke test expects two entries, checks
+their links and the tooltip, and keeps each on one line inside 390px.
+
 ## 7. Deployment
 
 Nothing region-specific here, but for your setup: Docker Compose on port 3090 behind Cloudflare, `TRUST_PROXY=1`, Turnstile keys set since it'll be internet-facing, and keep `./data` mounted so observer profiles, activity history, and share links survive rebuilds.

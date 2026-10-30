@@ -1,21 +1,42 @@
-# Mesh Health Check
+# Bay Area Mesh Health Check
 
 [![pipeline status](https://gitlab.com/tmcgee/bayarea-mesh-health-check/badges/main/pipeline.svg)](https://gitlab.com/tmcgee/bayarea-mesh-health-check/-/pipelines?ref=main)
 [![node](https://img.shields.io/badge/node-%3E%3D18-3c873a)](package.json)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Mesh Health Check is a self-hosted web app for measuring MeshCore message
-coverage across MQTT-connected observers. It generates a short code, watches the
-configured MeshCore group channel for that code, then scores how many selected
-observers reported the matching message hash.
+A self-hosted web app for measuring MeshCore message coverage across
+MQTT-connected observers. It generates a short code, watches the configured
+MeshCore group channel for that code, then scores how many active observers
+heard the matching message.
 
-The idea for this app came from Nick D from Boston.
+This is the **Bay Area** fork of
+[yellowcooln/meshcore-health-check](https://github.com/yellowcooln/meshcore-health-check),
+live at [healthcheck.bayareameshcore.org](https://healthcheck.bayareameshcore.org/).
+It branched at upstream `v1.3.7`, merged `v1.3.8`, and brings later upstream work
+in one feature at a time. The original app came from the Boston MeshCore
+community ([healthcheck.bostonme.sh](https://healthcheck.bostonme.sh/)), and the idea
+for it came from Nick D. Thanks to yellowcooln and the upstream contributors.
 
-This fork is the **Bay Area** deployment, live at
-https://healthcheck.sonomamesh.com. See [`docs/`](docs/) for how it was retargeted
-from the Boston original and how to self-host it behind a Cloudflare named tunnel.
+What the fork changes: Bay Area region boundaries and groups, scoring against
+every active observer instead of a fixed top 10, MeshCore region scopes and
+regional test channels, and a reworked dashboard. [CHANGES.md](CHANGES.md)
+lists each release and [docs/bay-area-adaptation.md](docs/bay-area-adaptation.md)
+explains why.
+
+Versions are this fork's own SemVer with the upstream base as build metadata:
+`1.0.0+upstream.1.3.8` is fork release 1.0.0, built on upstream `v1.3.8`. Major
+releases break existing setups (env, API or stored data), minor ones add
+features, patches fix. Releases before 1.0.0 were `1.3.8+bayarea.1` to `.22`.
+
+Changes are made on [GitLab](https://gitlab.com/tmcgee/bayarea-mesh-health-check)
+and mirrored to [GitHub](https://github.com/tmcgee/bayarea-mesh-health-check).
+Issues are welcome on GitHub; pull requests there are applied on GitLab.
+[docs/deploy-cloudflare-tunnel.md](docs/deploy-cloudflare-tunnel.md) covers
+self-hosting.
 
 Other community Health Checks:
 
+- https://healthcheck.bostonme.sh/ - Boston, the upstream original
 - https://healthcheck.ukmesh.com/ - UK Mesh Health Check
 
 ![A finished run: 100 percent, 31 of 31 observers, 8 of 8 regions](image1.png)
@@ -26,13 +47,15 @@ Other community Health Checks:
 
 - creates short-lived health-check codes
 - matches MeshCore `GroupText` packets from MQTT
-- scores observer coverage against a default or custom observer set
+- scores coverage against every observer active in the last few minutes
 - shows receipts, paths, RSSI, SNR, timing, repeaters, and map coverage
 - estimates packet-path distance between known observers, with mile or
   kilometer labels
 - learns observer names and locations from MQTT metadata
-- tracks recent observer activity and can auto-select the top observers
-- supports region filters from GeoJSON boundary files
+- tracks recent observer activity
+- groups observers into regions, subregions and parent regions from a GeoJSON
+  boundary file
+- recognises MeshCore region scopes and `#<region>-healthcheck` test channels
 - keeps retained `/share/:sessionId` result links
 - supports Cloudflare Turnstile and installable PWA behavior
 
@@ -41,18 +64,21 @@ Other community Health Checks:
 Clone the repo and run the local Compose build:
 
 ```bash
-git clone https://github.com/yellowcooln/meshcore-health-check.git
-cd meshcore-health-check
+git clone https://github.com/tmcgee/bayarea-mesh-health-check.git
+cd bayarea-mesh-health-check
 cp .env.example .env
 docker compose up -d --build
 ```
 
+`.env.bayarea.example` is the Bay Area configuration to start from instead.
+The GitLab URL clones the same history.
+
 Default local URL: `http://localhost:3090`
 
-To run the published Docker image instead, use the production branch image
-`yellowcooln/meshcore-health-check:latest`, which is built from `main`, or
-`yellowcooln/meshcore-health-check:dev`, which is built from `dev`. See
-[HOWTO.md](HOWTO.md) for a full image-based Compose example.
+This fork publishes no Docker image; Compose builds it locally. The
+`yellowcooln/meshcore-health-check` images on Docker Hub are upstream's app, not
+this fork. The Bay Area deployment runs as a systemd service; see
+[docs/deploy-cloudflare-tunnel.md](docs/deploy-cloudflare-tunnel.md).
 
 At minimum, configure MQTT and the test channel in `.env`:
 
@@ -85,11 +111,11 @@ read [ENVIRONMENT.md](ENVIRONMENT.md).
 ## Runtime Notes
 
 - The app only decodes the configured test channel.
-- Docker Compose is the supported runtime path.
+- Docker Compose and the systemd unit in `scripts/` are both supported.
 - Keep `data/` mounted if observer profiles, observer activity, and share links
   must survive rebuilds.
-- Leave `KNOWN_OBSERVERS` blank to let the app auto-select the top recent
-  observers. Set it to full pubkeys for a fixed default target set.
+- `OBSERVER_TARGET_MODE=active` (the Bay Area setting) scores every active
+  observer. `KNOWN_OBSERVERS` still pins a fixed set if you need one.
 - Set `OBSERVER_RETENTION_SECONDS=0` to keep known observers visible regardless
   of age.
 - Share links use retained server-side results and remain available until
@@ -120,7 +146,14 @@ The app uses `@michaelhart/meshcore-decoder` for runtime MeshCore packet
 decoding. A small postinstall compatibility patch keeps the published CommonJS
 build loading cleanly on Node 18.
 
-## Star History
+## License
+
+MIT; see [LICENSE](LICENSE). Upstream code is Copyright (c) 2026 yellowcooln and
+contributors; the Bay Area changes are Copyright (c) 2026 Tim McGee.
+[NOTICE.md](NOTICE.md) lists the bundled data and dependencies and their licenses.
+
+## Upstream Star History
+
 
 <a href="https://www.star-history.com/?repos=yellowcooln%2Fmeshcore-health-check&type=date&legend=top-left">
  <picture>

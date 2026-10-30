@@ -1668,8 +1668,9 @@ function applySiteBranding(snapshot) {
   const version = String(site.version || '').trim() || '0.0.0';
   const eyebrow = site.eyebrow || 'MeshCore Observer Coverage';
   const headline = site.headline || 'Check your mesh reach.';
-  const repoUrl = site.repoUrl || 'https://github.com/yellowcooln/meshcore-health-check';
+  const repoUrl = site.repoUrl || 'https://github.com/tmcgee/bayarea-mesh-health-check';
   const changesUrl = site.changesUrl || `${repoUrl}/blob/main/CHANGES.md`;
+  const upstreamBase = (version.match(/\+upstream\.(\d+\.\d+\.\d+)$/) || [])[1] || '';
   const externalUrl = String(site.externalLinkUrl || '').trim();
   const externalLabel = String(site.externalLinkLabel || '').trim() || 'External Link';
   const description = site.description
@@ -1681,6 +1682,9 @@ function applySiteBranding(snapshot) {
   ui.repoNoteLink.href = repoUrl;
   ui.siteVersionNote.href = changesUrl;
   ui.siteVersionNote.textContent = `Version: v${version}`;
+  ui.siteVersionNote.title = upstreamBase
+    ? `Based on yellowcooln/meshcore-health-check v${upstreamBase} (MIT)`
+    : 'Based on yellowcooln/meshcore-health-check (MIT)';
   if (externalUrl) {
     ui.externalLink.href = externalUrl;
     ui.externalLink.textContent = externalLabel;

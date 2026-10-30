@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { dockerTag, isLegalDockerTag } from '../lib/version.js';
+import { dockerTag, isLegalDockerTag, upstreamBase } from '../lib/version.js';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = path.resolve(TEST_DIR, '..');
@@ -107,15 +107,16 @@ test('without a key both basemaps fall back to OpenStreetMap', async () => {
   assert.equal(map.darkAttribution, '&copy; OpenStreetMap contributors');
 });
 
-test('the fork version records its upstream base and its own build', () => {
-  assert.match(packageJson.version, /^\d+\.\d+\.\d+\+bayarea\.\d+$/);
-  const [upstreamBase] = packageJson.version.split('+');
-  assert.equal(upstreamBase, '1.3.8');
+test('the fork version is its own SemVer with the upstream base as metadata', () => {
+  assert.match(packageJson.version, /^\d+\.\d+\.\d+\+upstream\.\d+\.\d+\.\d+$/);
+  assert.equal(upstreamBase(packageJson.version), '1.3.8');
+  assert.equal(upstreamBase('1.3.8+bayarea.22'), '');
+  assert.equal(upstreamBase('1.1.0+upstream.1.4.1'), '1.4.1');
 });
 
 test('the version maps to a legal Docker tag', () => {
   const tag = dockerTag(packageJson.version);
-  assert.equal(tag, '1.3.8-bayarea.22');
+  assert.equal(tag, '1.0.0-upstream.1.3.8');
   assert.ok(isLegalDockerTag(tag));
   assert.ok(!tag.includes('+'), 'Docker tags cannot contain +');
   assert.throws(() => dockerTag('1.3.8+bay area'), /legal Docker tag/);

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Prints the Docker-safe form of the package version, e.g.
-//   1.3.8+bayarea.1  ->  1.3.8-bayarea.1
+//   1.0.0+upstream.1.3.8  ->  1.0.0-upstream.1.3.8
 // Docker tags cannot contain '+'. Use this in build/push commands:
 //   docker build -t bayarea-mesh-health-check:"$(npm run -s docker:tag)" .
 

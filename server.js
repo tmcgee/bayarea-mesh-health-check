@@ -443,7 +443,11 @@ const SITE_URL = normalizeSiteUrl(envValue('SITE_URL', ''));
 const CORESCOPE_URL = normalizeSiteUrl(envValue('CORESCOPE_URL', ''));
 const DISTANCE_UNIT = normalizeDistanceUnit(envValue('DISTANCE_UNIT', 'mi'));
 const PWA_APP_NAME = 'Mesh Reach';
-const REPO_URL = 'https://github.com/yellowcooln/meshcore-health-check';
+// Footer links. Source and changes point at this fork; Based on credits upstream
+// (MIT, yellowcooln and contributors), which this fork branched from at v1.3.7.
+// Public face is the GitHub mirror; changes are made on GitLab and pushed there.
+const REPO_URL = 'https://github.com/tmcgee/bayarea-mesh-health-check';
+const CHANGES_URL = `${REPO_URL}/blob/main/CHANGES.md`;
 // 'expected' plots only the scoring target set (upstream default); 'directory'
 // plots every observer that has coordinates, which is what the coverage map is
 // usually read as meaning.
@@ -3510,7 +3514,7 @@ function snapshotPayload() {
       headline: APP_HEADLINE,
       description: APP_DESCRIPTION,
       repoUrl: REPO_URL,
-      changesUrl: `${REPO_URL}/blob/main/CHANGES.md`,
+      changesUrl: CHANGES_URL,
       coreScopeUrl: CORESCOPE_URL,
       externalLinkUrl: EXTERNAL_LINK_URL,
       externalLinkLabel: EXTERNAL_LINK_LABEL,
