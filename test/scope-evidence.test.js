@@ -1,6 +1,7 @@
 // Passive repeater scope evidence (bayarea.18): advert default scopes and scoped
 // flood paths, end to end through ingestMqttMessage, plus the store on its own.
 import './support/isolate-env.js';
+import { scopeTreeText } from './support/scope-tree.js';
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -35,7 +36,7 @@ process.env.UPLINK_CODES_FILE = 'regions/us-ca-uplink-codes.json';
 fs.writeFileSync(process.env.OBSERVERS_FILE, '{}\n');
 fs.writeFileSync(process.env.OBSERVER_ACTIVITY_FILE, '{"version":1,"observers":{}}\n');
 fs.writeFileSync(process.env.RESULTS_FILE, '{"version":1,"sessions":[]}\n');
-fs.writeFileSync(scopesFile, JSON.stringify({ regions: NAMES }));
+fs.writeFileSync(scopesFile, scopeTreeText(NAMES));
 
 const OBSERVER = 'A1'.repeat(32);
 const REPEATER = 'B2'.repeat(32);

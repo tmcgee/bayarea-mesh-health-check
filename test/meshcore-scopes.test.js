@@ -2,6 +2,7 @@
 // test/region-scopes.test.js (v1.4.0): JSON instead of YAML, the fork's session API,
 // and a check that the shipped Bay Area file loads.
 import './support/isolate-env.js';
+import { scopeTreeText } from './support/scope-tree.js';
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
@@ -39,7 +40,7 @@ process.env.TEST_CHANNEL_SECRET = 'E6D973AAC5101145AD3A3F3A0B3D52EB';
 fs.writeFileSync(process.env.OBSERVERS_FILE, '{}\n');
 fs.writeFileSync(process.env.OBSERVER_ACTIVITY_FILE, '{"version":1,"observers":{}}\n');
 fs.writeFileSync(process.env.RESULTS_FILE, '{"version":1,"sessions":[]}\n');
-fs.writeFileSync(scopesFile, JSON.stringify({ regions: SCOPE_NAMES }));
+fs.writeFileSync(scopesFile, scopeTreeText(SCOPE_NAMES));
 
 let importCounter = 0;
 function importServer(scopesSetting) {
@@ -99,21 +100,34 @@ test('the shipped Bay Area scopes file loads', () => {
   assert.ok(['known', 'ambiguous'].includes(result.state));
 });
 
-test('the loader accepts only a bounded public-name JSON list and fails loudly otherwise', () => {
-  assert.deepEqual(loadMeshcoreScopes(''), { enabled: false, regions: [] });
+test('the loader accepts only a bounded regions.json tree of public names and fails loudly otherwise', () => {
+  assert.deepEqual(loadMeshcoreScopes(''), { enabled: false, regions: [], places: [] });
   const file = path.join(tempDir, 'loader.json');
   const load = (text) => {
     fs.writeFileSync(file, text);
     return loadMeshcoreScopes(file);
   };
-  assert.deepEqual(load('{"regions": []}'), { enabled: true, regions: [] });
-  assert.deepEqual(load('{"_comment": "why", "regions": ["#Fictional-Cloud", "Fictional-Moon"]}').regions,
-    ['#Fictional-Cloud', '#Fictional-Moon']);
+  assert.deepEqual(load(scopeTreeText([])), { enabled: true, regions: [], places: [] });
+  // The root chain, nested places and tags are all names, in tree order. Other
+  // top-level keys (notice, limits, levels, ...) are upstream's and ignored.
+  const nested = {
+    format: 2,
+    notice: 'generated',
+    root: [{ code: 'fictional-root' }],
+    places: [{ code: '#Fictional-Cloud', children: [{ code: 'Fictional-Moon' }] }],
+    tags: [{ code: 'fictional-tag' }],
+  };
+  assert.deepEqual(load(JSON.stringify(nested)).regions,
+    ['#fictional-root', '#Fictional-Cloud', '#Fictional-Moon', '#fictional-tag']);
+  const tree = (places) => JSON.stringify({ format: 2, root: [], places });
   for (const text of [
-    '[', '', '[]', '{"regions": "no"}', '{"regions": [null]}', '{"regions": [42]}', '{"regions": [""]}',
-    '{"regions": ["#"]}', '{"regions": ["$private"]}', '{"regions": ["#$private"]}', '{"regions": ["*"]}',
-    '{"regions": [" a"]}', '{"regions": ["a", "#a"]}', '{"regions": [], "extra": true}',
-    '{"regions": [], "_comment": 5}', `{"regions": [${Array(1025).fill('"a"').join(',')}]}`, ' '.repeat(65537),
+    '[', '', '[]', '{}', '{"regions": ["a"]}', JSON.stringify({ format: 3, root: [], places: [] }),
+    JSON.stringify({ format: 2, places: [] }), JSON.stringify({ format: 2, root: [], places: 'no' }),
+    tree([null]), tree([{ code: 42 }]), tree([{ code: '' }]), tree([{ name: 'no code' }]),
+    tree([{ code: '#' }]), tree([{ code: '$private' }]), tree([{ code: '#$private' }]), tree([{ code: '*' }]),
+    tree([{ code: ' a' }]), tree([{ code: 'a' }, { code: '#a' }]),
+    tree([{ code: 'a', children: [{ code: 'a' }] }]),
+    tree(Array.from({ length: 1025 }, (_, index) => ({ code: `n${index}` }))), ' '.repeat(65537),
   ]) {
     assert.throws(() => load(text), /MESHCORE_REGION_SCOPES_FILE/, text.slice(0, 60));
   }
@@ -126,7 +140,7 @@ test('the loader accepts only a bounded public-name JSON list and fails loudly o
 test('names follow firmware characters and the 30-byte storage limit, never truncated', () => {
   const file = path.join(tempDir, 'names.json');
   const load = (name) => {
-    fs.writeFileSync(file, JSON.stringify({ regions: [name] }));
+    fs.writeFileSync(file, scopeTreeText([name]));
     return loadMeshcoreScopes(file).regions;
   };
   for (const name of ['Fictional-Cloud', '#Fictional-Moon', 'a'.repeat(30), `#${'a'.repeat(29)}`,
@@ -219,7 +233,7 @@ test('region keys are prepared once per list, not per packet', () => {
   });
   try {
     const file = path.join(tempDir, 'cache.json');
-    fs.writeFileSync(file, JSON.stringify({ regions: regionNames }));
+    fs.writeFileSync(file, scopeTreeText(regionNames));
     const config = loadMeshcoreScopes(file);
     assert.equal(keyCalls, 2, 'keys prepared at startup');
     const packet = { routeType: 0, payloadType: 5, payloadBytes, transportCodes: [code, 42] };
@@ -300,7 +314,7 @@ test('receipts record each observer\'s scope without changing the score, and sto
   api.flushScheduledWrites();
 
   // Stored observations are never recalculated against a changed or disabled file.
-  fs.writeFileSync(scopesFile, JSON.stringify({ regions: ['#Fictional-Replacement'] }));
+  fs.writeFileSync(scopesFile, scopeTreeText(['#Fictional-Replacement']));
   for (const setting of ['', scopesFile]) {
     const reloaded = await importServer(setting);
     const url = await listen(reloaded);
@@ -327,7 +341,7 @@ test('receipts record each observer\'s scope without changing the score, and sto
   } finally {
     await close(legacy);
   }
-  fs.writeFileSync(scopesFile, JSON.stringify({ regions: SCOPE_NAMES }));
+  fs.writeFileSync(scopesFile, scopeTreeText(SCOPE_NAMES));
 });
 
 test('bootstrap reports whether name matching is on and how many names it knows', async () => {

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Read-only drift check for the MeshCore scope names (+bayarea.22).
 //
-// regions/us-ca-meshcore-scopes.json is a hand copy of the codes in
-// matkam/meshcore-settings data/regions.json at PINNED_COMMIT. This script fetches that
-// file twice from GitHub, at the pinned commit and at a ref (default `main`), and reports:
-//   1. whether the shipped list still equals the pinned file's codes, in order;
+// regions/us-ca-meshcore-scopes.json is matkam/meshcore-settings data/regions.json at
+// PINNED_COMMIT, byte for byte (1.1.0; it was a flattened copy of the codes before). This
+// script fetches that file twice from GitHub, at the pinned commit and at a ref (default
+// `main`), and reports:
+//   1. whether the shipped file is still byte-identical to the pinned file;
 //   2. codes added, removed or probably renamed between the two commits;
 //   3. codes kept but moved, re-outlined or renamed in display, which can leave the
 //      app's own region groups (regions/us-ca-bay-area.geojson) out of step.
@@ -22,9 +23,16 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { flattenTree } from '../lib/meshcore-scopes.js';
+
+export { flattenTree };
+
 export const REPO = 'matkam/meshcore-settings';
 export const REPO_PATH = 'data/regions.json';
 export const PINNED_COMMIT = '7ec46658920c0166a2398b841cd78d4c7f18b432';
+// SHA-256 of data/regions.json at PINNED_COMMIT, so the offline test can tell the shipped
+// file is still that file byte for byte without fetching it.
+export const PINNED_SHA256 = '29283fdd87576b543321f634f1b2f96cea291cfe0bf8faf8872883b519f0e614';
 export const KNOWN_FORMAT = 2;
 const MAX_BYTES = 1024 * 1024;
 const TIMEOUT_MS = 15000;
@@ -32,53 +40,18 @@ const TIMEOUT_MS = 15000;
 const here = dirname(fileURLToPath(import.meta.url));
 export const SHIPPED_FILE = join(here, '..', 'regions', 'us-ca-meshcore-scopes.json');
 
-// The scope names a tree defines, in the order the shipped file uses: root chain, places
-// depth-first, then tags. Each entry keeps what the comparison needs.
-export function flattenTree(doc) {
-  if (!doc || typeof doc !== 'object' || !Array.isArray(doc.root) || !Array.isArray(doc.places)) {
-    throw new Error('not a regions tree: expected `root` and `places` arrays');
-  }
-  const entries = [];
-  const add = (place, parent, type) => {
-    if (!place || typeof place.code !== 'string' || !place.code) {
-      throw new Error(`${type} without a code under ${parent || 'the root'}`);
-    }
-    entries.push({
-      code: place.code,
-      name: typeof place.name === 'string' ? place.name : '',
-      parent,
-      type,
-      kind: typeof place.kind === 'string' ? place.kind : '',
-      outline: Array.isArray(place.outline) ? [...place.outline].map(String).sort() : [],
-    });
-  };
-  let parent = '';
-  for (const root of doc.root) {
-    add(root, parent, 'root');
-    parent = root.code;
-  }
-  const walk = (places, under) => {
-    for (const place of places) {
-      add(place, under, 'place');
-      if (Array.isArray(place.children)) walk(place.children, place.code);
-    }
-  };
-  walk(doc.places, '');
-  for (const tag of Array.isArray(doc.tags) ? doc.tags : []) add(tag, '', 'tag');
-  return entries;
-}
-
 const sameList = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
 const describe = (entry) => `${entry.code} (${entry.name || 'no name'}${entry.parent ? `, under ${entry.parent}` : ''})`;
 
-// Pure comparison; no I/O. `shipped` is the app's list of names, `pinned` and `current`
-// are parsed regions.json documents.
-export function compareScopes({ shipped, pinned, current }) {
+// Pure comparison; no I/O. `shipped` is the shipped file's text, `pinned` and `current`
+// are parsed regions.json documents and `pinnedText` the pinned file's text.
+export function compareScopes({ shipped, pinned, current, pinnedText }) {
   const pinnedEntries = flattenTree(pinned);
   const currentEntries = flattenTree(current);
   const pinnedCodes = pinnedEntries.map((entry) => entry.code);
   const currentCodes = currentEntries.map((entry) => entry.code);
-  const shippedNames = shipped.map((name) => String(name).replace(/^#/, ''));
+  const shippedNames = flattenTree(JSON.parse(shipped)).map((entry) => entry.code);
+  const shippedIdentical = shipped === pinnedText;
 
   const pinnedByCode = new Map(pinnedEntries.map((entry) => [entry.code, entry]));
   const currentByCode = new Map(currentEntries.map((entry) => [entry.code, entry]));
@@ -114,7 +87,7 @@ export function compareScopes({ shipped, pinned, current }) {
     if (fields.length) changed.push({ code: entry.code, fields });
   }
 
-  const shippedMatchesPin = sameList(shippedNames, pinnedCodes);
+  const shippedMatchesPin = shippedIdentical;
   const order = !added.length && !removed.length && !renamed.length && !sameList(pinnedCodes, currentCodes);
   const formats = { pinned: pinned.format, current: current.format };
   const formatChanged = current.format !== KNOWN_FORMAT;
@@ -144,8 +117,8 @@ export function formatReport(report, { pinnedRef, currentRef }) {
   lines.push(`  counts: shipped ${report.counts.shipped}, pinned ${report.counts.pinned}, current ${report.counts.current}`);
   lines.push(`  file dated: pinned ${report.updated.pinned ?? '?'}, current ${report.updated.current ?? '?'}`);
   lines.push(report.shippedMatchesPin
-    ? '  shipped list equals the pinned codes, in order'
-    : `  shipped list differs from the pin: only shipped [${report.shippedOnly.join(', ')}], only pinned [${report.pinOnly.join(', ')}]`);
+    ? '  shipped file is byte-identical to the pinned file'
+    : `  shipped file differs from the pin: only shipped [${report.shippedOnly.join(', ')}], only pinned [${report.pinOnly.join(', ')}]`);
   if (report.formatChanged) {
     lines.push(`  format is ${report.formats.current}, not ${KNOWN_FORMAT}: the comparison below may be incomplete`);
   }
@@ -196,7 +169,7 @@ async function resolveRef(ref) {
 async function fetchTree(ref) {
   const text = await fetchText(`https://raw.githubusercontent.com/${REPO}/${ref}/${REPO_PATH}`);
   try {
-    return JSON.parse(text);
+    return { doc: JSON.parse(text), text };
   } catch {
     throw new Error(`${REPO_PATH} at ${ref} is not valid JSON`);
   }
@@ -217,10 +190,10 @@ function parseArgs(argv) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const shipped = JSON.parse(readFileSync(SHIPPED_FILE, 'utf8')).regions;
+  const shipped = readFileSync(SHIPPED_FILE, 'utf8');
   const currentRef = await resolveRef(options.ref);
   const [pinned, current] = await Promise.all([fetchTree(PINNED_COMMIT), fetchTree(currentRef)]);
-  const report = compareScopes({ shipped, pinned, current });
+  const report = compareScopes({ shipped, pinned: pinned.doc, current: current.doc, pinnedText: pinned.text });
   const refs = { pinnedRef: PINNED_COMMIT, currentRef };
   process.stdout.write(options.json
     ? `${JSON.stringify({ ...refs, ...report }, null, 2)}\n`

@@ -1567,8 +1567,9 @@ change shows up in the panel as it happens.
 Ported from upstream `7b0fb8b9`, `61445069`, `70350c0d` and `ca02b86d` into
 `lib/meshcore-scopes.js`:
 
-- The names file is JSON (`{"regions": [...]}`, optional `_comment`) instead of
-  YAML, so no YAML parser is added. Validation matches upstream: firmware name
+- The names file is JSON instead of YAML, so no YAML parser is added. It was a
+  flat `{"regions": [...]}` list until 1.1.0 and is now the meshcore-settings
+  tree itself (section 6aj). Validation matches upstream: firmware name
   characters, at most 30 bytes, at most 1024 names, no duplicates, file at most
   64 KiB, strict UTF-8. A configured file that is bad stops startup.
 - Keys and transport codes come from the decoder (`calcRegionKey`,
@@ -1743,7 +1744,7 @@ the server, `npm test` or the smoke suite, and it writes nothing and sends no
 credentials. It fetches the file at the pin (`PINNED_COMMIT`, full SHA) and at a
 ref (`main` by default, `--ref <sha>`, `--json`), and reports:
 
-- whether the shipped list still equals the pinned codes, in order;
+- whether the shipped file is still byte-identical to the pinned file;
 - codes added or removed, and probable renames (a removed and an added code with
   the same outline counties, e.g. `centralvalley` -> `sanjoaquinvalley`);
 - kept codes whose parent, display name, kind or outline counties changed, which
@@ -1756,13 +1757,14 @@ unavailable it notes so and compares the ref as given. On 2026-10-28, `main`
 was still `7ec46658`: no drift. Against `c942659` (before the tree was seeded
 at counties) it reports 183 codes and exits 1.
 
-`test/check-scopes.test.js` runs offline against
-`test/fixtures/meshcore-settings-regions-7ec46658.json`, a byte copy of the
-pinned file: the shipped list equals it in order, the script's pin matches the
-commit named in the shipped file's `_comment`, and synthetic renames, additions,
-removals, moves, outline changes, tags and a new format are each reported. Moving
-the pin means replacing the fixture, the shipped list and `PINNED_COMMIT`
-together, as one reviewed release.
+`test/check-scopes.test.js` runs offline. Since 1.1.0 the shipped file is the
+pinned file itself, so it doubles as the fixture (the separate byte copy in
+`test/fixtures/` is gone): its SHA-256 equals `PINNED_SHA256` in the script, and
+synthetic renames, additions, removals, moves, outline changes, tags, a hand
+edit and a new format are each reported. Moving the pin means replacing the
+shipped file and updating `PINNED_COMMIT` and `PINNED_SHA256` together, as one
+reviewed release. (Before 1.1.0 the shipped file was a flat list of the codes
+and the check compared that list with the pinned codes in order.)
 
 ### 6ai. License, attribution and versioning (v1.0.0+upstream.1.3.8)
 
@@ -1813,6 +1815,119 @@ upstream's, so the mirror is not a GitHub fork of yellowcooln's repo.
 package `license` or matkam's notice goes missing, or if upstream's FUNDING or
 Dependabot files come back. The footer smoke test expects two entries, checks
 their links and the tooltip, and keeps each on one line inside 390px.
+
+### 6aj. Regional scoring (v1.1.0+upstream.1.3.8)
+
+Until now the region chips only filtered what the map and receipts show. The
+score was always All. The upstream app's observer checkboxes did change the
+score, by narrowing the code's target, and §6f/§6g removed that because a
+one-observer selection produced "1 / 1, 100% VERY HEALTHY". This brings
+regional scores back without narrowing anything:
+
+- **The score is a view.** The code always targets every active observer. The
+  server scores every scope that has an observer in the scoring set and sends
+  them as `scopeScores` (`parent:<name>`, `group:<name>`, `region:<name>`). The
+  chip picks which one the card shows; All is the top-level score. Changing the
+  chip after a run rescores instantly, and going back to All always shows the
+  full score.
+- **Placement as of creation.** `activeObserverRegions` snapshots each active
+  observer's subregion, group and whether it came from coordinates, and is
+  persisted with the session. The scope denominator is those observers plus any
+  that reported, matching All's "active at creation ∪ reported". Observers that
+  were not active at creation, and sessions from older builds, use the current
+  placement. Uplink-inferred observers have a group but no subregion, so they
+  count for their group and its parent only.
+- **Small samples are shown, not graded.** The minimum stays 3
+  (`OBSERVER_MIN_SCORING_SET`). Below it the card shows the count and the
+  percentage with "Small sample: N observers" in place of a grade word. The
+  percentage is what was heard; only the grade was misleading. A scope with
+  nobody active reads "No active observers" and shows no percentage.
+- **Regions Reached** counts one level below the scope: groups for All and a
+  parent, subregions for a group, and is hidden for a single subregion. It keeps
+  the coordinates-only rule.
+- **Unchanged:** the upstream allowlist API (`expectedObserverKeys` on session
+  creation) still narrows the target as before, and history and share entries
+  keep the All score.
+
+- **No region in links or the address bar.** Decided 2026-10-30, for the
+  sharer and the recipient alike: a shared link always opens on All, choosing a
+  region changes only that view, and the address bar is never rewritten for a
+  region. After creation nothing writes to a session, so a recipient cannot
+  affect the shared one. Storing the
+  region in the session instead was considered and rejected: saved at link
+  copy it needs a creator token (the link holds the session ID) and a second
+  share overwrites the first; saved at creation it records the region when the
+  test started, not when it was shared.
+
+- **Location opt-in.** "Use my location" and "Use map center" sit under the
+  chips on both pages and select a chip exactly as a click would, so the score
+  and the map follow; the URL does not. Nothing asks for
+  location until the button is pressed; each press takes a fresh fix
+  (`maximumAge: 0`), and nothing is remembered, so a reload opens on All.
+  - Privacy: the point is tested in the browser. `GET /api/region-locator`
+    serves the subregion outlines, `{name, group, scope?}`, for the groups the
+    map shows (the same rule as `/api/region-boundaries`), fetched on the first
+    press. Coordinates are never sent or stored, and the pick never reaches a
+    link. `Permissions-Policy` is `geolocation=(self)` (it was
+    `geolocation=()`, which would have blocked the prompt).
+  - Size: the full outlines are ~500 KB of coastline, so each ring is
+    simplified (Douglas-Peucker, 0.0005 deg, ~50 m) and rounded to 4 decimals:
+    ~310 KB, ~75 KB gzipped. Neighbours are simplified independently, so a
+    point within ~50 m of a shared border can fall between them; the browser
+    then uses the exact dissolved group outline it already has and picks the
+    group.
+  - Outcomes: a subregion with a chip is selected; one with no observers
+    selects its group ("No observers in Napa yet, so showing North Bay.");
+    outside every group on the map says so and leaves the selection alone. A
+    subregion below `OBSERVER_MIN_SCORING_SET` offers "Widen to North Bay (4
+    observers)", counted from the chips. A browser fix worse than 1 km is
+    labelled approximate. Declined or failed location points at "Use map
+    center", which needs no permission. "Use my location" is hidden without a
+    secure context; "Use map center" without a map.
+  - Regional channel: on the dashboard (not on a shared result) a subregion
+    whose scope has a channel in `testChannel.regional.names` adds "Testing
+    Sonoma? Send to #sonoma-healthcheck."
+  - Scopes come from the scope file's own county outlines, with no table.
+    `regions/us-ca-meshcore-scopes.json` is now matkam/meshcore-settings
+    `data/regions.json` at `7ec46658` byte for byte (32,284 bytes, under the
+    loader's 64 KiB cap). Until now it was a flattened list of the 73 codes,
+    which dropped each place's name and `outline` counties. That was a mistake
+    in `+bayarea.19`: it only saved a tree reader, which `check:scopes` already
+    had, and it is what forced a hand-written subregion table here. The loader
+    now reads the tree (format 2 only; the flat list is no longer accepted)
+    through the same `flattenTree` the drift check uses, and
+    `scopeForSubregion` picks the deepest place whose `outline` lists the
+    subregion, else a place named like it. Outline first matters: the place
+    named "San Luis Obispo" is the city (`slocity`); the county is `slo`. All 32
+    resolve: Sonoma `sonoma` (not `northbay`), San Mateo `peninsula`, Santa Clara
+    `southbay`, San Francisco `sf`, Kings `kingscounty`, Alpine `eastsierra`
+    (its outline lists Mono, Inyo, Alpine), Yuba-Sutter `yubasutter` by name.
+    Codes in the boundary file instead of names were rejected: chips, share
+    links and stored scope scores key on the names, and editing the boundary
+    file changes the reseed fingerprint.
+  - JSON, not YAML (decided 2026-10-30). Both upstreams use YAML, in different
+    roles. matkam edits `data/regions.yaml` (35,896 bytes, the same tree plus
+    editing notes) by hand and generates `data/regions.json` from it; the YAML
+    header says the JSON "is what the site loads and what anything outside this
+    repo should consume", and its CI checks the two agree. yellowcooln's
+    `region-scopes.example.yml` is a different, flat `regions: []` list read with
+    the `yaml` package; it has no places or outlines, so using it would bring
+    back a hand-written subregion table. So the fork ships matkam's generated
+    JSON unchanged and adds no `yaml` dependency. The cost: the file-reading part
+    of `lib/meshcore-scopes.js` now differs from upstream's (JSON tree, not a
+    YAML list), so upstream changes there need a hand merge; matching,
+    validation and the recorded states still follow upstream.
+
+Tests: `test/scope-scores.test.js` (server: every scope, the creation snapshot,
+a node that moves mid-test, a late reporter, persistence). The smoke test
+'region chips switch the score between scopes and back to All' covers All, a
+parent, a group, a subregion, a one-observer subregion, a scope with nobody
+active, and back to All, at 390px. 'a region never reaches the share link or the
+address bar' covers the no-region rule. `test/region-locator.test.js` checks the
+scope file against the region list, the simplifier, known town centres placing
+in the right county, and the header; three smoke tests cover the location
+pick, widen, outside, declined permission and map center, and the dashboard's
+channel suggestion.
 
 ## 7. Deployment
 

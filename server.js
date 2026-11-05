@@ -13,7 +13,9 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { loadMeshcoreScopes, recognizeMeshcoreScope, recordedMeshcoreScopes } from './lib/meshcore-scopes.js';
+import {
+  loadMeshcoreScopes, recognizeMeshcoreScope, recordedMeshcoreScopes, scopeForSubregion,
+} from './lib/meshcore-scopes.js';
 import { createScopeEvidence, advertRoleName } from './lib/scope-evidence.js';
 import { buildRegionalChannels, compareIntendedScope } from './lib/regional-test-channels.js';
 import express from 'express';
@@ -906,6 +908,24 @@ function loadRegionBoundaries() {
 
 const regionBoundaries = loadRegionBoundaries();
 
+// Subregion -> MeshCore routing scope (1.1.0, location opt-in), read from the scope
+// file's own county outlines (scopeForSubregion), so there is no table to keep. Only
+// suggests a regional channel after the browser picks a subregion; without a scope
+// file the locator still works and suggests nothing. Display only.
+function loadSubregionScopes() {
+  const scopes = new Map();
+  for (const boundary of regionBoundaries) {
+    const scope = scopeForSubregion(meshcoreScopes, boundary.name);
+    if (scope) scopes.set(boundary.name, scope.replace(/^#/, ''));
+  }
+  if (meshcoreScopes.enabled) {
+    logger.info(`[regions] ${scopes.size} of ${regionBoundaries.length} subregions have a MeshCore scope`);
+  }
+  return scopes;
+}
+
+const subregionScopes = loadSubregionScopes();
+
 // Group -> parent region, from the features. A parent is a property of the
 // group, so the first feature that names one decides it; a feature of the same
 // group naming a different parent is a data error, logged and ignored.
@@ -1080,6 +1100,90 @@ function groupGeometry(boundaries) {
 }
 
 let regionGeometryCache = { key: '', payload: null };
+
+// ---------- Region locator (1.1.0, location opt-in) ----------
+// The browser picks a subregion from "Use my location" or "Use map center" by
+// testing the point itself, so the coordinates never reach the server. It needs
+// the subregion outlines, which /api/region-boundaries deliberately does not
+// carry (it serves dissolved group outlines). This copy is fetched only on the
+// first click, holds only the groups the map shows, and is simplified: the
+// bundled file is ~500 KB of coastline at full detail, ~310 KB (~75 KB gzipped)
+// at REGION_LOCATOR_TOLERANCE. Neighbours are simplified independently, so a
+// point within that tolerance of a shared border can fall in a sliver between
+// them; the browser then falls back to the group outline it already has.
+const REGION_LOCATOR_TOLERANCE = 0.0005; // degrees, ~50 m
+const REGION_LOCATOR_DECIMALS = 4; // ~11 m
+
+// Douglas-Peucker over one ring, iterative so a long coastline cannot overflow
+// the stack. The first and last points are kept, so a closed ring stays closed.
+function simplifyRing(ring, tolerance) {
+  if (!Array.isArray(ring) || ring.length < 5) {
+    return ring;
+  }
+  const keep = new Uint8Array(ring.length);
+  keep[0] = 1;
+  keep[ring.length - 1] = 1;
+  const stack = [[0, ring.length - 1]];
+  while (stack.length) {
+    const [first, last] = stack.pop();
+    const [ax, ay] = ring[first];
+    const [bx, by] = ring[last];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const length = Math.hypot(dx, dy);
+    let farthest = 0;
+    let index = -1;
+    for (let i = first + 1; i < last; i += 1) {
+      const [px, py] = ring[i];
+      const distance = length === 0
+        ? Math.hypot(px - ax, py - ay)
+        : Math.abs(dy * px - dx * py + bx * ay - by * ax) / length;
+      if (distance > farthest) {
+        farthest = distance;
+        index = i;
+      }
+    }
+    if (index !== -1 && farthest > tolerance) {
+      keep[index] = 1;
+      stack.push([first, index], [index, last]);
+    }
+  }
+  const simplified = ring.filter((_, i) => keep[i]);
+  return simplified.length >= 4 ? simplified : ring;
+}
+
+function locatorPolygons(geometry) {
+  const polygons = geometry?.type === 'Polygon' ? [geometry.coordinates] : geometry?.coordinates || [];
+  return polygons.map((polygon) => polygon
+    .map((ring) => simplifyRing(ring, REGION_LOCATOR_TOLERANCE)
+      .map(([lon, lat]) => [
+        Number(lon.toFixed(REGION_LOCATOR_DECIMALS)),
+        Number(lat.toFixed(REGION_LOCATOR_DECIMALS)),
+      ])));
+}
+
+let regionLocatorCache = { key: '', payload: null };
+
+function regionLocatorCollection(groups) {
+  const wanted = new Set((Array.isArray(groups) ? groups : []).filter(Boolean));
+  const key = [...wanted].sort().join('|');
+  if (regionLocatorCache.key === key && regionLocatorCache.payload) {
+    return regionLocatorCache.payload;
+  }
+  const features = regionBoundaries
+    .filter((boundary) => boundary.group && wanted.has(boundary.group))
+    .map((boundary) => {
+      const scope = subregionScopes.get(boundary.name);
+      return {
+        type: 'Feature',
+        properties: { name: boundary.name, group: boundary.group, ...(scope ? { scope } : {}) },
+        geometry: { type: 'MultiPolygon', coordinates: locatorPolygons(boundary.geometry) },
+      };
+    });
+  const payload = { type: 'FeatureCollection', features };
+  regionLocatorCache = { key, payload };
+  return payload;
+}
 
 function regionBoundaryCollection(groups) {
   const wanted = new Set((Array.isArray(groups) ? groups : []).filter(Boolean));
@@ -1277,7 +1381,7 @@ function observerRegionIsInferred(observer) {
 //
 // The two properties that a missing position DOES govern are handled elsewhere
 // and stay strict: the coverage map plots lat/lon so an unlocated observer never
-// gets a marker, and regionCoverageFor() counts coordinate-derived groups only,
+// gets a marker, and scopeRegionCoverage() counts coordinate-derived groups only,
 // so an uplink-inferred group cannot inflate Regions Reached.
 function observerIsScoringEligible(observerKey) {
   const observer = observerState.get(normalizeKey(observerKey));
@@ -1446,6 +1550,7 @@ function serializeSessionRecord(session) {
     activeObserverKeys: Array.isArray(session.activeObserverKeys)
       ? session.activeObserverKeys.map(normalizeKey).filter(Boolean)
       : [],
+    activeObserverRegions: sanitizeObserverRegions(session.activeObserverRegions),
     expectedObserverKeys: Array.isArray(session.expectedObserverKeys)
       ? session.expectedObserverKeys.map(normalizeKey).filter(Boolean)
       : [],
@@ -1540,6 +1645,7 @@ function restoreSessionRecord(rawSession) {
     activeObserverKeys: Array.isArray(rawSession.activeObserverKeys)
       ? rawSession.activeObserverKeys.map(normalizeKey).filter(Boolean)
       : [],
+    activeObserverRegions: sanitizeObserverRegions(rawSession.activeObserverRegions),
     expectedObserverKeys,
     expectedObserverSource: String(rawSession.expectedObserverSource || ''),
     receipts,
@@ -2755,41 +2861,162 @@ function activeObserverKeys(now = Date.now()) {
 // coordinate-derived group counts. A group inferred from an uplink code is a
 // plausible guess, not a position, and letting it tally would inflate reach
 // with data the map itself refuses to plot.
-function coordinateRegionGroupForKey(observerKey) {
+// Regional scoring (1.1.0). A region chip picks which slice of the scoring set
+// the score is computed over; it never changes the code, the receipts or the
+// All score. Each observer is placed where it was when the code was created
+// (activeObserverRegions), so a node that moves or gains a position mid-test
+// cannot hop between scopes. Observers that only reported, or sessions from an
+// older build without the snapshot, fall back to the current placement.
+function observerScopePlacement(observerKey) {
   const observer = observerState.get(normalizeKey(observerKey));
-  if (!observer || observer.regionSource !== 'coordinates') {
+  if (!observer || (!observer.region && !observer.regionGroup)) {
     return null;
   }
-  return observer.regionGroup || null;
+  return {
+    region: observer.region || null,
+    group: observer.regionGroup || null,
+    coordinates: observer.regionSource === 'coordinates',
+  };
 }
 
-// Denominator = groups that had at least one located observer in the scoring
-// set. Numerator = groups where at least one of them actually reported. A group
-// with no located observer is invisible to the metric rather than counted as a
-// miss: we have no way to hear from it.
-function regionCoverageFor(scoringKeys, seenKeys) {
-  const seenSet = new Set(seenKeys.map(normalizeKey));
-  const groups = new Map();
-  for (const key of scoringKeys) {
-    const group = coordinateRegionGroupForKey(key);
-    if (!group) {
-      continue;
-    }
-    if (!groups.has(group)) {
-      groups.set(group, { group, observerCount: 0, seenCount: 0 });
-    }
-    const entry = groups.get(group);
-    entry.observerCount += 1;
-    if (seenSet.has(normalizeKey(key))) {
-      entry.seenCount += 1;
+function snapshotObserverRegions(keys) {
+  const placements = {};
+  for (const key of keys) {
+    const placement = observerScopePlacement(key);
+    if (placement) {
+      placements[normalizeKey(key)] = placement;
     }
   }
-  const list = [...groups.values()].sort((left, right) => left.group.localeCompare(right.group));
+  return placements;
+}
+
+function sanitizeObserverRegions(raw) {
+  const placements = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return placements;
+  }
+  for (const [rawKey, value] of Object.entries(raw)) {
+    const key = normalizeKey(rawKey);
+    if (!key || !value || typeof value !== 'object') {
+      continue;
+    }
+    const region = typeof value.region === 'string' && value.region ? value.region : null;
+    const group = typeof value.group === 'string' && value.group ? value.group : null;
+    if (!region && !group) {
+      continue;
+    }
+    placements[key] = { region, group, coordinates: Boolean(value.coordinates) };
+  }
+  return placements;
+}
+
+function sessionPlacementFor(session, key) {
+  const snapshot = session.activeObserverRegions;
+  return (snapshot && snapshot[key]) || observerScopePlacement(key);
+}
+
+function scopeKeysForPlacement(placement) {
+  const keys = [];
+  if (!placement) {
+    return keys;
+  }
+  if (placement.region) {
+    keys.push(`region:${placement.region}`);
+  }
+  if (placement.group) {
+    keys.push(`group:${placement.group}`);
+    const parent = regionGroupParents.get(placement.group);
+    if (parent) {
+      keys.push(`parent:${parent}`);
+    }
+  }
+  return keys;
+}
+
+// Regions Reached one level down from the scope: groups for All and for a
+// parent, subregions for a group, nothing for a single subregion.
+// Denominator = children with at least one located observer in the scoring
+// set; numerator = children where at least one of them reported. A child with
+// no located observer is invisible to the metric rather than counted as a
+// miss: we have no way to hear from it. Coordinate-derived placements only: an
+// uplink-code group says where the broker thinks a node is, not where it is.
+function scopeRegionCoverage(entries, seenSet, level) {
+  const children = new Map();
+  for (const { key, placement } of entries) {
+    if (!placement?.coordinates) {
+      continue;
+    }
+    const name = level === 'region' ? placement.region : placement.group;
+    if (!name) {
+      continue;
+    }
+    if (!children.has(name)) {
+      children.set(name, { group: name, observerCount: 0, seenCount: 0 });
+    }
+    const child = children.get(name);
+    child.observerCount += 1;
+    if (seenSet.has(key)) {
+      child.seenCount += 1;
+    }
+  }
+  const list = [...children.values()].sort((left, right) => left.group.localeCompare(right.group));
   return {
     reached: list.filter((entry) => entry.seenCount > 0).length,
     total: list.length,
     groups: list,
   };
+}
+
+function scoreFor(expectedCount, observedCount, healthMeasured) {
+  const percent = Math.round((observedCount / Math.max(1, expectedCount)) * 100);
+  const enough = expectedCount >= OBSERVER_MIN_SCORING_SET;
+  const healthRated = healthMeasured && enough;
+  let healthUnratedReason = null;
+  if (healthMeasured && expectedCount === 0) {
+    healthUnratedReason = 'no-active-observers';
+  } else if (healthMeasured && !enough) {
+    healthUnratedReason = 'target-too-small';
+  }
+  return {
+    observedCount,
+    expectedCount,
+    healthPercent: percent,
+    healthMeasured,
+    healthRated,
+    healthUnratedReason,
+    healthLabel: healthLabel(percent, healthMeasured, healthRated),
+  };
+}
+
+// One score per parent, group and subregion that has at least one observer in
+// the scoring set. A scope with none is simply absent; the client says "no
+// active observers" for it.
+function sessionScopeScores(session, scoringKeys, seenKeys, healthMeasured) {
+  const seenSet = new Set(seenKeys.map(normalizeKey));
+  const scopes = new Map();
+  for (const rawKey of scoringKeys) {
+    const key = normalizeKey(rawKey);
+    const placement = sessionPlacementFor(session, key);
+    for (const scopeKey of scopeKeysForPlacement(placement)) {
+      if (!scopes.has(scopeKey)) {
+        scopes.set(scopeKey, []);
+      }
+      scopes.get(scopeKey).push({ key, placement });
+    }
+  }
+  const out = {};
+  for (const scopeKey of [...scopes.keys()].sort()) {
+    const entries = scopes.get(scopeKey);
+    const [kind] = scopeKey.split(':');
+    const observed = entries.filter((entry) => seenSet.has(entry.key)).length;
+    out[scopeKey] = {
+      ...scoreFor(entries.length, observed, healthMeasured),
+      regionCoverage: kind === 'region'
+        ? null
+        : scopeRegionCoverage(entries, seenSet, kind === 'group' ? 'region' : 'group'),
+    };
+  }
+  return out;
 }
 
 function observerDisplayLabelForKey(observerKey) {
@@ -3405,7 +3632,12 @@ function serializeSession(session, request = null) {
     : dedupe([...scoringBaseline, ...seen]);
   const denominator = Math.max(1, scoringKeys.length);
   const percent = Math.round((seen.length / denominator) * 100);
-  const regionCoverage = regionCoverageFor(scoringKeys, seen);
+  const seenSet = new Set(seen);
+  const regionCoverage = scopeRegionCoverage(
+    scoringKeys.map((key) => ({ key, placement: sessionPlacementFor(session, key) })),
+    seenSet,
+    'group',
+  );
   // Nothing has been heard and no message has matched yet: the score is not zero,
   // it is undefined. matchedAt means the test message did land, so a genuine 0%
   // after that is a real (bad) result and stays scored.
@@ -3466,6 +3698,9 @@ function serializeSession(session, request = null) {
       : null,
     expectedCount: denominator,
     regionCoverage,
+    // Keyed `parent:<name>`, `group:<name>`, `region:<name>`; same fields as the
+    // top-level score, which is always the All score.
+    scopeScores: sessionScopeScores(session, scoringKeys, seen, healthMeasured),
     healthPercent: percent,
     healthMeasured: healthMeasured,
     healthRated,
@@ -4124,7 +4359,8 @@ app.use((request, response, next) => {
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('X-Frame-Options', 'DENY');
   response.setHeader('Referrer-Policy', 'no-referrer');
-  response.setHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
+  // geolocation=(self): the location opt-in asks only on a click (1.1.0).
+  response.setHeader('Permissions-Policy', 'camera=(), geolocation=(self), microphone=()');
   if (request.path.startsWith('/api/') || request.path.startsWith('/share/')) {
     response.setHeader('Cache-Control', 'no-store');
   }
@@ -4387,6 +4623,13 @@ app.get('/api/region-boundaries', (request, response) => {
   response.json(regionBoundaryCollection(groups));
 });
 
+// Subregion outlines for the browser's location opt-in; same group rule as the
+// outlines above. See regionLocatorCollection.
+app.get('/api/region-locator', (request, response) => {
+  const groups = [...new Set(observerDirectory().map((observer) => observer.regionGroup).filter(Boolean))];
+  response.json(regionLocatorCollection(groups));
+});
+
 app.post(
   '/api/verify-turnstile',
   rateLimit('turnstile-verify', TURNSTILE_VERIFY_RATE_MAX, TURNSTILE_VERIFY_RATE_WINDOW_MS),
@@ -4430,6 +4673,7 @@ app.post(
     const requestedAllowlist = explicitObserverAllowlist(request.body?.expectedObserverKeys);
     const defaultExpected = expectedObserversForSession();
     const expected = requestedAllowlist.enabled ? requestedAllowlist : defaultExpected;
+    const activeKeys = activeObserverKeys(now);
     const session = {
       id: randomUUID(),
       code: createCode(),
@@ -4447,7 +4691,9 @@ app.post(
       channelName: '',
       allowlistEnabled: requestedAllowlist.enabled,
       // Snapshotted so the denominator cannot drift while the session is open.
-      activeObserverKeys: activeObserverKeys(now),
+      activeObserverKeys: activeKeys,
+      // And where each was, so a region score cannot drift either.
+      activeObserverRegions: snapshotObserverRegions(activeKeys),
       expectedObserverKeys: expected.keys.length > 0 ? expected.keys : [],
       expectedObserverSource: expected.source || '',
       receipts: new Map(),
@@ -4721,6 +4967,8 @@ export function ingestMqttMessage(topic, payload) {
 export {
   computeRegionFingerprint,
   regionBoundaryCollection,
+  regionLocatorCollection,
+  simplifyRing,
   loadLastReseedFingerprint,
   runObserverReseed,
   app,

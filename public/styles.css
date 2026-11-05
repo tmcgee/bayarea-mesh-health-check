@@ -1340,6 +1340,58 @@ body[data-page-mode="share"] .status-pill::before {
   padding: 4px 10px;
 }
 
+/* Location opt-in (1.1.0): two plain actions under the chips, then one or
+   two sentences saying what was picked. Dashed so they never read as a chip
+   that can be "active". */
+.region-locate {
+  display: grid;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.region-locate[hidden],
+.region-btn--locate[hidden] {
+  display: none;
+}
+
+.region-btn--locate {
+  border-style: dashed;
+  font-size: 0.75rem;
+  padding: 4px 10px;
+}
+
+.region-btn--locate:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.region-locate__status:empty {
+  display: none;
+}
+
+.region-locate__text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.region-locate__text code {
+  color: var(--text);
+}
+
+.region-locate__widen {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .region-btn__count {
   background: rgba(255, 255, 255, 0.06);
   border-radius: 6px;
@@ -1680,7 +1732,8 @@ body[data-page-mode="share"] .status-pill::before {
 }
 
 /* Full row, or the auto-fit grid would seat this note in the first card slot. */
-.receipts-filter-note {
+.receipts-filter-note,
+.receipts-unscored-note {
   grid-column: 1 / -1;
   margin: 0;
 }
@@ -3400,8 +3453,17 @@ body[data-ui-theme="light"] .additional-info[open] > .additional-info__summary {
   grid-column: 1 / -1;
 }
 
-/* Explains a withheld grade (target set below OBSERVER_MIN_SCORING_SET). Muted,
-   not an error: the run succeeded, it just cannot be turned into a percentage. */
+/* Which region the score is for (1.1.0). Follows the region filter. */
+.health-scope {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.3;
+}
+
+/* Explains a withheld grade (scope below OBSERVER_MIN_SCORING_SET, or nobody
+   active in it). Muted, not an error: the run succeeded, the scope is just too
+   small to grade. */
 .health-note {
   margin: 0.35rem 0 0;
   padding: 0.5rem 0.7rem;

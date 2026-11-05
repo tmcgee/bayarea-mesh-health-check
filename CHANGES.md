@@ -7,6 +7,63 @@ patch fixes. Releases before 1.0.0 were `1.3.8+bayarea.1` to `1.3.8+bayarea.22`:
 upstream `v1.3.8` plus a Bay Area build counter. Sections named `vX.Y.Z` alone are
 upstream's own releases.
 
+## v1.1.0+upstream.1.3.8
+
+- regional scoring: the region chips now pick which scope the score is for.
+  All, a parent region, a region or a subregion; the code and its receipts never
+  change, and All is always the full score. Each scope's denominator is the
+  observers placed in it when the code was created, plus any that reported, so
+  a node that moves mid-test cannot change scopes. The session payload gains
+  `scopeScores`, keyed `parent:`, `group:` and `region:`, each with the same
+  fields as the top-level score. Sessions store `activeObserverRegions`;
+  sessions from before this fall back to current placements.
+- the score card says what it is scored for ("Scored for North Bay"). Regions
+  Reached counts one level down: groups for All and a parent, subregions for a
+  group, and is hidden for a single subregion.
+- small samples: below `OBSERVER_MIN_SCORING_SET` (3) the count and percentage
+  are shown with "Small sample: N observers" in place of the grade word, and
+  the ring fills in the neutral colour. A scope with nobody active reads "No
+  active observers". This applies to All too, which used to read "Not rated"
+  with no percentage.
+- links and the address bar never carry a region, for the sharer or the
+  recipient: a shared link always opens on All, choosing a region changes only
+  that view, and nothing a recipient does affects the shared session.
+- location opt-in: "Use my location" and "Use map center" under the region
+  chips, on the dashboard and on shared results. Either picks the subregion the
+  point falls in and selects its chip as a click would (the URL never changes);
+  nothing asks for location until the button is pressed. The point is tested
+  in the browser against the new `GET /api/region-locator` (subregion outlines
+  for the groups on the map, simplified to ~50 m: ~310 KB, ~75 KB gzipped) and
+  is never sent to the server or stored. A subregion below the minimum offers
+  "Widen to <region> (N observers)"; a point in no subregion falls back to the
+  group outline, then to "outside the regions on the map" with the selection
+  unchanged. A fix worse than 1 km is called approximate. On the dashboard, a
+  subregion with a regional channel suggests it ("Testing Sonoma? Send to
+  #sonoma-healthcheck."). `Permissions-Policy` is now `geolocation=(self)`.
+- `regions/us-ca-meshcore-scopes.json` is now matkam/meshcore-settings
+  `data/regions.json` at `7ec46658` byte for byte, replacing the flattened
+  `{"regions": [...]}` copy of its 73 codes, which had dropped each place's name
+  and county outline. `MESHCORE_REGION_SCOPES_FILE` must now be a format-2 tree;
+  the flat list is no longer read. The setting and the shipped path are
+  unchanged. Strictly a setup break, released as a minor version by decision
+  (2026-10-30): no one else runs this fork, and the shipped file is replaced in
+  the same release.
+  The duplicate test fixture is removed; `check:scopes` checks the shipped file
+  byte for byte (SHA-256 pinned with the commit) and shares `flattenTree` with
+  the loader.
+- each subregion's scope comes from that tree's own outlines
+  (`scopeForSubregion`): the deepest place whose outline lists the county, else a
+  place with the subregion's name. All 32 resolve (Sonoma `sonoma`, Santa Clara
+  `southbay`, Alpine `eastsierra`, San Luis Obispo `slo` rather than the city
+  `slocity`, Yuba-Sutter by name). No mapping table.
+- `regionCoverageFor()` is replaced by `scopeRegionCoverage()`; All's Regions
+  Reached is unchanged except that it now uses the creation-time placements.
+- the observer list shows one line, "Not scored: these observers were not
+  active when this test started, so they do not count toward its score.", just
+  above the first not-scored card. The tooltip said the same but never shows on
+  a phone. Region-button counts are unchanged (live directory).
+- service worker cache `mesh-health-check-pwa-v11-bayarea`.
+
 ## v1.0.0+upstream.1.3.8
 
 - versioning: the fork's own SemVer from here, `MAJOR.MINOR.PATCH+upstream.X.Y.Z`.

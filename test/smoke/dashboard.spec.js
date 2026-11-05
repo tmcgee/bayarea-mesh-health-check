@@ -90,7 +90,7 @@ function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key') {
       eyebrow: 'MeshCore Observer Coverage',
       headline: 'Check your mesh reach.',
       description: 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
-      version: '1.0.0+upstream.1.3.8',
+      version: '1.1.0+upstream.1.3.8',
       repoUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check',
       changesUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md',
       map: mapTiles(cartoBasemapKey),
@@ -176,7 +176,7 @@ async function openMockMapSession(
   observerDirectory,
   expectedObservers,
   cartoBasemapKey = 'test-carto-key',
-  { seenKeys = [], boundaries = null, receipts = [] } = {},
+  { seenKeys = [], boundaries = null, receipts = [], session = {}, path = '/share/map-session' } = {},
 ) {
   await page.addInitScript(() => {
     window.WebSocket = class {
@@ -190,13 +190,13 @@ async function openMockMapSession(
   }));
   await page.route('**/api/sessions/map-session', (route) => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify(mapSession(expectedObservers, seenKeys, receipts)),
+    body: JSON.stringify({ ...mapSession(expectedObservers, seenKeys, receipts), ...session }),
   }));
   await page.route('**/api/region-boundaries', (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ type: 'FeatureCollection', features: boundaries || [] }),
   }));
-  await page.goto('/share/map-session');
+  await page.goto(path);
 }
 
 test('dashboard loads and creates a session code', async ({ page }) => {
@@ -403,6 +403,35 @@ test('coverage map only plots observers targeted by the selected region', async 
   await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
 });
 
+test('not-scored observers carry one visible explanation line, not just a tooltip', async ({ page }) => {
+  // A tooltip never shows on a phone, so the reason lives in the list (1.1.0).
+  const target = mapObserver(MAP_TEST_KEYS.target, 'Target Observer', 42.3601, -71.0589, 'BOS');
+  const late = mapObserver(MAP_TEST_KEYS.outside, 'Late Observer', 42.4, -71.1, 'BOS');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openMockMapSession(page, [target, late], [target], 'test-carto-key', { seenKeys: [MAP_TEST_KEYS.target] });
+  await page.locator('#additional-info-toggle').click();
+
+  const notes = page.locator('#receipts .receipts-unscored-note');
+  await expect(notes).toHaveCount(1);
+  await expect(notes).toBeVisible();
+  await expect(notes).toHaveText('Not scored: these observers were not active when this test started, so they do not count toward its score.');
+  // It sits directly before the first not-scored card, after the scored ones.
+  const order = await page.evaluate(() => [...document.querySelectorAll('#receipts > *')]
+    .map((el) => (el.classList.contains('receipts-unscored-note') ? 'note' : el.querySelector('.receipt-state')?.textContent.trim() || '')));
+  expect(order.indexOf('note')).toBe(order.indexOf('Not scored') - 1);
+  expect(order.indexOf('note')).toBeGreaterThan(0);
+  const box = await notes.boundingBox();
+  expect(box.width).toBeLessThanOrEqual(390);
+});
+
+test('no explanation line when every listed observer is scored', async ({ page }) => {
+  const target = mapObserver(MAP_TEST_KEYS.target, 'Target Observer', 42.3601, -71.0589, 'BOS');
+  await openMockMapSession(page, [target], [target]);
+  await page.locator('#additional-info-toggle').click();
+  await expect(page.locator('#receipts .receipt-card')).toHaveCount(1);
+  await expect(page.locator('#receipts .receipts-unscored-note')).toHaveCount(0);
+});
+
 test('region outlines draw under the markers, colour by status, and follow the region filter', async ({ page }) => {
   // Two regions, and the first has two subregions so the drill-down below has
   // something to narrow to.
@@ -590,6 +619,9 @@ test('a region chip zooms to the region outline, a county chip to its observers'
   // A poll re-render with the same selection keeps the user's view: pan away,
   // wait past the 5 s refresh, and the map has not snapped back.
   const map = page.locator('#observer-map');
+  // The drag starts at the map's centre, so the map has to be on screen: at
+  // 1280x720 the location buttons (1.1.0) put the centre just below the fold.
+  await map.scrollIntoViewIfNeeded();
   const box = await map.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
@@ -914,6 +946,301 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
   });
 }
 
+// 1.1.0 regional scoring fixture: North Bay (Sonoma x3, Napa) and Peninsula
+// (San Mateo) under the Bay Area parent; Valley (Fresno) in the directory but
+// not active when the code was created.
+function scopeFixture() {
+  const key = (digit) => digit.repeat(64);
+  const inBayArea = (observer) => ({ ...observer, regionParent: 'Bay Area' });
+  const sonoma = [
+    inBayArea(mapObserver(key('a'), 'Sonoma One', 38.29, -122.46, 'Sonoma', 'North Bay')),
+    inBayArea(mapObserver(key('b'), 'Sonoma Two', 38.30, -122.47, 'Sonoma', 'North Bay')),
+    inBayArea(mapObserver(key('c'), 'Sonoma Three', 38.31, -122.48, 'Sonoma', 'North Bay')),
+  ];
+  const napa = inBayArea(mapObserver(key('d'), 'Napa One', 38.30, -122.29, 'Napa', 'North Bay'));
+  const sanMateo = inBayArea(mapObserver(key('e'), 'San Mateo One', 37.56, -122.32, 'San Mateo', 'Peninsula'));
+  // In the directory but not active when the code was created.
+  const fresno = mapObserver(key('f'), 'Fresno One', 36.74, -119.79, 'Fresno', 'Valley');
+  const directory = [...sonoma, napa, sanMateo, fresno];
+  const expected = [...sonoma, napa, sanMateo];
+  const seenKeys = [key('a'), key('b'), key('d'), key('e')];
+
+  const score = (observedCount, expectedCount, healthLabel, regionCoverage = null) => {
+    const healthRated = expectedCount >= 3;
+    return {
+      observedCount,
+      expectedCount,
+      healthPercent: Math.round((observedCount / expectedCount) * 100),
+      healthMeasured: true,
+      healthRated,
+      healthUnratedReason: healthRated ? null : 'target-too-small',
+      healthLabel: healthRated ? healthLabel : 'NOT RATED',
+      regionCoverage,
+    };
+  };
+  const coverage = (groups) => ({
+    reached: groups.filter((entry) => entry.seenCount > 0).length,
+    total: groups.length,
+    groups,
+  });
+
+  const session = {
+    useCount: 1,
+    matchedAt: Date.now(),
+    minScoringSet: 3,
+    ...score(4, 5, 'GOOD', coverage([
+      { group: 'North Bay', observerCount: 4, seenCount: 3 },
+      { group: 'Peninsula', observerCount: 1, seenCount: 1 },
+    ])),
+    scopeScores: {
+      'parent:Bay Area': score(4, 5, 'GOOD', coverage([
+        { group: 'North Bay', observerCount: 4, seenCount: 3 },
+        { group: 'Peninsula', observerCount: 1, seenCount: 1 },
+      ])),
+      'group:North Bay': score(3, 4, 'GOOD', coverage([
+        { group: 'Napa', observerCount: 1, seenCount: 1 },
+        { group: 'Sonoma', observerCount: 3, seenCount: 2 },
+      ])),
+      'group:Peninsula': score(1, 1, 'VERY HEALTHY', coverage([
+        { group: 'San Mateo', observerCount: 1, seenCount: 1 },
+      ])),
+      'region:Sonoma': score(2, 3, 'GOOD'),
+      'region:Napa': score(1, 1, 'VERY HEALTHY'),
+      'region:San Mateo': score(1, 1, 'VERY HEALTHY'),
+    },
+    shareUrl: '/share/map-session',
+  };
+  return { directory, expected, seenKeys, session };
+}
+
+test('region chips switch the score between scopes and back to All', async ({ page }) => {
+  // 1.1.0: the chips pick which scope the score is read for. The code and the
+  // receipts never change; scopeScores carries one score per scope.
+  const { directory, expected, seenKeys, session } = scopeFixture();
+  await page.setViewportSize({ width: 390, height: 900 });
+  await openMockMapSession(page, directory, expected, 'test-carto-key', { seenKeys, session });
+
+  const headline = page.locator('#health-label');
+  const percent = page.locator('#health-percent');
+  const reached = page.locator('#observed-count');
+  const scope = page.locator('#health-scope');
+  const regions = page.locator('#region-coverage');
+  const regionsCard = page.locator('#region-coverage-card');
+  const note = page.locator('#health-note');
+  const chip = (cls, text) => page.locator(`#region-filter .${cls}`, { hasText: text }).first();
+
+  // All.
+  await expect(headline).toHaveText('GOOD');
+  await expect(percent).toHaveText('80%');
+  await expect(reached).toHaveText('4 / 5');
+  await expect(scope).toHaveText('Scored for all observers');
+  await expect(regions).toHaveText('2 / 2');
+  await expect(note).toBeHidden();
+
+  // A parent.
+  await chip('region-btn--parent', 'Bay Area').click();
+  await expect(scope).toHaveText('Scored for Bay Area');
+  await expect(reached).toHaveText('4 / 5');
+
+  // A group: Regions Reached now counts its subregions.
+  await chip('region-btn--group', 'North Bay').click();
+  await expect(headline).toHaveText('GOOD');
+  await expect(percent).toHaveText('75%');
+  await expect(reached).toHaveText('3 / 4');
+  await expect(scope).toHaveText('Scored for North Bay');
+  await expect(regions).toHaveText('2 / 2');
+  await expect(regions).toHaveAttribute('title', 'Reached: Napa (1/1), Sonoma (2/3)');
+
+  // A subregion: no Regions Reached below it.
+  await chip('region-btn--child', 'Sonoma').click();
+  await expect(percent).toHaveText('67%');
+  await expect(reached).toHaveText('2 / 3');
+  await expect(scope).toHaveText('Scored for Sonoma');
+  await expect(regionsCard).toBeHidden();
+
+  // A one-observer subregion: count and percentage, no grade word.
+  await chip('region-btn--child', 'Napa').click();
+  await expect(headline).toHaveText('Small sample: 1 observer');
+  await expect(headline).not.toHaveClass(/health-/);
+  await expect(percent).toHaveText('100%');
+  await expect(reached).toHaveText('1 / 1');
+  await expect(note).toHaveText('1 observer in Napa was active, fewer than the 3 needed for a grade. The percentage is what was heard.');
+  // The headline wraps between words at 390px, never past the card.
+  const fits = await headline.evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+  expect(fits).toBe(true);
+
+  // A group nobody in it was active for.
+  await chip('region-btn--group', 'Valley').click();
+  await expect(headline).toHaveText('No active observers');
+  await expect(percent).toHaveText('--');
+  await expect(reached).toHaveText('0 / 0');
+  await expect(note).toHaveText('No observers in Valley were active when this code was created, so there is nothing to score here.');
+  await expect(regionsCard).toBeVisible();
+  await expect(regions).toHaveText('--');
+
+  // Back to All: the All score, whatever was picked before.
+  await chip('region-btn--all', 'All').click();
+  await expect(headline).toHaveText('GOOD');
+  await expect(percent).toHaveText('80%');
+  await expect(reached).toHaveText('4 / 5');
+  await expect(scope).toHaveText('Scored for all observers');
+  await expect(note).toBeHidden();
+});
+
+test('a region never reaches the share link or the address bar', async ({ page }) => {
+  // 1.1.0 decision: links and the address bar carry no region, for the sharer
+  // and the recipient alike. A shared link always opens on All, and choosing a
+  // region changes only this view.
+  await page.addInitScript(() => {
+    window.__shareCalls = [];
+    navigator.share = async (payload) => {
+      window.__shareCalls.push(payload);
+    };
+  });
+  const { directory, expected, seenKeys, session } = scopeFixture();
+  await openMockMapSession(page, directory, expected, 'test-carto-key', { seenKeys, session });
+  await expect(page).toHaveURL(/\/share\/map-session$/);
+  await expect(page.locator('#health-scope')).toHaveText('Scored for all observers');
+
+  await page.locator('#region-filter .region-btn--group', { hasText: 'North Bay' }).first().click();
+  await expect(page.locator('#health-scope')).toHaveText('Scored for North Bay');
+  await page.locator('#region-filter .region-btn--child', { hasText: 'Sonoma' }).first().click();
+  await page.locator('#region-filter .region-btn--parent', { hasText: 'Bay Area' }).first().click();
+  await expect(page).toHaveURL(/\/share\/map-session$/);
+
+  await page.getByRole('button', { name: 'Share' }).click();
+  await expect(page.getByRole('button', { name: 'Shared' })).toBeVisible();
+  const [shared] = await page.evaluate(() => window.__shareCalls);
+  // The fixture's shareUrl is relative; it must come back exactly as stored.
+  expect(shared.url).toBe('/share/map-session');
+});
+
+// Subregion outlines shaped like /api/region-locator: one square per county,
+// with its group and, where it has one, its MeshCore scope. Boxes, not
+// counties, so each test point is unambiguous.
+function locatorFeature(name, group, scope, west, south, east, north) {
+  return {
+    ...boundaryFeature(group, west, south, east, north),
+    properties: { name, group, ...(scope ? { scope } : {}) },
+  };
+}
+
+const LOCATOR_FIXTURE = [
+  locatorFeature('Sonoma', 'North Bay', 'sonoma', -122.9, 38.1, -122.35, 38.85),
+  locatorFeature('Napa', 'North Bay', 'napa', -122.35, 38.1, -122.1, 38.85),
+  locatorFeature('San Mateo', 'Peninsula', 'peninsula', -122.55, 37.1, -122.1, 37.7),
+];
+
+async function mockLocator(page, features = LOCATOR_FIXTURE) {
+  await page.route('**/api/region-locator', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ type: 'FeatureCollection', features }),
+  }));
+}
+
+test('Use my location picks the subregion chip and offers to widen a small one', async ({ page, context }) => {
+  // 1.1.0 location opt-in. The point is tested in the browser; the chip it
+  // picks behaves exactly like a click, and the URL never changes.
+  await context.grantPermissions(['geolocation']);
+  await context.setGeolocation({ latitude: 38.30, longitude: -122.29, accuracy: 30 }); // Napa
+  await mockLocator(page);
+  const { directory, expected, seenKeys, session } = scopeFixture();
+  await openMockMapSession(page, directory, expected, 'test-carto-key', { seenKeys, session });
+
+  const status = page.locator('#region-locate .region-locate__status');
+  await expect(page.getByRole('button', { name: 'Use my location' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Use map center' })).toBeVisible();
+  await expect(status).toBeEmpty();
+
+  // Napa has one observer: below the minimum of 3, so the note offers North Bay.
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(status).toContainText('Napa, from your location.');
+  await expect(page.locator('#region-filter .region-btn--child', { hasText: 'Napa' }).first()).toHaveClass(/\bactive\b/);
+  await expect(page.locator('#health-scope')).toHaveText('Scored for Napa');
+  await expect(page).toHaveURL(/\/share\/map-session$/);
+  // A shared result is not where a test is sent from: no channel suggestion.
+  await expect(status).not.toContainText('Send to');
+
+  await page.getByRole('button', { name: 'Widen to North Bay (4 observers)' }).click();
+  await expect(status).toHaveText('North Bay, widened from Napa.');
+  await expect(page.locator('#health-scope')).toHaveText('Scored for North Bay');
+  await expect(page).toHaveURL(/\/share\/map-session$/);
+
+  // Sonoma has three: no widen offer.
+  await context.setGeolocation({ latitude: 38.29, longitude: -122.46, accuracy: 30 });
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(status).toHaveText('Sonoma, from your location.');
+  await expect(page.locator('#health-scope')).toHaveText('Scored for Sonoma');
+  await expect(page.getByRole('button', { name: /^Widen to/ })).toHaveCount(0);
+
+  // A chip click overrides the pick and clears its note.
+  await page.locator('#region-filter .region-btn--all').first().click();
+  await expect(status).toBeEmpty();
+  await expect(page.locator('#health-scope')).toHaveText('Scored for all observers');
+
+  // Off the coast: nothing to pick, and the selection is left alone.
+  await context.setGeolocation({ latitude: 37.9, longitude: -123.6, accuracy: 3000 });
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(status).toHaveText('Your location is outside the regions on the map.');
+  await expect(page.locator('#health-scope')).toHaveText('Scored for all observers');
+  await expect(page).toHaveURL(/\/share\/map-session$/);
+});
+
+test('Use map center works without location permission', async ({ page }) => {
+  // No permission granted: the browser declines, and the note points at the
+  // map-center button, which needs none.
+  await mockLocator(page, [
+    // One box over the whole state, so wherever the map settles is inside it.
+    locatorFeature('Sonoma', 'North Bay', 'sonoma', -126, 32, -113, 43),
+  ]);
+  const { directory, expected, seenKeys, session } = scopeFixture();
+  await openMockMapSession(page, directory, expected, 'test-carto-key', { seenKeys, session });
+  const status = page.locator('#region-locate .region-locate__status');
+
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(status).toContainText('Try Use map center.');
+  await expect(page.locator('#health-scope')).toHaveText('Scored for all observers');
+
+  await page.getByRole('button', { name: 'Use map center' }).click();
+  await expect(status).toHaveText('Sonoma, from the map center.');
+  await expect(page.locator('#health-scope')).toHaveText('Scored for Sonoma');
+});
+
+test('on the dashboard a located subregion suggests its regional channel', async ({ page, context }) => {
+  await context.grantPermissions(['geolocation']);
+  await context.setGeolocation({ latitude: 38.29, longitude: -122.46, accuracy: 2500 });
+  await mockLocator(page);
+  const { directory } = scopeFixture();
+  await page.addInitScript(() => {
+    window.WebSocket = class {
+      addEventListener() {}
+      close() {}
+    };
+  });
+  await page.route('**/api/bootstrap', (route) => {
+    const bootstrap = mapBootstrap(directory);
+    bootstrap.testChannel = {
+      ...bootstrap.testChannel,
+      regional: { names: ['slo-health-check', 'sonoma-health-check'] },
+    };
+    return route.fulfill({ contentType: 'application/json', body: JSON.stringify(bootstrap) });
+  });
+  await page.goto('/app');
+
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  const status = page.locator('#region-locate .region-locate__status');
+  await expect(status).toContainText('Sonoma, from your location. Approximate location (about 3 km).');
+  await expect(status).toContainText('Testing Sonoma? Send to #sonoma-health-check.');
+  // The dashboard has no share route, so the address bar is left alone.
+  await expect(page).toHaveURL(/\/app$/);
+
+  // Napa has no regional channel in this list, so no suggestion.
+  await context.setGeolocation({ latitude: 38.30, longitude: -122.29, accuracy: 30 });
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(status).toContainText('Napa, from your location.');
+  await expect(status).not.toContainText('Send to');
+});
+
 test('coverage map omits observers with 0,0 coordinates', async ({ page }) => {
   const target = mapObserver(MAP_TEST_KEYS.target, 'Target Observer', 42.3601, -71.0589, 'BOS');
   const zero = mapObserver(MAP_TEST_KEYS.zero, 'Zero Observer', 0, 0, 'BOS');
@@ -1149,7 +1476,7 @@ test('footer entries break between items, never inside one', async ({ page }) =>
   await expect(page.locator('#site-version-note')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md');
   await expect(page.locator('#repo-note-link')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check');
   await expect(page.locator('#upstream-note-link')).toHaveCount(0);
-  await expect(page.locator('#site-version-note')).toHaveText('Version: v1.0.0+upstream.1.3.8');
+  await expect(page.locator('#site-version-note')).toHaveText('Version: v1.1.0+upstream.1.3.8');
   await expect(page.locator('#site-version-note')).toHaveAttribute('title', 'Based on yellowcooln/meshcore-health-check v1.3.8 (MIT)');
 
   const tops = [];

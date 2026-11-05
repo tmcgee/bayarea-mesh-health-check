@@ -278,7 +278,7 @@ test('an inferred observer earns no Regions Reached credit', async () => {
     );
 
     const session = await (await fetch(`${ctx.baseUrl}/api/sessions/${created.id}`)).json();
-    // Second half: its group came from an uplink code, so regionCoverageFor()
+    // Second half: its group came from an uplink code, so scopeRegionCoverage()
     // ignores it and the denominator is zero rather than one. We do not claim
     // reach into a region we never confirmed a position in.
     assert.equal(session.regionCoverage.total, 0);

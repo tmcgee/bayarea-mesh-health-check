@@ -47,7 +47,10 @@ Other community Health Checks:
 
 - creates short-lived health-check codes
 - matches MeshCore `GroupText` packets from MQTT
-- scores coverage against every observer active in the last few minutes
+- scores coverage against every observer active in the last few minutes, and
+  rescores it for any parent region, region or subregion picked on the map,
+  or found from your location or the map center (tested in the browser; the
+  location is never sent)
 - shows receipts, paths, RSSI, SNR, timing, repeaters, and map coverage
 - estimates packet-path distance between known observers, with mile or
   kilometer labels

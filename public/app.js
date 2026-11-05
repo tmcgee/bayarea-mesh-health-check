@@ -31,6 +31,8 @@ const ui = {
   observedCount: document.querySelector('#observed-count'),
   regionCoverage: document.querySelector('#region-coverage'),
   healthNote: document.querySelector('#health-note'),
+  healthScope: document.querySelector('#health-scope'),
+  regionCoverageCard: document.querySelector('#region-coverage-card'),
   repeaterCount: document.querySelector('#repeater-count'),
   longestPacketDistance: document.querySelector('#longest-packet-distance'),
   senderName: document.querySelector('#sender-name'),
@@ -95,12 +97,18 @@ const state = {
   trackedSessionIds: loadTrackedSessionIds(),
   // A parent region (bayarea.21) selects every group under it at once; it is
   // only ever set with selectedRegionGroup and selectedRegion both null.
+  // Never in the URL: links and the address bar carry no region, so a shared
+  // link, a reload and a bookmark all open on All (1.1.0 decision).
   selectedRegionParent: null,
   selectedRegionGroup: null,
   selectedRegion: null,
   // 'all' | 'heard' | 'unheard'. Visibility only, like the region chips: it
   // never changes what this code is scored against.
   receiptHeardFilter: 'all',
+  // Location opt-in (1.1.0): the subregion outlines, fetched on the first
+  // click; which button is waiting; and the sentence describing the last pick.
+  // Never stored, so a reload opens on All again.
+  locate: { features: null, pending: '', status: null, row: null },
   uiTheme: loadUiTheme(),
   // Difference between the server's clock and ours, refreshed from every
   // snapshot. The server decides when a code stops being accepted, so a
@@ -389,7 +397,7 @@ function observerTargetSummary() {
 // Says out loud why a grade is missing. Silence would read as a rendering bug,
 // and the old behaviour - a confident 100% next to "1 / 1" - was worse than
 // either. Only shown when there is something to explain.
-function renderHealthNote(session, healthMeasured, healthRated) {
+function renderHealthNote(score, healthMeasured, healthRated) {
   if (!ui.healthNote) {
     return;
   }
@@ -398,12 +406,90 @@ function renderHealthNote(session, healthMeasured, healthRated) {
     ui.healthNote.classList.add('hidden');
     return;
   }
-  const target = Number(session?.expectedCount) || 0;
-  const minimum = Number(session?.minScoringSet) || 3;
-  ui.healthNote.textContent = session?.healthUnratedReason === 'target-too-small'
-    ? `Not rated: this code targeted ${target} observer${target === 1 ? '' : 's'}, below the ${minimum} needed for a percentage to mean anything. The count above is still what was heard.`
-    : 'Not rated: this code cannot be scored.';
+  const target = Number(score?.expectedCount) || 0;
+  const minimum = Number(score?.minScoringSet) || 3;
+  const where = score?.scopeLabel ? ` in ${score.scopeLabel}` : '';
+  if (target === 0) {
+    ui.healthNote.textContent = `No observers${where} were active when this code was created, so there is nothing to score here.`;
+  } else if (score?.healthUnratedReason === 'target-too-small') {
+    ui.healthNote.textContent = `${target} observer${target === 1 ? '' : 's'}${where} ${target === 1 ? 'was' : 'were'} active, fewer than the ${minimum} needed for a grade. The percentage is what was heard.`;
+  } else {
+    ui.healthNote.textContent = 'Not rated: this code cannot be scored.';
+  }
   ui.healthNote.classList.remove('hidden');
+}
+
+// The score is a view over the receipts: All by default, or the parent, group or
+// subregion picked in the region filter. Picking one never touches the code or
+// the session; it reads that scope's score from session.scopeScores, which the
+// server computes over the observers placed there when the code was created
+// plus any that reported. A scope missing from scopeScores had nobody active.
+// A payload from an older server has no scopeScores, so it always shows All.
+function selectedScopeKey() {
+  if (state.selectedRegion) {
+    return `region:${state.selectedRegion}`;
+  }
+  if (state.selectedRegionGroup) {
+    return `group:${state.selectedRegionGroup}`;
+  }
+  if (state.selectedRegionParent) {
+    return `parent:${state.selectedRegionParent}`;
+  }
+  return null;
+}
+
+function scoreForSelectedScope(session) {
+  const minScoringSet = session?.minScoringSet;
+  const scopeKey = selectedScopeKey();
+  if (!scopeKey || !session?.scopeScores || typeof session.scopeScores !== 'object') {
+    return { ...session, scopeKind: 'all', scopeLabel: null, minScoringSet };
+  }
+  const [scopeKind] = scopeKey.split(':');
+  const scopeLabel = activeRegionScopeLabel();
+  const entry = session.scopeScores[scopeKey];
+  if (!entry) {
+    const healthMeasured = isHealthMeasured(session);
+    return {
+      observedCount: 0,
+      expectedCount: 0,
+      healthPercent: 0,
+      healthMeasured,
+      healthRated: false,
+      healthUnratedReason: healthMeasured ? 'no-active-observers' : null,
+      healthLabel: healthMeasured ? 'NOT RATED' : 'WAITING',
+      regionCoverage: null,
+      scopeKind,
+      scopeLabel,
+      minScoringSet,
+    };
+  }
+  return { ...entry, scopeKind, scopeLabel, minScoringSet };
+}
+
+function renderHealthScope(score) {
+  if (!ui.healthScope) {
+    return;
+  }
+  ui.healthScope.textContent = score?.scopeLabel
+    ? `Scored for ${score.scopeLabel}`
+    : 'Scored for all observers';
+}
+
+function headlineFor(score, healthMeasured, healthRated) {
+  if (!healthMeasured) {
+    return 'Waiting';
+  }
+  if (healthRated) {
+    return score.healthLabel;
+  }
+  const target = Number(score?.expectedCount) || 0;
+  if (target === 0) {
+    return 'No active observers';
+  }
+  if (score?.healthUnratedReason === 'target-too-small') {
+    return `Small sample: ${target} observer${target === 1 ? '' : 's'}`;
+  }
+  return 'Not rated';
 }
 
 // Region coverage answers a different question from the observer percentage:
@@ -414,6 +500,10 @@ function renderHealthNote(session, healthMeasured, healthRated) {
 function renderRegionCoverage(session, healthMeasured) {
   if (!ui.regionCoverage) {
     return;
+  }
+  // A single subregion has nothing below it to reach.
+  if (ui.regionCoverageCard) {
+    ui.regionCoverageCard.classList.toggle('hidden', session?.scopeKind === 'region');
   }
   const coverage = session?.regionCoverage;
   if (!healthMeasured || !coverage || !Number(coverage.total)) {
@@ -1525,18 +1615,247 @@ function reconcileRegionSelection(snapshot) {
   }
 }
 
-// The region filter narrows what the observer list *shows*, and nothing else. It
-// used to set the scoring target, which meant clicking a region silently
-// redefined it: picking North Bay - one located observer - produced a
-// one-observer allowlist and a session reporting "1 / 1, 100% VERY HEALTHY" off a
-// single receipt. Nothing in the UI can narrow the target now.
+// The region filter narrows what the observer list shows and which scope the
+// score is read for (scoreForSelectedScope). It never narrows the target: it
+// used to set an allowlist, which meant clicking a region silently redefined
+// the code - picking North Bay, one located observer, produced a session
+// reporting "1 / 1, 100% VERY HEALTHY" off a single receipt. Now the code always
+// targets everyone, every scope is scored, and a scope below the minimum reads
+// "Small sample" rather than a grade.
 function applyRegionSelection() {
+  // A chip click overrides whatever the location picked, so its note goes.
+  state.locate.status = null;
+  render();
+}
+
+// ---------- Location opt-in (1.1.0) ----------
+// "Use my location" and "Use map center" pick the subregion a point falls in
+// and select its chip, exactly as a click would. Nothing asks for location
+// until the button is pressed, and the point is tested here: the server sends
+// the outlines (/api/region-locator) and never sees the coordinates. The pick
+// stays in this page: links and the address bar never carry a region.
+const LOCATE_APPROXIMATE_METERS = 1000;
+
+function pointInRing(lon, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function pointInGeometry(lon, lat, geometry) {
+  const polygons = geometry?.type === 'Polygon' ? [geometry.coordinates] : geometry?.coordinates || [];
+  return polygons.some((rings) => Array.isArray(rings) && rings.length > 0
+    && pointInRing(lon, lat, rings[0])
+    && !rings.slice(1).some((hole) => pointInRing(lon, lat, hole)));
+}
+
+function locateCapabilities() {
+  return {
+    device: Boolean(window.isSecureContext && navigator.geolocation),
+    center: Boolean(state.map.instance),
+  };
+}
+
+function renderRegionLocate() {
+  if (!ui.regionFilter || ui.regionFilter.classList.contains('hidden')) return;
+  if (!state.locate.row) {
+    const wrap = document.createElement('div');
+    wrap.className = 'region-locate';
+    wrap.id = 'region-locate';
+    const row = document.createElement('div');
+    row.className = 'region-filter__row region-locate__buttons';
+    [['device', 'Use my location'], ['center', 'Use map center']].forEach(([source, label]) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'region-btn region-btn--locate';
+      btn.dataset.locate = source;
+      btn.textContent = label;
+      btn.addEventListener('click', () => locateRegion(source));
+      row.appendChild(btn);
+    });
+    const status = document.createElement('div');
+    status.className = 'region-locate__status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    wrap.append(row, status);
+    state.locate.row = wrap;
+  }
+  const wrap = state.locate.row;
+  const can = locateCapabilities();
+  wrap.querySelectorAll('[data-locate]').forEach((btn) => {
+    btn.hidden = !can[btn.dataset.locate];
+    btn.disabled = Boolean(state.locate.pending);
+  });
+  wrap.hidden = !can.device && !can.center;
+
+  const statusEl = wrap.querySelector('.region-locate__status');
+  const status = state.locate.status;
+  const signature = JSON.stringify(status || null);
+  if (statusEl.dataset.signature !== signature) {
+    statusEl.dataset.signature = signature;
+    statusEl.replaceChildren();
+    if (status?.text) {
+      const line = document.createElement('p');
+      line.className = 'region-locate__text';
+      line.textContent = status.text;
+      if (status.widen) {
+        const widen = document.createElement('button');
+        widen.type = 'button';
+        widen.className = 'region-locate__widen';
+        widen.textContent = `Widen to ${status.widen.group} (${status.widen.count} observers)`;
+        widen.addEventListener('click', () => {
+          state.selectedRegionParent = null;
+          state.selectedRegionGroup = status.widen.group;
+          state.selectedRegion = null;
+          state.locate.status = { text: `${status.widen.group}, widened from ${status.widen.from}.` };
+          render();
+        });
+        line.append(' ', widen);
+      }
+      statusEl.appendChild(line);
+    }
+    if (status?.channel) {
+      const channel = document.createElement('p');
+      channel.className = 'region-locate__text';
+      channel.append(`Testing ${status.channel.place}? Send to `);
+      const code = document.createElement('code');
+      code.textContent = `#${status.channel.name}`;
+      channel.append(code, '.');
+      statusEl.appendChild(channel);
+    }
+  }
+  if (wrap.parentNode !== ui.regionFilter) {
+    ui.regionFilter.appendChild(wrap);
+  }
+}
+
+function devicePosition() {
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => resolve({
+        lat: position.coords.latitude,
+        lon: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+      }),
+      (error) => reject(Object.assign(new Error('geolocation'), {
+        userMessage: error?.code === 1
+          ? 'Location permission was declined. Try Use map center.'
+          : 'Location not available. Try Use map center.',
+      })),
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 0 },
+    );
+  });
+}
+
+async function locatorFeatures() {
+  if (Array.isArray(state.locate.features)) return state.locate.features;
+  const response = await fetch('/api/region-locator', { headers: { accept: 'application/json' } });
+  if (!response.ok) {
+    throw Object.assign(new Error(`HTTP ${response.status}`), {
+      userMessage: 'Region outlines are not available right now.',
+    });
+  }
+  const payload = await response.json();
+  state.locate.features = Array.isArray(payload?.features) ? payload.features : [];
+  return state.locate.features;
+}
+
+// Turns a point into a selection and the sentence that explains it. Pure apart
+// from setting the three selection fields, so a point outside the map leaves
+// the current selection alone.
+function placeFromPoint(point, features, source) {
+  const where = source === 'device' ? 'your location' : 'the map center';
+  const { hasGroups, regions } = regionFilterOptions();
+  const hit = features.find((feature) => pointInGeometry(point.lon, point.lat, feature.geometry));
+  let groupName = hit?.properties?.group || '';
+  if (!hit) {
+    // Neighbours are simplified separately, so a point on a shared border can
+    // fall between them. The dissolved group outline is exact enough to say
+    // which group it is in.
+    const outline = state.map.regionFeatures.find((feature) => pointInGeometry(point.lon, point.lat, feature.geometry));
+    groupName = outline?.properties?.group || '';
+  }
+  const groupEntry = groupName ? regions.find((entry) => entry.group === groupName) : null;
+  if (!groupEntry) {
+    return {
+      text: source === 'device'
+        ? 'Your location is outside the regions on the map.'
+        : 'The map center is outside the regions on the map.',
+    };
+  }
+  const subregion = hit ? groupEntry.regions.find((region) => region.name === hit.properties.name) : null;
+  state.selectedRegionParent = null;
+  state.selectedRegionGroup = hasGroups ? groupEntry.group : null;
+  state.selectedRegion = subregion ? subregion.name : null;
+
+  let text;
+  if (subregion) {
+    text = `${subregion.name}, from ${where}.`;
+  } else if (hit) {
+    text = `No observers in ${hit.properties.name} yet, so showing ${groupEntry.group}.`;
+  } else {
+    text = `${groupEntry.group}, from ${where}.`;
+  }
+  if (source === 'device' && Number(point.accuracy) > LOCATE_APPROXIMATE_METERS) {
+    text += ` Approximate location (about ${Math.round(point.accuracy / 1000)} km).`;
+  }
+
+  const minimum = Number(currentSession()?.minScoringSet) || 3;
+  const subregionCount = (subregion?.count || 0) + (subregion?.inferredCount || 0);
+  const groupCount = (groupEntry.count || 0) + (groupEntry.inferredCount || 0);
+  const widen = subregion && hasGroups && subregionCount < minimum && groupCount > subregionCount
+    ? { group: groupEntry.group, count: groupCount, from: subregion.name }
+    : null;
+
+  // The regional channel only helps someone about to send a test, so the
+  // shared result page leaves it out.
+  let channel = null;
+  const scope = hit?.properties?.scope;
+  const base = state.snapshot?.testChannel?.name || '';
+  const names = state.snapshot?.testChannel?.regional?.names || [];
+  if (!isSharePage() && scope && base && names.includes(`${scope}-${base}`)) {
+    channel = { place: hit.properties.name, name: `${scope}-${base}` };
+  }
+  return { text, widen, channel };
+}
+
+async function locateRegion(source) {
+  if (state.locate.pending) return;
+  state.locate.pending = source;
+  state.locate.status = {
+    text: source === 'device' ? 'Finding your location...' : 'Checking the map center...',
+  };
+  renderRegionLocate();
+  try {
+    let point;
+    if (source === 'device') {
+      point = await devicePosition();
+    } else {
+      const center = state.map.instance?.getCenter();
+      if (!center) {
+        throw Object.assign(new Error('no map'), { userMessage: 'The map is not ready yet.' });
+      }
+      point = { lat: center.lat, lon: center.lng };
+    }
+    const features = await locatorFeatures();
+    state.locate.status = placeFromPoint(point, features, source);
+  } catch (error) {
+    state.locate.status = { text: error?.userMessage || 'Location not available. Try Use map center.' };
+  } finally {
+    state.locate.pending = '';
+  }
   render();
 }
 
 // Human label for the active region filter, or null when nothing is filtered.
 // Used to word the map note and empty state so a narrowed view never reads as
-// missing data. Scoring is server-side and unaffected.
+// missing data, and to say which scope the score is for.
 function activeRegionScopeLabel() {
   if (state.selectedRegion) {
     return state.selectedRegion;
@@ -1651,6 +1970,8 @@ function mergedObserverRoster(session) {
   });
   return { all, targeted, seenByKey };
 }
+
+const UNSCORED_EXPLANATION = 'Not scored: these observers were not active when this test started, so they do not count toward its score.';
 
 // Heard / not heard / not scored, decided from the roster alone so both lists
 // answer the question the same way.
@@ -2256,6 +2577,7 @@ function renderObserverMap(session) {
   // and the reports list together, so it renders here rather than inside any one
   // of the panels it governs.
   renderRegionFilter(session);
+  renderRegionLocate();
 
   const locatedObservers = mapKnownObservers(session);
   const mapInstance = ensureObserverMap();
@@ -2909,9 +3231,19 @@ function renderReceipts(session) {
     list.appendChild(note);
   }
 
+  // One visible line ahead of the not-scored cards (1.1.0). The tooltip that
+  // explained them is invisible on a phone, so the explanation lives in the list.
+  let unscoredNoteShown = false;
   for (const observer of rows) {
     const receipt = receiptByKey.get(observer.key) || null;
     const heardState = heardStateOf(observer);
+    if (heardState === 'unscored' && !unscoredNoteShown) {
+      const unscoredNote = document.createElement('p');
+      unscoredNote.className = 'small-note receipts-unscored-note';
+      unscoredNote.textContent = UNSCORED_EXPLANATION;
+      list.appendChild(unscoredNote);
+      unscoredNoteShown = true;
+    }
     const card = document.createElement('article');
     card.className = `receipt-card${receipt ? '' : ' receipt-card--quiet'}`;
 
@@ -2919,7 +3251,7 @@ function renderReceipts(session) {
     const statusTitle = {
       heard: 'Heard by this check',
       unheard: 'Not heard by this check',
-      unscored: 'Not heard inside the active window, so this code is not scored against it.',
+      unscored: UNSCORED_EXPLANATION,
     }[heardState];
     // Textual, not just a coloured dot, so the state is available to a screen
     // reader. The heard card keeps its arrival label in the same slot.
@@ -3425,6 +3757,10 @@ function render() {
       ui.regionCoverage.textContent = '--';
       ui.regionCoverage.removeAttribute('title');
     }
+    if (ui.regionCoverageCard) {
+      ui.regionCoverageCard.classList.remove('hidden');
+    }
+    renderHealthScope(scoreForSelectedScope(null));
     ui.repeaterCount.textContent = '--';
     if (ui.longestPacketDistance) {
       ui.longestPacketDistance.textContent = '--';
@@ -3465,25 +3801,26 @@ function render() {
   ui.sessionStatus.textContent = sessionRan ? session.status.toUpperCase() : '--';
   setSessionHash(session.messageHash);
   const healthMeasured = isHealthMeasured(session);
+  const score = scoreForSelectedScope(session);
   // Two separate gates. healthMeasured means a message actually landed, so the
-  // counters have something to report. healthRated means the target set was big
-  // enough for a percentage to mean anything - a one-observer target is heard or
-  // not heard, and dressing that up as 100% VERY HEALTHY is what this prevents.
-  const healthRated = healthMeasured && isHealthRated(session);
-  ui.healthLabel.textContent = healthRated
-    ? session.healthLabel
-    : (healthMeasured ? 'Not rated' : 'Waiting');
-  ui.healthLabel.className = healthRated ? healthClass(session.healthLabel) : '';
-  ui.healthPercent.innerHTML = healthScoreMarkup(session.healthPercent, healthRated);
-  renderHealthNote(session, healthMeasured, healthRated);
+  // counters have something to report. healthRated means the scope had enough
+  // observers for a grade. Below that the count and the percentage are still
+  // shown - they are what was heard - but the headline says "Small sample"
+  // instead of a grade word: a one-observer scope is heard or not heard, and
+  // dressing that up as 100% VERY HEALTHY is what this prevents.
+  const healthRated = healthMeasured && isHealthRated(score);
+  const hasTarget = Number(score.expectedCount) > 0;
+  ui.healthLabel.textContent = headlineFor(score, healthMeasured, healthRated);
+  ui.healthLabel.className = healthRated ? healthClass(score.healthLabel) : '';
+  ui.healthPercent.innerHTML = healthScoreMarkup(score.healthPercent, healthMeasured && hasTarget);
+  renderHealthScope(score);
+  renderHealthNote(score, healthMeasured, healthRated);
   // Until the test message is heard, these counters have no result to report.
-  // A measured 0 is meaningful; an unmeasured 0 just looks like a failure. The
-  // raw count is still shown when the score is unrated - 1 / 1 is honest, it is
-  // only the percentage derived from it that is not.
+  // A measured 0 is meaningful; an unmeasured 0 just looks like a failure.
   ui.observedCount.textContent = healthMeasured
-    ? `${session.observedCount} / ${session.expectedCount}`
+    ? `${score.observedCount} / ${score.expectedCount}`
     : '--';
-  renderRegionCoverage(session, healthRated);
+  renderRegionCoverage(score, healthMeasured && hasTarget);
   ui.repeaterCount.textContent = healthMeasured ? String(session.repeaterCount || 0) : '--';
   if (ui.longestPacketDistance) {
     const distanceText = session.longestPacketDistanceText || '--';
@@ -3502,7 +3839,11 @@ function render() {
   ui.messagePreview.textContent = session.messageBody || `Waiting for your ${channelLabel} message.`;
   ui.messagePreview.title = session.messageBody || '';
 
-  updateRing(healthRated ? session.healthPercent : 0, healthRated ? session.healthLabel : 'Waiting');
+  // A small sample fills the ring to its percentage in the neutral colour.
+  updateRing(
+    healthMeasured && hasTarget ? score.healthPercent : 0,
+    healthRated ? score.healthLabel : (healthMeasured && hasTarget ? 'NOT RATED' : 'Waiting'),
+  );
   renderObserverMap(session);
   renderReceipts(session);
   renderHistory(historySessions);

@@ -24,9 +24,9 @@ Released under the MIT License; see [LICENSE](LICENSE).
 
 ## Bundled data
 
-- **MeshCore region scope names**: `regions/us-ca-meshcore-scopes.json` (the 73
-  codes) and `test/fixtures/meshcore-settings-regions-7ec46658.json` (an unchanged
-  copy of `data/regions.json`) come from
+- **MeshCore region scope names**: `regions/us-ca-meshcore-scopes.json` is an
+  unchanged copy of `data/regions.json` (73 codes with their names and county
+  outlines) from
   [matkam/meshcore-settings](https://github.com/matkam/meshcore-settings) at commit
   `7ec46658`. MIT License, Copyright (c) 2026 matkam:
 
