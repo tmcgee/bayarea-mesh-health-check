@@ -47,42 +47,56 @@ function mapTiles(cartoBasemapKey = 'test-carto-key') {
   };
 }
 
-// Mirrors the grouped hierarchy the server derives from the directory. Observers
-// without a regionGroup produce no hierarchy at all, which is what the older
-// map tests below rely on.
-function regionHierarchy(observerDirectory) {
-  const groups = new Map();
-  observerDirectory.forEach((observer) => {
-    if (!observer.regionGroup) {
-      return;
-    }
-    if (!groups.has(observer.regionGroup)) {
-      groups.set(observer.regionGroup, { group: observer.regionGroup, count: 0, inferredCount: 0, regions: [] });
-      // Test-only field: the server takes a group's parent from the boundary
-      // file, which these mocks do not have.
-      if (observer.regionParent) {
-        groups.get(observer.regionGroup).parent = observer.regionParent;
-      }
-    }
-    const entry = groups.get(observer.regionGroup);
-    // Placed by uplink code alone: no county, so the server tallies it at group
-    // level as inferredCount rather than as a located observer.
-    if (!observer.region && observer.regionInferred) {
-      entry.inferredCount += 1;
-      return;
-    }
-    entry.count += 1;
-    const region = entry.regions.find((item) => item.name === observer.region);
-    if (region) {
-      region.count += 1;
-    } else if (observer.region) {
-      entry.regions.push({ name: observer.region, count: 1, packetCount: 1 });
-    }
-  });
-  return [...groups.values()];
+// Place codes in these mocks are the display names squashed to lowercase
+// letters and digits, as MeshCore scope names are ("North Bay" -> northbay).
+function placeCode(name) {
+  return String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key') {
+// The server's 1.2.0 placement, rebuilt from the test-friendly fields: an
+// observer sits at the deepest of regionParent > regionGroup > region it has,
+// and placePath runs from the top level down to it. An observer placed by its
+// uplink code alone (regionInferred, no county) stops at its group. Without a
+// regionGroup an observer is unplaced, which the older map tests rely on.
+function observerPlaceNames(observer) {
+  if (!observer.regionGroup) return [];
+  return [observer.regionParent, observer.regionGroup, observer.region].filter(Boolean);
+}
+
+function withPlace(observer) {
+  const placePath = observerPlaceNames(observer).map(placeCode);
+  return { ...observer, place: placePath.at(-1) || null, placePath };
+}
+
+// Mirrors snapshot.regionTree: every place holding an observer and each of its
+// ancestors, { code, name, parent, depth, count, inferredCount, children },
+// sorted by depth then name. Located observers count at their place and above;
+// inferred ones count as inferredCount at the same places.
+function regionTree(observerDirectory, expand = []) {
+  const nodes = new Map();
+  observerDirectory.forEach((observer) => {
+    const names = observerPlaceNames(observer);
+    names.forEach((name, index) => {
+      const code = placeCode(name);
+      const parent = index > 0 ? placeCode(names[index - 1]) : null;
+      if (!nodes.has(code)) {
+        nodes.set(code, {
+          code, name, parent, depth: index + 1, count: 0, inferredCount: 0, children: [],
+          ...(expand.includes(code) ? { expand: true } : {}),
+        });
+        if (parent) nodes.get(parent).children.push(code);
+      }
+      const node = nodes.get(code);
+      if (observer.regionInferred) node.inferredCount += 1;
+      else node.count += 1;
+    });
+  });
+  const byName = (left, right) => nodes.get(left).name.localeCompare(nodes.get(right).name);
+  nodes.forEach((node) => node.children.sort(byName));
+  return [...nodes.values()].sort((left, right) => left.depth - right.depth || left.name.localeCompare(right.name));
+}
+
+function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key', { expand = [] } = {}) {
   return {
     map: mapTiles(cartoBasemapKey),
     site: {
@@ -90,7 +104,7 @@ function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key') {
       eyebrow: 'MeshCore Observer Coverage',
       headline: 'Check your mesh reach.',
       description: 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
-      version: '1.1.0+upstream.1.3.8',
+      version: '1.2.0+upstream.1.3.8',
       repoUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check',
       changesUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md',
       map: mapTiles(cartoBasemapKey),
@@ -100,9 +114,9 @@ function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key') {
     turnstile: { enabled: false, verified: true },
     defaultObserverSource: 'configured',
     defaultObserverKeys: observerDirectory.map((observer) => observer.key),
-    defaultObservers: observerDirectory,
-    observerDirectory,
-    activeObservers: observerDirectory,
+    defaultObservers: observerDirectory.map(withPlace),
+    observerDirectory: observerDirectory.map(withPlace),
+    activeObservers: observerDirectory.map(withPlace),
     observerStats: {
       activeCount: observerDirectory.length,
       windowSeconds: 900,
@@ -114,7 +128,7 @@ function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key') {
       distanceUnit: 'mi',
     },
     availableRegions: [...new Set(observerDirectory.map((observer) => observer.region).filter(Boolean))],
-    regionHierarchy: regionHierarchy(observerDirectory),
+    regionTree: regionTree(observerDirectory, expand),
     results: { retentionSeconds: 604800 },
     // The real payload carries the server's clock, and the code-expiry
     // countdown measures against it rather than the browser's.
@@ -122,13 +136,13 @@ function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key') {
   };
 }
 
-// A square boundary for the region outline layer, shaped like the payload
-// /api/region-boundaries serves: one feature per region group, carrying the
-// group name and nothing else.
-function boundaryFeature(group, west, south, east, north) {
+// A square outline shaped like a /api/region-boundaries feature: the place's
+// code and name, its parent's code below the top level, and empty: true for an
+// observer-less child the map draws in gray.
+function boundaryFeature(name, west, south, east, north, parent = null, extra = {}) {
   return {
     type: 'Feature',
-    properties: { group },
+    properties: { code: placeCode(name), name, ...(parent ? { parent: placeCode(parent) } : {}), ...extra },
     geometry: {
       type: 'MultiPolygon',
       coordinates: [[[
@@ -140,6 +154,52 @@ function boundaryFeature(group, west, south, east, north) {
       ]]],
     },
   };
+}
+
+// The server answers ?parent=CODE with that place's children, ?parent= with
+// the top level, and no parameter (and /api/region-locator) with every level.
+async function routeRegionOutlines(page, features, { mapDetail = true } = {}) {
+  const byCode = new Map((features || []).map((feature) => [feature.properties.code, feature]));
+  const depth = (feature) => (feature?.properties.parent ? 1 + depth(byCode.get(feature.properties.parent)) : 1);
+  const all = (features || []).map((feature) => ({
+    ...feature,
+    properties: { parent: null, depth: depth(feature), ...feature.properties },
+  }));
+  const collection = (list) => JSON.stringify({ type: 'FeatureCollection', features: list });
+  // ?code= is the zoomed-in map asking for full detail. The mock's full copy
+  // has one extra vertex (a notch midway along the first edge), so a swap from
+  // the coarse rectangle shows in the drawn path.
+  const fullDetail = (feature) => {
+    const ring = feature.geometry.coordinates[0][0];
+    const [a, b] = ring;
+    const notch = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2 + 0.01];
+    return { ...feature, geometry: { type: 'MultiPolygon', coordinates: [[[a, notch, ...ring.slice(1)]]] } };
+  };
+  await page.route(/\/api\/region-boundaries(\?.*)?$/, (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    if (params.has('code')) {
+      // mapDetail: false keeps the map coarse, so the locator's own fetch shows.
+      if (!mapDetail) return route.fulfill({ status: 503, body: '' });
+      const codes = new Set(params.get('code').split(','));
+      return route.fulfill({ contentType: 'application/json', body: collection(all.filter((feature) => codes.has(feature.properties.code)).map(fullDetail)) });
+    }
+    const parent = params.get('parent');
+    const parents = new Set(parent == null ? [] : parent.split(','));
+    const list = parent == null
+      ? all
+      : all.filter((feature) => parents.has(feature.properties.parent || '') && !(!feature.properties.parent && feature.properties.empty));
+    return route.fulfill({ contentType: 'application/json', body: collection(list) });
+  });
+  // The locator loads every level coarse, then ?code= for the places whose
+  // edge passes near the point (full detail, notched as above).
+  await page.route(/\/api\/region-locator(\?.*)?$/, (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    if (params.has('code')) {
+      const codes = new Set(params.get('code').split(','));
+      return route.fulfill({ contentType: 'application/json', body: collection(all.filter((feature) => codes.has(feature.properties.code)).map(fullDetail)) });
+    }
+    return route.fulfill({ contentType: 'application/json', body: collection(all) });
+  });
 }
 
 function mapSession(expectedObservers, seenKeys = [], receipts = []) {
@@ -176,7 +236,9 @@ async function openMockMapSession(
   observerDirectory,
   expectedObservers,
   cartoBasemapKey = 'test-carto-key',
-  { seenKeys = [], boundaries = null, receipts = [], session = {}, path = '/share/map-session' } = {},
+  {
+    seenKeys = [], boundaries = null, receipts = [], session = {}, path = '/share/map-session', expand = [], mapDetail = true,
+  } = {},
 ) {
   await page.addInitScript(() => {
     window.WebSocket = class {
@@ -186,16 +248,13 @@ async function openMockMapSession(
   });
   await page.route('**/api/bootstrap', (route) => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify(mapBootstrap(observerDirectory, cartoBasemapKey)),
+    body: JSON.stringify(mapBootstrap(observerDirectory, cartoBasemapKey, { expand })),
   }));
   await page.route('**/api/sessions/map-session', (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ ...mapSession(expectedObservers, seenKeys, receipts), ...session }),
   }));
-  await page.route('**/api/region-boundaries', (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({ type: 'FeatureCollection', features: boundaries || [] }),
-  }));
+  await routeRegionOutlines(page, boundaries, { mapDetail });
   await page.goto(path);
 }
 
@@ -433,7 +492,7 @@ test('no explanation line when every listed observer is scored', async ({ page }
 });
 
 test('region outlines draw under the markers, colour by status, and follow the region filter', async ({ page }) => {
-  // Two regions, and the first has two subregions so the drill-down below has
+  // Two regions, and the first has two counties so the drill-down below has
   // something to narrow to.
   const heard = mapObserver(MAP_TEST_KEYS.target, 'Heard Observer', 42.3601, -71.0589, 'Boston', 'North America');
   const quietNear = mapObserver(MAP_TEST_KEYS.neighbour, 'Quiet Neighbour', 42.65, -71.3, 'Lowell', 'North America');
@@ -445,16 +504,22 @@ test('region outlines draw under the markers, colour by status, and follow the r
     boundaries: [
       boundaryFeature('North America', -71.5, 42, -70.5, 42.7),
       boundaryFeature('Europe', 2, 48.5, 2.7, 49.2),
+      boundaryFeature('Boston', -71.2, 42.2, -70.9, 42.5, 'North America'),
+      boundaryFeature('Lowell', -71.45, 42.55, -71.15, 42.69, 'North America'),
+      // An observer-less county: outlined in gray under its parent only.
+      boundaryFeature('Cape', -70.9, 42, -70.5, 42.2, 'North America', { empty: true }),
+      boundaryFeature('Paris', 2.2, 48.7, 2.5, 49, 'Europe'),
     ],
   });
 
   const outlines = page.locator('#observer-map path.region-shape');
+  const outline = (name) => page.locator(`#observer-map path[data-region-place="${placeCode(name)}"]`);
   await expect(outlines).toHaveCount(2);
 
-  // One outline per region, matching the region chip dots: the region where
+  // One outline per top-level region, matching the chip dots: the region where
   // something was heard is part-green, the silent region is red.
-  await expect(page.locator('#observer-map path[data-region-group="North America"]')).toHaveClass(/region-shape--some/);
-  await expect(page.locator('#observer-map path[data-region-group="Europe"]')).toHaveClass(/region-shape--none/);
+  await expect(outline('North America')).toHaveClass(/region-shape--some/);
+  await expect(outline('Europe')).toHaveClass(/region-shape--none/);
 
   // Fill is off, so the interior of a region never paints over the basemap or
   // becomes a hit target.
@@ -476,29 +541,143 @@ test('region outlines draw under the markers, colour by status, and follow the r
   await page.locator('#observer-map .leaflet-marker-icon').first().click();
   await expect(page.locator('.leaflet-popup-content')).toContainText('Heard Observer');
 
-  // Selecting a region leaves only that region's outline on the map.
+  // Selecting a region shows it subdivided: its children's outlines replace
+  // the top level (1.2.0).
   await page.locator('.region-btn--group', { hasText: 'Europe' }).first().click();
   await expect(outlines).toHaveCount(1);
-  await expect(page.locator('#observer-map path[data-region-group="Europe"]')).toHaveCount(1);
-  await expect(page.locator('#observer-map path[data-region-group="North America"]')).toHaveCount(0);
+  await expect(outline('Paris')).toHaveClass(/region-shape--none/);
+  await expect(outline('Europe')).toHaveCount(0);
+  await expect(outline('North America')).toHaveCount(0);
 
-  // Drilling into a subregion narrows the plotted observers but keeps the whole
-  // region outlined - the outline describes the region, not the selection.
+  // North America's two counties with observers, and the one without in gray.
   await page.locator('.region-btn--group', { hasText: 'North America' }).first().click();
   await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(2);
+  await expect(outlines).toHaveCount(3);
+  await expect(outline('Boston')).toHaveClass(/region-shape--all/);
+  await expect(outline('Lowell')).toHaveClass(/region-shape--none/);
+  await expect(outline('Cape')).toHaveClass(/region-shape--unknown/);
+
+  // Drilling into a county narrows the plotted observers but keeps its
+  // siblings outlined, as a county kept its group's outline in 1.1.0.
   await page.locator('.region-btn--child', { hasText: 'Lowell' }).first().click();
   await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
-  await expect(outlines).toHaveCount(1);
-  await expect(page.locator('#observer-map path[data-region-group="North America"]')).toHaveClass(/region-shape--some/);
+  await expect(outlines).toHaveCount(3);
 
   await page.locator('.region-btn--all').first().click();
   await expect(outlines).toHaveCount(2);
+  await expect(outline('Cape')).toHaveCount(0);
 });
 
-// Parent regions (bayarea.21): a group's parent shows as a labelled cluster in
-// the group row. The label selects every group under it, on the list and the
-// map; a group chip inside works exactly as before and clears the parent.
-test('a parent region selects all of its groups at once', async ({ page }) => {
+// Overrides `expand` and faint lines (1.2.0): under All an expanded top-level
+// place is drawn as its children, and every bold outline shows its own
+// children as faint, status-less lines inside it.
+test('an expanded place opens subdivided, and each outline shows its children faintly', async ({ page }) => {
+  const boston = mapObserver(MAP_TEST_KEYS.target, 'Boston Observer', 42.3601, -71.0589, 'Boston', 'North America');
+  const lowell = mapObserver(MAP_TEST_KEYS.neighbour, 'Lowell Observer', 42.65, -71.3, 'Lowell', 'New England');
+  const paris = mapObserver(MAP_TEST_KEYS.outside, 'Paris Observer', 48.8566, 2.3522, 'Paris', 'Europe');
+  boston.regionParent = 'Americas';
+  lowell.regionParent = 'Americas';
+  const observers = [boston, lowell, paris];
+  const requests = [];
+  page.on('request', (request) => { if (request.url().includes('/api/region-')) requests.push(request.url()); });
+
+  await openMockMapSession(page, observers, observers, 'test-carto-key', {
+    seenKeys: [boston.key],
+    expand: ['americas'],
+    boundaries: [
+      boundaryFeature('Americas', -71.5, 42, -70.5, 42.9),
+      boundaryFeature('Europe', 2, 48.5, 2.7, 49.2),
+      boundaryFeature('North America', -71.2, 42, -70.5, 42.5, 'Americas'),
+      boundaryFeature('New England', -71.5, 42.5, -71, 42.9, 'Americas'),
+      boundaryFeature('Boston', -71.2, 42.2, -70.9, 42.5, 'North America'),
+      boundaryFeature('Lowell', -71.45, 42.55, -71.15, 42.69, 'New England'),
+      boundaryFeature('Paris', 2.2, 48.7, 2.5, 49, 'Europe'),
+    ],
+  });
+
+  const bold = () => page.$$eval('#observer-map path.region-shape', (paths) => paths.map((path) => path.dataset.regionPlace).sort());
+  const faint = () => page.$$eval('#observer-map path.region-faint', (paths) => paths.map((path) => path.dataset.regionFaint).sort());
+  await expect.poll(bold).toEqual(['europe', 'newengland', 'northamerica']);
+  await expect.poll(faint).toEqual(['boston', 'lowell', 'paris']);
+  // The chip still offers the expanded place whole.
+  await expect(page.locator('#region-filter .region-btn[data-place="americas"]')).toBeVisible();
+  // One request for everything the first view draws, bold and faint.
+  expect(requests.filter((url) => url.includes('region-boundaries'))).toHaveLength(1);
+
+  // Faint lines carry no status and sit under the bold outlines.
+  await expect(page.locator('#observer-map path.region-faint').first()).not.toHaveClass(/region-shape--/);
+  const order = await page.$$eval('#observer-map path.region-shape, #observer-map path.region-faint',
+    (paths) => paths.map((path) => (path.classList.contains('region-faint') ? 'faint' : 'bold')));
+  expect(order.lastIndexOf('faint')).toBeLessThan(order.indexOf('bold'));
+  // The faint lines' opacity is their pane's, so overlapping borders do not darken.
+  await expect(page.locator('#observer-map .leaflet-observerRegionsFaint-pane')).toHaveCSS('opacity', '0.45');
+
+  // Selected, the expanded place draws as it did under All, minus Europe.
+  await page.locator('#region-filter .region-btn[data-place="americas"]').click();
+  await expect.poll(bold).toEqual(['newengland', 'northamerica']);
+  await expect.poll(faint).toEqual(['boston', 'lowell']);
+
+  // A level down: its counties are bold and have nothing faint below them.
+  await page.locator('#region-filter .region-btn[data-place="newengland"]').click();
+  await expect.poll(bold).toEqual(['lowell']);
+  await expect.poll(faint).toEqual([]);
+
+  await page.locator('#region-filter .region-btn--all').click();
+  await expect.poll(bold).toEqual(['europe', 'newengland', 'northamerica']);
+  await expect.poll(faint).toEqual(['boston', 'lowell', 'paris']);
+});
+
+// Two detail levels (1.2.0): levels load coarse, and once the map is zoomed in
+// the outlines in view, and only those, are fetched again at full detail.
+test('outlines load coarse and swap to full detail for what is in view when zoomed in', async ({ page }) => {
+  const boston = mapObserver(MAP_TEST_KEYS.target, 'Boston Observer', 42.3601, -71.0589, 'Boston', 'North America');
+  const lowell = mapObserver(MAP_TEST_KEYS.neighbour, 'Lowell Observer', 42.65, -71.3, 'Lowell', 'New England');
+  const paris = mapObserver(MAP_TEST_KEYS.outside, 'Paris Observer', 48.8566, 2.3522, 'Paris', 'Europe');
+  boston.regionParent = 'Americas';
+  lowell.regionParent = 'Americas';
+  const observers = [boston, lowell, paris];
+  const requests = [];
+  page.on('request', (request) => { if (request.url().includes('/api/region-boundaries')) requests.push(new URL(request.url())); });
+
+  await openMockMapSession(page, observers, observers, 'test-carto-key', {
+    seenKeys: [boston.key],
+    expand: ['americas'],
+    boundaries: [
+      boundaryFeature('Americas', -71.5, 42, -70.5, 42.9),
+      boundaryFeature('Europe', 2, 48.5, 2.7, 49.2),
+      boundaryFeature('North America', -71.2, 42, -70.5, 42.5, 'Americas'),
+      boundaryFeature('New England', -71.5, 42.5, -71, 42.9, 'Americas'),
+      boundaryFeature('Boston', -71.2, 42.2, -70.9, 42.5, 'North America'),
+      boundaryFeature('Lowell', -71.45, 42.55, -71.15, 42.69, 'New England'),
+      boundaryFeature('Paris', 2.2, 48.7, 2.5, 49, 'Europe'),
+    ],
+  });
+  const bold = () => page.$$eval('#observer-map path.region-shape', (paths) => paths.map((path) => path.dataset.regionPlace).sort());
+  await expect.poll(bold).toEqual(['europe', 'newengland', 'northamerica']);
+  // Boston to Paris is a world view: coarse only.
+  await mapSettled(page);
+  expect(requests.map((url) => url.searchParams.get('detail'))).toEqual(['coarse']);
+  expect(requests.some((url) => url.searchParams.has('code'))).toBe(false);
+
+  const lowellPath = () => page.locator('#observer-map path.region-shape[data-region-place="lowell"]').getAttribute('d');
+  await page.locator('#region-filter .region-btn[data-place="americas"]').click();
+  await page.locator('#region-filter .region-btn[data-place="newengland"]').click();
+  await expect.poll(bold).toEqual(['lowell']);
+  await mapSettled(page);
+  // Lowell's frame is about 0.3 degrees wide, around zoom 10.
+  await expect.poll(() => requests.filter((url) => url.searchParams.has('code')).length).toBeGreaterThan(0);
+  const asked = requests.filter((url) => url.searchParams.has('code')).flatMap((url) => url.searchParams.get('code').split(','));
+  expect(asked).toContain('lowell');
+  expect(asked).not.toContain('paris');
+  expect(asked).not.toContain('europe');
+  // The swap redraws the outline with the full copy's extra vertex.
+  await expect.poll(async () => ((await lowellPath()) || '').split(/[ML]/).length).toBeGreaterThan(5);
+});
+
+// Nesting (1.2.0): one row of top-level places, then a row per level of the
+// selected path, each led by "All <place>" and indented by depth. A chip above
+// the selection on its path is marked within, not active.
+test('nested places open a row per level and select everything under them', async ({ page }) => {
   const boston = mapObserver(MAP_TEST_KEYS.target, 'Boston Observer', 42.3601, -71.0589, 'Boston', 'North America');
   const lowell = mapObserver(MAP_TEST_KEYS.neighbour, 'Lowell Observer', 42.65, -71.3, 'Lowell', 'New England');
   const paris = mapObserver(MAP_TEST_KEYS.outside, 'Paris Observer', 48.8566, 2.3522, 'Paris', 'Europe');
@@ -508,51 +687,90 @@ test('a parent region selects all of its groups at once', async ({ page }) => {
 
   await openMockMapSession(page, observers, observers, 'test-carto-key', {
     boundaries: [
-      boundaryFeature('North America', -71.2, 42, -70.5, 42.5),
-      boundaryFeature('New England', -71.5, 42.5, -71, 42.9),
+      boundaryFeature('Americas', -71.5, 42, -70.5, 42.9),
       boundaryFeature('Europe', 2, 48.5, 2.7, 49.2),
+      boundaryFeature('North America', -71.2, 42, -70.5, 42.5, 'Americas'),
+      boundaryFeature('New England', -71.5, 42.5, -71, 42.9, 'Americas'),
+      boundaryFeature('Lowell', -71.45, 42.55, -71.15, 42.69, 'New England'),
     ],
   });
 
+  const filter = page.locator('.region-filter--map');
+  const rows = filter.locator('.region-filter__row[data-depth]');
+  const chip = (name) => filter.locator(`.region-btn[data-place="${placeCode(name)}"]`);
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
-    const cluster = page.locator('.region-filter--map .region-parent');
-    await expect(cluster).toHaveCount(1);
-    await expect(cluster).toHaveAttribute('aria-label', 'Americas');
-    await expect(cluster.locator('.region-btn--parent')).toContainText('Americas');
-    await expect(cluster.locator('.region-btn--parent .region-btn__count')).toHaveText('2');
-    await expect(cluster.locator('.region-btn--group')).toHaveText([/North America/, /New England/]);
-    // Europe has no parent and stays a plain chip outside any cluster.
-    await expect(page.locator('.region-filter--map .region-btn--group', { hasText: 'Europe' })).toHaveCount(1);
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first().locator('.region-btn')).toHaveText([/All regions/, /Americas/, /Europe/]);
+    await expect(chip('Americas').locator('.region-btn__count')).toHaveText('2');
 
-    await cluster.locator('.region-btn--parent').click();
-    await expect(cluster.locator('.region-btn--parent')).toHaveClass(/active/);
+    await chip('Americas').click();
+    await expect(chip('Americas')).toHaveClass(/active/);
+    await expect(chip('Americas')).toHaveAttribute('aria-pressed', 'true');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(1)).toHaveAttribute('data-depth', '2');
+    await expect(rows.nth(1)).toHaveAttribute('aria-label', 'Americas');
+    await expect(rows.nth(1).locator('.region-btn')).toHaveText([/All Americas/, /New England/, /North America/]);
     await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(2);
     await expect(page.locator('#observer-map path.region-shape')).toHaveCount(2);
-    await expect(page.locator('#observer-map path[data-region-group="Europe"]')).toHaveCount(0);
+    await expect(page.locator('#observer-map path[data-region-place="europe"]')).toHaveCount(0);
     await expect(page.locator('#map-observer-note')).toContainText('Americas');
-    // No subregion row: the groups to narrow to are the chips in the cluster.
-    await expect(page.locator('.region-filter--map .region-filter__row--subregions')).toHaveCount(0);
 
-    await cluster.locator('.region-btn--group', { hasText: 'New England' }).click();
-    await expect(cluster.locator('.region-btn--parent')).not.toHaveClass(/active/);
-    await expect(cluster).toHaveClass(/region-parent--within/);
+    // A level down: Americas is now within, and New England opens its own row.
+    await chip('New England').click();
+    await expect(chip('Americas')).not.toHaveClass(/active/);
+    await expect(chip('Americas')).toHaveClass(/region-btn--within/);
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(2)).toHaveAttribute('data-depth', '3');
+    await expect(rows.nth(2).locator('.region-btn')).toHaveText([/All New England/, /Lowell/]);
     await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
+    await expect(page.locator('#observer-map path[data-region-place="lowell"]')).toHaveCount(1);
 
-    await page.locator('.region-filter--map .region-btn--all').click();
+    // The deeper row is indented further than the one above it.
+    const indent = async (index) => (await rows.nth(index).boundingBox()).x;
+    expect(await indent(2)).toBeGreaterThan(await indent(1));
+
+    await filter.locator('.region-btn--all').click();
     await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(3);
-    await expect(cluster).not.toHaveClass(/region-parent--within/);
+    await expect(rows).toHaveCount(1);
+    await expect(filter.locator('.region-btn--within')).toHaveCount(0);
   }
 });
 
-// Screen-space rectangles of a region outline and of the map, for asserting what
-// the viewport frames without reaching into Leaflet's module-scoped map.
-async function outlineFraming(page, group) {
-  return page.evaluate((name) => {
-    const path = document.querySelector(`#observer-map path[data-region-group="${name}"]`);
+// Screen-space rectangle of a set of drawn outlines (their union) against the
+// map, for asserting what the viewport frames without reaching into Leaflet's
+// module-scoped map.
+// Leaflet ignores a new frame while a zoom or pan animation runs, so a test that
+// clicks again must first let the map come to rest: no animation class, and
+// the panes' transforms unchanged across a few frames.
+async function mapSettled(page) {
+  const snapshot = () => page.evaluate(() => {
     const map = document.querySelector('#observer-map');
-    if (!path || !map) return null;
-    const o = path.getBoundingClientRect();
+    const panes = [...map.querySelectorAll('.leaflet-map-pane, .leaflet-proxy, .leaflet-zoom-animated')]
+      .map((pane) => pane.style.transform).join(';');
+    return map.querySelector('.leaflet-zoom-anim') || map.classList.contains('leaflet-zoom-anim') ? null : panes;
+  });
+  await expect.poll(async () => {
+    const first = await snapshot();
+    await page.waitForTimeout(300);
+    return first !== null && first === await snapshot();
+  }, { timeout: 5000 }).toBe(true);
+}
+
+async function outlineFraming(page, ...names) {
+  return page.evaluate((codes) => {
+    const paths = codes.map((code) => document.querySelector(`#observer-map path[data-region-place="${code}"]`));
+    const map = document.querySelector('#observer-map');
+    if (paths.some((path) => !path) || !map) return null;
+    const boxes = paths.map((path) => path.getBoundingClientRect());
+    const o = {
+      left: Math.min(...boxes.map((box) => box.left)),
+      right: Math.max(...boxes.map((box) => box.right)),
+      top: Math.min(...boxes.map((box) => box.top)),
+      bottom: Math.max(...boxes.map((box) => box.bottom)),
+    };
+    o.width = o.right - o.left;
+    o.height = o.bottom - o.top;
     const m = map.getBoundingClientRect();
     // Leaflet clips an outline that is panned wholly off-screen to an empty
     // path, whose zero-size box would otherwise read as "inside" the map.
@@ -564,10 +782,10 @@ async function outlineFraming(page, group) {
       // 0.5 and 1; the world view at zoom 2 would be near 0.1.
       fill: Math.max(o.width / (m.width - 52), o.height / (m.height - 52)),
     };
-  }, group);
+  }, names.map(placeCode));
 }
 
-test('a region chip zooms to the region outline, a county chip to its observers', async ({ page }) => {
+test('a region chip zooms to the region outline, a county chip to its own', async ({ page }) => {
   // Two mapped observers clustered in one corner of a large region, so fitting
   // the markers and fitting the outline give very different views.
   const boston = mapObserver(MAP_TEST_KEYS.target, 'Boston Observer', 42.3601, -71.0589, 'Boston', 'North America');
@@ -580,47 +798,63 @@ test('a region chip zooms to the region outline, a county chip to its observers'
   };
   const observers = [boston, cambridge, unmapped];
 
+  // The two counties tile North America, so their union is its outline. Boston
+  // is a narrow strip, so framing it pushes its neighbour out of view.
   await openMockMapSession(page, observers, observers, 'test-carto-key', {
     boundaries: [
       boundaryFeature('North America', -80, 35, -65, 48),
       boundaryFeature('Europe', -5, 43, 8, 51),
+      boundaryFeature('Boston', -80, 41, -77, 44, 'North America'),
+      boundaryFeature('Cambridge', -77, 35, -65, 48, 'North America'),
     ],
   });
   await expect(page.locator('#observer-map path.region-shape')).toHaveCount(2);
 
   // Region chip: the whole outline is in view and fills the padded viewport on
   // one axis. Fitting the two markers instead would zoom to 10 and push the
-  // outline far past every edge.
+  // outline far past every edge. Selected, it is drawn as its counties.
   await page.locator('.region-btn--group', { hasText: 'North America' }).first().click();
-  await expect.poll(() => outlineFraming(page, 'North America'), { timeout: 5000 })
+  await expect.poll(() => outlineFraming(page, 'Boston', 'Cambridge'), { timeout: 5000 })
     .toMatchObject({ inside: true });
-  expect((await outlineFraming(page, 'North America')).fill).toBeGreaterThan(0.45);
+  expect((await outlineFraming(page, 'Boston', 'Cambridge')).fill).toBeGreaterThan(0.45);
 
-  // County chip: back to framing its observers, so the outline overflows.
+  // County chip (1.2.0): a county has an outline of its own, so it frames that
+  // rather than its one observer, and its neighbour falls partly out of view.
+  await mapSettled(page);
   await page.locator('.region-btn--child', { hasText: 'Boston' }).first().click();
   await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
-  await expect.poll(() => outlineFraming(page, 'North America'), { timeout: 5000 })
-    .toMatchObject({ inside: false });
+  // Polled on the fill: Boston already sits inside North America's frame, so
+  // "inside" alone would pass before the map moves.
+  await expect.poll(async () => (await outlineFraming(page, 'Boston'))?.fill, { timeout: 5000 })
+    .toBeGreaterThan(0.45);
+  // Leaflet ignores a new frame while a zoom animation runs, so let it land
+  // before the next click.
+  await mapSettled(page);
+  expect((await outlineFraming(page, 'Boston')).inside).toBe(true);
+  expect((await outlineFraming(page, 'Boston', 'Cambridge')).inside).toBe(false);
 
-  // "All North America" is the region again, so the outline framing returns.
+  // "All North America" is the region again, so the whole framing returns.
+  await mapSettled(page);
   await page.locator('.region-btn--child', { hasText: 'All North America' }).first().click();
-  await expect.poll(() => outlineFraming(page, 'North America'), { timeout: 5000 })
+  await expect.poll(() => outlineFraming(page, 'Boston', 'Cambridge'), { timeout: 5000 })
     .toMatchObject({ inside: true });
 
   // A region with no mapped observers still moves the map to itself. Before,
   // the map stayed on North America and Europe's outline sat off-screen.
+  await mapSettled(page);
   await page.locator('.region-btn--group', { hasText: 'Europe' }).first().click();
   await expect(page.locator('#map-observer-note')).toHaveText('No mapped observers in Europe.');
   await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(0);
-  await expect.poll(() => outlineFraming(page, 'Europe'), { timeout: 5000 })
-    .toMatchObject({ inside: true });
-  expect((await outlineFraming(page, 'Europe')).fill).toBeGreaterThan(0.45);
+  await expect.poll(async () => (await outlineFraming(page, 'Europe'))?.fill, { timeout: 5000 })
+    .toBeGreaterThan(0.45);
+  expect((await outlineFraming(page, 'Europe')).inside).toBe(true);
 
   // A poll re-render with the same selection keeps the user's view: pan away,
   // wait past the 5 s refresh, and the map has not snapped back.
   const map = page.locator('#observer-map');
   // The drag starts at the map's centre, so the map has to be on screen: at
   // 1280x720 the location buttons (1.1.0) put the centre just below the fold.
+  await mapSettled(page);
   await map.scrollIntoViewIfNeeded();
   const box = await map.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -677,7 +911,7 @@ function parseRgb(css) {
 }
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-  test(`region outlines stroke inside their own boundary at ${viewport.width}px`, async ({ page }) => {
+  test(`a shared border is one 2px line, split 1px a side where statuses differ, at ${viewport.width}px`, async ({ page }) => {
     await page.setViewportSize(viewport);
     // Three abutting squares: a silent (red) region between two heard (green)
     // ones - the case where a centred stroke let one colour hide the other.
@@ -691,12 +925,15 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         boundaryFeature('West', -3, -1, -1, 1),
         boundaryFeature('Middle', -1, -1, 1, 1),
         boundaryFeature('East', 1, -1, 3, 1),
+        // Middle's one county fills it, so selected on its own (which draws its
+        // children, 1.2.0) the map shows the same square alone.
+        boundaryFeature('Middle County', -1, -1, 1, 1, 'Middle'),
       ],
     });
     // Pixel samples read the outlines alone: no basemap, no markers.
     await page.addStyleTag({ content: '.leaflet-tile-pane, .leaflet-marker-pane, .leaflet-shadow-pane { visibility: hidden !important; }' });
 
-    const outline = (group) => page.locator(`#observer-map path.region-shape[data-region-group="${group}"]`);
+    const outline = (name) => page.locator(`#observer-map path.region-shape[data-region-place="${placeCode(name)}"]`);
     await expect(outline('West')).toHaveClass(/region-shape--all/);
     await expect(outline('Middle')).toHaveClass(/region-shape--none/);
     await expect(outline('East')).toHaveClass(/region-shape--all/);
@@ -705,21 +942,23 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     // Draw order puts the most urgent status last (on top), whatever the
     // feature order - Middle arrives second but is drawn last.
     const order = await page.locator('#observer-map path.region-shape').evaluateAll(
-      (paths) => paths.map((path) => path.getAttribute('data-region-group')),
+      (paths) => paths.map((path) => path.getAttribute('data-region-place')),
     );
-    expect(order[order.length - 1]).toBe('Middle');
+    expect(order[order.length - 1]).toBe('middle');
 
-    // Every outline is masked by its own mask, whose path tracks the outline's
-    // geometry and is stroked so as to reach past it.
-    const masksInStep = () => page.locator('#observer-map path.region-shape').evaluateAll((paths) => paths.every((path) => {
+    // Outlines are plain centred strokes. Each region has a split overlay along
+    // its different-status borders, masked to that region's own outline, whose
+    // path the mask tracks across zooms. Middle County (faint, inside Middle)
+    // has none.
+    await expect(page.locator('#observer-map path.region-shape[mask]')).toHaveCount(0);
+    const splitsInStep = () => page.locator('#observer-map path.region-split').evaluateAll((paths) => paths.map((path) => {
       const id = (path.getAttribute('mask') || '').match(/url\(#([^)]+)\)/)?.[1];
       const source = id ? document.getElementById(id)?.querySelector('path') : null;
-      return Boolean(source) && source.getAttribute('d') === path.getAttribute('d')
-        && source.getAttribute('fill-rule') === 'evenodd'
-        && Number(source.getAttribute('stroke-width')) > 0
-        && !path.hasAttribute('clip-path');
-    }));
-    expect(await masksInStep()).toBe(true);
+      const area = document.querySelector(`#observer-map path.region-shape[data-region-place="${path.dataset.regionSplit}"]`);
+      return Boolean(source && area) && source.getAttribute('d') === area.getAttribute('d')
+        && source.getAttribute('fill-rule') === 'evenodd' ? path.dataset.regionSplit : `bad:${path.dataset.regionSplit}`;
+    }).sort());
+    expect(await splitsInStep()).toEqual(['east', 'middle', 'west']);
     await expect(page.locator('#observer-map mask')).toHaveCount(3);
 
     const palette = {
@@ -727,54 +966,60 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       red: parseRgb(await outline('Middle').evaluate((path) => getComputedStyle(path).stroke)),
       background: parseRgb(await page.locator('#observer-map').evaluate((map) => getComputedStyle(map).backgroundColor)),
     };
-
-    // Both sides of each shared border, 1px in (the middle of the 2px inner
-    // stroke): each region's own colour. A centred stroke paints one colour across
-    // the line and leaves the other side bare. 8px in is past the stroke: bare map.
-    const bordersShowBothColours = async () => {
-      const rect = await outline('Middle').evaluate((path) => {
-        const r = path.getBoundingClientRect();
-        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
-      });
-      const y = (rect.top + rect.bottom) / 2;
-      const samples = await sampleMapColours(page, [
-        [rect.left - 1, y], [rect.left + 1, y], [rect.left + 8, y],
-        [rect.right + 1, y], [rect.right - 1, y], [rect.right - 8, y],
-      ]);
-      return samples.map((rgb) => nearestColour(rgb, palette));
+    // The colours along a horizontal line of pixels across a border, from 5px
+    // left of it to 5px right, with consecutive repeats folded together.
+    const across = async (x, y) => {
+      const samples = await sampleMapColours(page, Array.from({ length: 11 }, (_, i) => [x - 5 + i, y]));
+      const names = samples.map((rgb) => nearestColour(rgb, palette));
+      return {
+        sequence: names.filter((name, i) => name !== names[i - 1]),
+        width: names.filter((name) => name !== 'background').length,
+      };
     };
-    await expect.poll(bordersShowBothColours, { timeout: 5000 })
-      .toEqual(['green', 'red', 'background', 'green', 'red', 'background']);
+    const middleBox = () => outline('Middle').evaluate((path) => {
+      const r = path.getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+    });
 
-    // Zooming out rewrites every outline's d; the masks must follow or the
-    // strokes are cut away.
+    // Each green/red border: green on the green side, red on the red side, and
+    // 2px in all (3 pixels at most where it falls between pixels) - not the two
+    // 2px lines of 1.1.0.
+    const bordersSplit = async () => {
+      const r = await middleBox();
+      const y = (r.top + r.bottom) / 2;
+      const left = await across(r.left, y);
+      const right = await across(r.right, y);
+      return [left.sequence, right.sequence, left.width <= 3 && right.width <= 3];
+    };
+    const expected = [['background', 'green', 'red', 'background'], ['background', 'red', 'green', 'background'], true];
+    await expect.poll(bordersSplit, { timeout: 5000 }).toEqual(expected);
+
+    // Zooming out rewrites every path's d; the masks must follow or the
+    // overlays are cut away.
     await page.locator('#observer-map .leaflet-control-zoom-out').click();
-    await expect.poll(masksInStep, { timeout: 5000 }).toBe(true);
-    await expect.poll(bordersShowBothColours, { timeout: 5000 })
-      .toEqual(['green', 'red', 'background', 'green', 'red', 'background']);
+    await expect.poll(splitsInStep, { timeout: 5000 }).toEqual(['east', 'middle', 'west']);
+    await mapSettled(page);
+    await expect.poll(bordersSplit, { timeout: 5000 }).toEqual(expected);
 
-    // Selected on its own, the red region shows a complete red outline, all of
-    // it inside the boundary and nothing outside.
+    // Selected on its own, the red region shows one complete red 2px line and
+    // no overlays: there is no neighbour to differ from.
     await page.locator('.region-btn--group', { hasText: 'Middle' }).first().click();
     await expect(page.locator('#observer-map path.region-shape')).toHaveCount(1);
-    // The other two outlines' masks went with them.
-    await expect(page.locator('#observer-map mask')).toHaveCount(1);
-    const ring = async () => {
-      const r = await outline('Middle').evaluate((path) => {
+    await expect(page.locator('#observer-map path.region-split')).toHaveCount(0);
+    await expect(page.locator('#observer-map mask')).toHaveCount(0);
+    const alone = async () => {
+      const r = await outline('Middle County').evaluate((path) => {
         const b = path.getBoundingClientRect();
         return { left: b.left, right: b.right, top: b.top, bottom: b.bottom };
       });
-      const cx = (r.left + r.right) / 2;
-      const cy = (r.top + r.bottom) / 2;
-      const samples = await sampleMapColours(page, [
-        [r.left + 1, cy], [r.right - 1, cy], [cx, r.top + 1], [cx, r.bottom - 1],
-        [r.left - 2, cy], [r.right + 2, cy], [cx, r.top - 2], [cx, r.bottom + 2],
-      ]);
-      return samples.map((rgb) => nearestColour(rgb, palette));
+      const y = (r.top + r.bottom) / 2;
+      const left = await across(r.left, y);
+      const right = await across(r.right, y);
+      return [left.sequence, right.sequence, left.width <= 3 && right.width <= 3];
     };
-    await expect.poll(ring, { timeout: 5000 }).toEqual([
-      'red', 'red', 'red', 'red',
-      'background', 'background', 'background', 'background',
+    await mapSettled(page);
+    await expect.poll(alone, { timeout: 5000 }).toEqual([
+      ['background', 'red', 'background'], ['background', 'red', 'background'], true,
     ]);
   });
 }
@@ -793,7 +1038,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     const observers = [northwest, southeast];
     const triangle = (group, ring) => ({
       type: 'Feature',
-      properties: { group },
+      properties: { code: placeCode(group), name: group },
       geometry: { type: 'MultiPolygon', coordinates: [[ring]] },
     });
     await openMockMapSession(page, observers, observers, 'test-carto-key', {
@@ -978,35 +1223,27 @@ function scopeFixture() {
       regionCoverage,
     };
   };
-  const coverage = (groups) => ({
-    reached: groups.filter((entry) => entry.seenCount > 0).length,
-    total: groups.length,
-    groups,
+  const coverage = (places) => ({
+    reached: places.filter(([, , seenCount]) => seenCount > 0).length,
+    total: places.length,
+    places: places.map(([name, observerCount, seenCount]) => ({ code: placeCode(name), name, observerCount, seenCount })),
   });
+  const byName = (entries) => entries.map(([name, observerCount, seenCount]) => [name, observerCount, seenCount]);
 
+  // scopeScores is keyed by place code (1.2.0). Regions Reached for All counts
+  // the top-level places; Valley had nobody active, so it is not counted.
   const session = {
     useCount: 1,
     matchedAt: Date.now(),
     minScoringSet: 3,
-    ...score(4, 5, 'GOOD', coverage([
-      { group: 'North Bay', observerCount: 4, seenCount: 3 },
-      { group: 'Peninsula', observerCount: 1, seenCount: 1 },
-    ])),
+    ...score(4, 5, 'GOOD', coverage(byName([['Bay Area', 5, 4]]))),
     scopeScores: {
-      'parent:Bay Area': score(4, 5, 'GOOD', coverage([
-        { group: 'North Bay', observerCount: 4, seenCount: 3 },
-        { group: 'Peninsula', observerCount: 1, seenCount: 1 },
-      ])),
-      'group:North Bay': score(3, 4, 'GOOD', coverage([
-        { group: 'Napa', observerCount: 1, seenCount: 1 },
-        { group: 'Sonoma', observerCount: 3, seenCount: 2 },
-      ])),
-      'group:Peninsula': score(1, 1, 'VERY HEALTHY', coverage([
-        { group: 'San Mateo', observerCount: 1, seenCount: 1 },
-      ])),
-      'region:Sonoma': score(2, 3, 'GOOD'),
-      'region:Napa': score(1, 1, 'VERY HEALTHY'),
-      'region:San Mateo': score(1, 1, 'VERY HEALTHY'),
+      bayarea: score(4, 5, 'GOOD', coverage(byName([['North Bay', 4, 3], ['Peninsula', 1, 1]]))),
+      northbay: score(3, 4, 'GOOD', coverage(byName([['Napa', 1, 1], ['Sonoma', 3, 2]]))),
+      peninsula: score(1, 1, 'VERY HEALTHY', coverage(byName([['San Mateo', 1, 1]]))),
+      sonoma: score(2, 3, 'GOOD'),
+      napa: score(1, 1, 'VERY HEALTHY'),
+      sanmateo: score(1, 1, 'VERY HEALTHY'),
     },
     shareUrl: '/share/map-session',
   };
@@ -1014,8 +1251,8 @@ function scopeFixture() {
 }
 
 test('region chips switch the score between scopes and back to All', async ({ page }) => {
-  // 1.1.0: the chips pick which scope the score is read for. The code and the
-  // receipts never change; scopeScores carries one score per scope.
+  // The chips pick which scope the score is read for. The code and the
+  // receipts never change; scopeScores carries one score per place.
   const { directory, expected, seenKeys, session } = scopeFixture();
   await page.setViewportSize({ width: 390, height: 900 });
   await openMockMapSession(page, directory, expected, 'test-carto-key', { seenKeys, session });
@@ -1027,23 +1264,25 @@ test('region chips switch the score between scopes and back to All', async ({ pa
   const regions = page.locator('#region-coverage');
   const regionsCard = page.locator('#region-coverage-card');
   const note = page.locator('#health-note');
-  const chip = (cls, text) => page.locator(`#region-filter .${cls}`, { hasText: text }).first();
+  const chip = (name) => page.locator(`#region-filter .region-btn[data-place="${placeCode(name)}"]`);
 
   // All.
   await expect(headline).toHaveText('GOOD');
   await expect(percent).toHaveText('80%');
   await expect(reached).toHaveText('4 / 5');
   await expect(scope).toHaveText('Scored for all observers');
-  await expect(regions).toHaveText('2 / 2');
+  await expect(regions).toHaveText('1 / 1');
+  await expect(regions).toHaveAttribute('title', 'Reached: Bay Area (4/5)');
   await expect(note).toBeHidden();
 
-  // A parent.
-  await chip('region-btn--parent', 'Bay Area').click();
+  // A top-level place: Regions Reached counts its children.
+  await chip('Bay Area').click();
   await expect(scope).toHaveText('Scored for Bay Area');
   await expect(reached).toHaveText('4 / 5');
+  await expect(regions).toHaveText('2 / 2');
 
-  // A group: Regions Reached now counts its subregions.
-  await chip('region-btn--group', 'North Bay').click();
+  // A level down: Regions Reached now counts its counties.
+  await chip('North Bay').click();
   await expect(headline).toHaveText('GOOD');
   await expect(percent).toHaveText('75%');
   await expect(reached).toHaveText('3 / 4');
@@ -1051,15 +1290,15 @@ test('region chips switch the score between scopes and back to All', async ({ pa
   await expect(regions).toHaveText('2 / 2');
   await expect(regions).toHaveAttribute('title', 'Reached: Napa (1/1), Sonoma (2/3)');
 
-  // A subregion: no Regions Reached below it.
-  await chip('region-btn--child', 'Sonoma').click();
+  // A county: no Regions Reached below it.
+  await chip('Sonoma').click();
   await expect(percent).toHaveText('67%');
   await expect(reached).toHaveText('2 / 3');
   await expect(scope).toHaveText('Scored for Sonoma');
   await expect(regionsCard).toBeHidden();
 
-  // A one-observer subregion: count and percentage, no grade word.
-  await chip('region-btn--child', 'Napa').click();
+  // A one-observer county: count and percentage, no grade word.
+  await chip('Napa').click();
   await expect(headline).toHaveText('Small sample: 1 observer');
   await expect(headline).not.toHaveClass(/health-/);
   await expect(percent).toHaveText('100%');
@@ -1069,8 +1308,8 @@ test('region chips switch the score between scopes and back to All', async ({ pa
   const fits = await headline.evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
   expect(fits).toBe(true);
 
-  // A group nobody in it was active for.
-  await chip('region-btn--group', 'Valley').click();
+  // A place nobody in it was active for.
+  await chip('Valley').click();
   await expect(headline).toHaveText('No active observers');
   await expect(percent).toHaveText('--');
   await expect(reached).toHaveText('0 / 0');
@@ -1079,7 +1318,7 @@ test('region chips switch the score between scopes and back to All', async ({ pa
   await expect(regions).toHaveText('--');
 
   // Back to All: the All score, whatever was picked before.
-  await chip('region-btn--all', 'All').click();
+  await page.locator('#region-filter .region-btn--all').click();
   await expect(headline).toHaveText('GOOD');
   await expect(percent).toHaveText('80%');
   await expect(reached).toHaveText('4 / 5');
@@ -1102,10 +1341,11 @@ test('a region never reaches the share link or the address bar', async ({ page }
   await expect(page).toHaveURL(/\/share\/map-session$/);
   await expect(page.locator('#health-scope')).toHaveText('Scored for all observers');
 
-  await page.locator('#region-filter .region-btn--group', { hasText: 'North Bay' }).first().click();
+  await page.locator('#region-filter .region-btn[data-place="bayarea"]').click();
+  await page.locator('#region-filter .region-btn[data-place="northbay"]').click();
   await expect(page.locator('#health-scope')).toHaveText('Scored for North Bay');
-  await page.locator('#region-filter .region-btn--child', { hasText: 'Sonoma' }).first().click();
-  await page.locator('#region-filter .region-btn--parent', { hasText: 'Bay Area' }).first().click();
+  await page.locator('#region-filter .region-btn[data-place="sonoma"]').click();
+  await page.locator('#region-filter .region-btn[data-place="bayarea"]').click();
   await expect(page).toHaveURL(/\/share\/map-session$/);
 
   await page.getByRole('button', { name: 'Share' }).click();
@@ -1115,37 +1355,29 @@ test('a region never reaches the share link or the address bar', async ({ page }
   expect(shared.url).toBe('/share/map-session');
 });
 
-// Subregion outlines shaped like /api/region-locator: one square per county,
-// with its group and, where it has one, its MeshCore scope. Boxes, not
-// counties, so each test point is unambiguous.
-function locatorFeature(name, group, scope, west, south, east, north) {
-  return {
-    ...boundaryFeature(group, west, south, east, north),
-    properties: { name, group, ...(scope ? { scope } : {}) },
-  };
+// Every level of outline, as /api/region-locator serves them: each place with
+// its parent and, where it has one, its MeshCore scope. Boxes, not counties,
+// so each test point is unambiguous.
+function locatorFeature(name, parent, scope, west, south, east, north) {
+  return boundaryFeature(name, west, south, east, north, parent, scope ? { scope } : {});
 }
 
 const LOCATOR_FIXTURE = [
+  locatorFeature('Bay Area', null, null, -123, 37, -122, 39),
+  locatorFeature('North Bay', 'Bay Area', null, -122.9, 38.1, -122.1, 38.85),
+  locatorFeature('Peninsula', 'Bay Area', 'peninsula', -122.55, 37.1, -122.1, 37.7),
   locatorFeature('Sonoma', 'North Bay', 'sonoma', -122.9, 38.1, -122.35, 38.85),
   locatorFeature('Napa', 'North Bay', 'napa', -122.35, 38.1, -122.1, 38.85),
-  locatorFeature('San Mateo', 'Peninsula', 'peninsula', -122.55, 37.1, -122.1, 37.7),
+  locatorFeature('San Mateo', 'Peninsula', null, -122.55, 37.1, -122.1, 37.7),
 ];
-
-async function mockLocator(page, features = LOCATOR_FIXTURE) {
-  await page.route('**/api/region-locator', (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify({ type: 'FeatureCollection', features }),
-  }));
-}
 
 test('Use my location picks the subregion chip and offers to widen a small one', async ({ page, context }) => {
   // 1.1.0 location opt-in. The point is tested in the browser; the chip it
   // picks behaves exactly like a click, and the URL never changes.
   await context.grantPermissions(['geolocation']);
   await context.setGeolocation({ latitude: 38.30, longitude: -122.29, accuracy: 30 }); // Napa
-  await mockLocator(page);
   const { directory, expected, seenKeys, session } = scopeFixture();
-  await openMockMapSession(page, directory, expected, 'test-carto-key', { seenKeys, session });
+  await openMockMapSession(page, directory, expected, 'test-carto-key', { seenKeys, session, boundaries: LOCATOR_FIXTURE });
 
   const status = page.locator('#region-locate .region-locate__status');
   await expect(page.getByRole('button', { name: 'Use my location' })).toBeVisible();
@@ -1186,15 +1418,54 @@ test('Use my location picks the subregion chip and offers to widen a small one',
   await expect(page).toHaveURL(/\/share\/map-session$/);
 });
 
+test('the locator loads coarse and fetches full detail only near a border', async ({ page, context }) => {
+  // 1.2.0: the first press fetches every level coarse. Mid-Napa is far from
+  // every edge, so nothing more is fetched; 300 m from the Sonoma-Napa line the
+  // two places on that line are fetched at full detail before the point is tested.
+  await context.grantPermissions(['geolocation']);
+  await context.setGeolocation({ latitude: 38.30, longitude: -122.29, accuracy: 30 });
+  const { directory, expected, seenKeys, session } = scopeFixture();
+  await openMockMapSession(page, directory, expected, 'test-carto-key', {
+    seenKeys, session, boundaries: LOCATOR_FIXTURE, mapDetail: false,
+  });
+  const locator = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/api/region-locator')) locator.push(new URL(request.url()).search);
+  });
+  const status = page.locator('#region-locate .region-locate__status');
+
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(status).toContainText('Napa, from your location.');
+  expect(locator).toEqual(['?detail=coarse']);
+
+  await context.setGeolocation({ latitude: 38.30, longitude: -122.3534, accuracy: 30 });
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(status).toHaveText('Sonoma, from your location.');
+  expect(locator).toHaveLength(2);
+  const codes = new URLSearchParams(locator[1]).get('code').split(',').sort();
+  const byName = Object.fromEntries(LOCATOR_FIXTURE.map((feature) => [feature.properties.name, feature.properties.code]));
+  expect(codes).toEqual([byName.Napa, byName.Sonoma].sort());
+
+  // Once full, a place is not fetched again.
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(status).toHaveText('Sonoma, from your location.');
+  expect(locator).toHaveLength(2);
+});
+
 test('Use map center works without location permission', async ({ page }) => {
   // No permission granted: the browser declines, and the note points at the
   // map-center button, which needs none.
-  await mockLocator(page, [
-    // One box over the whole state, so wherever the map settles is inside it.
-    locatorFeature('Sonoma', 'North Bay', 'sonoma', -126, 32, -113, 43),
-  ]);
   const { directory, expected, seenKeys, session } = scopeFixture();
-  await openMockMapSession(page, directory, expected, 'test-carto-key', { seenKeys, session });
+  await openMockMapSession(page, directory, expected, 'test-carto-key', {
+    seenKeys,
+    session,
+    boundaries: [
+      // One box over the whole state, so wherever the map settles is inside it.
+      locatorFeature('Bay Area', null, null, -126, 32, -113, 43),
+      locatorFeature('North Bay', 'Bay Area', null, -126, 32, -113, 43),
+      locatorFeature('Sonoma', 'North Bay', 'sonoma', -126, 32, -113, 43),
+    ],
+  });
   const status = page.locator('#region-locate .region-locate__status');
 
   await page.getByRole('button', { name: 'Use my location' }).click();
@@ -1209,7 +1480,7 @@ test('Use map center works without location permission', async ({ page }) => {
 test('on the dashboard a located subregion suggests its regional channel', async ({ page, context }) => {
   await context.grantPermissions(['geolocation']);
   await context.setGeolocation({ latitude: 38.29, longitude: -122.46, accuracy: 2500 });
-  await mockLocator(page);
+  await routeRegionOutlines(page, LOCATOR_FIXTURE);
   const { directory } = scopeFixture();
   await page.addInitScript(() => {
     window.WebSocket = class {
@@ -1476,7 +1747,7 @@ test('footer entries break between items, never inside one', async ({ page }) =>
   await expect(page.locator('#site-version-note')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md');
   await expect(page.locator('#repo-note-link')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check');
   await expect(page.locator('#upstream-note-link')).toHaveCount(0);
-  await expect(page.locator('#site-version-note')).toHaveText('Version: v1.1.0+upstream.1.3.8');
+  await expect(page.locator('#site-version-note')).toHaveText('Version: v1.2.0+upstream.1.3.8');
   await expect(page.locator('#site-version-note')).toHaveAttribute('title', 'Based on yellowcooln/meshcore-health-check v1.3.8 (MIT)');
 
   const tops = [];
@@ -1620,7 +1891,7 @@ test('escapes untrusted observer labels in timeline and map popups', async ({ pa
           distanceUnit: 'mi',
         },
         availableRegions: [],
-        regionHierarchy: [],
+        regionTree: [],
         results: {
           retentionSeconds: 604800,
         },

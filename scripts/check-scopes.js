@@ -8,7 +8,8 @@
 //   1. whether the shipped file is still byte-identical to the pinned file;
 //   2. codes added, removed or probably renamed between the two commits;
 //   3. codes kept but moved, re-outlined or renamed in display, which can leave the
-//      app's own region groups (regions/us-ca-bay-area.geojson) out of step.
+//      app's coverage list (regions/region-overrides.json) or, in the 1.1.0 mode,
+//      its region groups (regions/us-ca-bay-area.geojson) out of step.
 //
 // It never writes a file, never changes the app, sends no credentials, and is not run
 // by the server, `npm test` or the smoke suite. Updating the list stays a reviewed change.

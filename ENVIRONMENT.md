@@ -41,7 +41,7 @@ tile request URLs, so scope it to this project and its deployment hostnames.
 | `OBSERVER_RESEED_PYTHON` | `python3` | Interpreter used to run it. |
 | `OBSERVER_RESEED_LOG` | `data/reseed-log.jsonl` | One JSON line per pass: counts, newly located and still-unlocated observers, hash-width moves, duration. |
 | `OBSERVER_RESEED_TIMEOUT_MS` | `240000` | Hard timeout for the script. |
-| `OBSERVER_RESEED_BOOT_DELAY_MS` | `60000` | Delay before the boot pass that fires when `REGIONS_FILE` or `UPLINK_CODES_FILE` no longer match the fingerprint recorded by the last successful pass. Ignores `OBSERVER_RESEED_HOUR`, needs `OBSERVER_RESEED_ENABLED`, and does not consume the day's scheduled run. |
+| `OBSERVER_RESEED_BOOT_DELAY_MS` | `60000` | Delay before the boot pass that fires when the region inputs (`REGIONS_FILE`, or in tree mode the scope tree, shape manifest and overrides) or `UPLINK_CODES_FILE` no longer match the fingerprint recorded by the last successful pass. Ignores `OBSERVER_RESEED_HOUR`, needs `OBSERVER_RESEED_ENABLED`, and does not consume the day's scheduled run. |
 | `ADMIN_TOKEN` | blank | When set, exposes `POST /api/admin/reseed` and `GET /api/admin/reseed`, authenticated with an `x-admin-token` header, so an outside scheduler can drive or inspect the refresh. Both routes 404 while it is blank. `GET /api/reseed-status` is always public and read-only: whether the last pass ran and succeeded, with counts and observer names but no paths or error text. |
 | `SEED_BACKUPS_KEEP` | `14` | Backups of `OBSERVERS_FILE` the script keeps; older `.bak-*` files are pruned after each write. |
 
@@ -112,7 +112,9 @@ only receipt observer coordinates are available.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `REGIONS_FILE` | blank | GeoJSON FeatureCollection used to assign observer regions. |
+| `REGION_SHAPES_DIR` | blank | 1.2.0 tree mode: the shape library (`regions/shapes`). Places come from `MESHCORE_REGION_SCOPES_FILE`, outlines from these shapes, and `REGIONS_FILE` is ignored. Blank keeps the 1.1.0 flat-file mode. |
+| `REGION_OVERRIDES_FILE` | blank | Tree mode: coverage (which places are shown and scored), shape lists for places whose outline name does not match, and exclusions (`regions/region-overrides.json`). Blank means no coverage, so no places. |
+| `REGIONS_FILE` | blank | 1.1.0 flat-file mode: GeoJSON FeatureCollection used to assign observer regions. Ignored when `REGION_SHAPES_DIR` is set. |
 | `REGION_NAME_PROPERTY` | `name` | Feature property used as the child region label. |
 | `REGION_GROUP_PROPERTY` | `group` | Feature property used as the parent group label. |
 | `REGION_PARENT_PROPERTY` | `parentRegion` | Optional feature property naming a parent region above the group (e.g. Bay Area over North Bay). Shown as a labelled cluster of group chips that selects them all. Absent or empty: no parent level. |
@@ -124,7 +126,21 @@ Bundled examples include:
 - `regions/uk.geojson`
 - `regions/de-bundeslaender.geojson`
 
-Leave `REGIONS_FILE` blank to disable region detection.
+Leave both `REGION_SHAPES_DIR` and `REGIONS_FILE` blank to disable region
+detection. The Bay Area deployment uses tree mode:
+
+```env
+MESHCORE_REGION_SCOPES_FILE=regions/us-ca-meshcore-scopes.json
+REGION_SHAPES_DIR=regions/shapes
+REGION_OVERRIDES_FILE=regions/region-overrides.json
+```
+
+In tree mode the reseed fingerprint covers the scope tree, the shape manifest,
+the overrides file and `UPLINK_CODES_FILE`, so switching modes changes it and
+fires one boot pass when reseeding is enabled. `seed-observers.py` reads the
+same three variables and asks `scripts/region-candidates.js` (run with
+`SEED_NODE_BINARY`, set by the server to its own Node) which places a point
+falls in, so the seed and the server cannot disagree about the boundary.
 
 ## MeshCore routing scopes
 

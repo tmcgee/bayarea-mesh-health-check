@@ -95,20 +95,18 @@ const state = {
   sharedSessionId: sharedSessionIdFromLocation(),
   sharedSessionMissing: false,
   trackedSessionIds: loadTrackedSessionIds(),
-  // A parent region (bayarea.21) selects every group under it at once; it is
-  // only ever set with selectedRegionGroup and selectedRegion both null.
+  // The selected place code from snapshot.regionTree (1.2.0), or null for All.
+  // One field at any depth: its path in the tree says which chips are open.
   // Never in the URL: links and the address bar carry no region, so a shared
   // link, a reload and a bookmark all open on All (1.1.0 decision).
-  selectedRegionParent: null,
-  selectedRegionGroup: null,
-  selectedRegion: null,
+  selectedPlace: null,
   // 'all' | 'heard' | 'unheard'. Visibility only, like the region chips: it
   // never changes what this code is scored against.
   receiptHeardFilter: 'all',
-  // Location opt-in (1.1.0): the subregion outlines, fetched on the first
-  // click; which button is waiting; and the sentence describing the last pick.
+  // Location opt-in (1.1.0): which button is waiting and the sentence
+  // describing the last pick. The outlines are the map's own (1.2.0).
   // Never stored, so a reload opens on All again.
-  locate: { features: null, pending: '', status: null, row: null },
+  locate: { pending: '', status: null, row: null },
   uiTheme: loadUiTheme(),
   // Difference between the server's clock and ours, refreshed from every
   // snapshot. The server decides when a code stops being accepted, so a
@@ -127,14 +125,22 @@ const state = {
     tileSignature: '',
     markers: new Map(),
     boundsKey: '',
-    // Region boundary outlines: the fetched features, the region-name key they
-    // were fetched for, an in-flight key so a slow fetch is not repeated on
-    // every poll, and the drawn shapes with the status they were built for.
+    // Region outlines (1.2.0), fetched one tree level at a time: the features
+    // so far, the tree key they belong to, the levels (parent codes, '' for the
+    // top) already fetched, the ones in flight so a slow fetch is not repeated
+    // on every poll, whether the locator has loaded every level at once, and
+    // the drawn shapes with the status they were built for. regionFull holds the
+    // codes whose full-detail outline has replaced the coarse one.
     regionFeatures: [],
+    regionFull: new Set(),
     regionKey: '',
-    regionPendingKey: '',
+    regionLevels: new Set(),
+    regionPending: new Set(),
+    regionComplete: false,
     regionPane: '',
+    regionFaintPane: '',
     regionShapes: new Map(),
+    regionFaint: new Map(),
     // The selected receipt's path (see renderReceiptPathLayer): its own pane,
     // the drawn layer group, and the signature it was built from.
     pathPane: '',
@@ -315,8 +321,8 @@ function fallbackObserverRecord(key) {
     lat: null,
     lon: null,
     hasLocation: false,
-    region: null,
-    regionGroup: null,
+    place: null,
+    placePath: [],
     shortKey: shortObserverKey(key),
     packetCount: 0,
     firstSeenAt: 0,
@@ -419,23 +425,14 @@ function renderHealthNote(score, healthMeasured, healthRated) {
   ui.healthNote.classList.remove('hidden');
 }
 
-// The score is a view over the receipts: All by default, or the parent, group or
-// subregion picked in the region filter. Picking one never touches the code or
+// The score is a view over the receipts: All by default, or the place picked in
+// the region filter, at any depth. Picking one never touches the code or
 // the session; it reads that scope's score from session.scopeScores, which the
 // server computes over the observers placed there when the code was created
 // plus any that reported. A scope missing from scopeScores had nobody active.
 // A payload from an older server has no scopeScores, so it always shows All.
 function selectedScopeKey() {
-  if (state.selectedRegion) {
-    return `region:${state.selectedRegion}`;
-  }
-  if (state.selectedRegionGroup) {
-    return `group:${state.selectedRegionGroup}`;
-  }
-  if (state.selectedRegionParent) {
-    return `parent:${state.selectedRegionParent}`;
-  }
-  return null;
+  return state.selectedPlace || null;
 }
 
 function scoreForSelectedScope(session) {
@@ -444,7 +441,8 @@ function scoreForSelectedScope(session) {
   if (!scopeKey || !session?.scopeScores || typeof session.scopeScores !== 'object') {
     return { ...session, scopeKind: 'all', scopeLabel: null, minScoringSet };
   }
-  const [scopeKind] = scopeKey.split(':');
+  // 'leaf' hides Regions Reached: a place with nothing below it has nothing to reach.
+  const scopeKind = (regionNode(scopeKey)?.children.length || 0) > 0 ? 'place' : 'leaf';
   const scopeLabel = activeRegionScopeLabel();
   const entry = session.scopeScores[scopeKey];
   if (!entry) {
@@ -501,9 +499,9 @@ function renderRegionCoverage(session, healthMeasured) {
   if (!ui.regionCoverage) {
     return;
   }
-  // A single subregion has nothing below it to reach.
+  // A place with no children has nothing below it to reach.
   if (ui.regionCoverageCard) {
-    ui.regionCoverageCard.classList.toggle('hidden', session?.scopeKind === 'region');
+    ui.regionCoverageCard.classList.toggle('hidden', session?.scopeKind === 'leaf');
   }
   const coverage = session?.regionCoverage;
   if (!healthMeasured || !coverage || !Number(coverage.total)) {
@@ -512,15 +510,15 @@ function renderRegionCoverage(session, healthMeasured) {
     return;
   }
   ui.regionCoverage.textContent = `${coverage.reached} / ${coverage.total}`;
-  const groups = Array.isArray(coverage.groups) ? coverage.groups : [];
-  const reached = groups.filter((entry) => Number(entry.seenCount) > 0);
-  const missed = groups.filter((entry) => !Number(entry.seenCount));
+  const places = Array.isArray(coverage.places) ? coverage.places : [];
+  const reached = places.filter((entry) => Number(entry.seenCount) > 0);
+  const missed = places.filter((entry) => !Number(entry.seenCount));
   const lines = [];
   if (reached.length > 0) {
-    lines.push(`Reached: ${reached.map((entry) => `${entry.group} (${entry.seenCount}/${entry.observerCount})`).join(', ')}`);
+    lines.push(`Reached: ${reached.map((entry) => `${entry.name} (${entry.seenCount}/${entry.observerCount})`).join(', ')}`);
   }
   if (missed.length > 0) {
-    lines.push(`No report: ${missed.map((entry) => `${entry.group} (0/${entry.observerCount})`).join(', ')}`);
+    lines.push(`No report: ${missed.map((entry) => `${entry.name} (0/${entry.observerCount})`).join(', ')}`);
   }
   if (lines.length > 0) {
     ui.regionCoverage.title = lines.join('\n');
@@ -1293,15 +1291,58 @@ function renderCodeLife() {
   ui.messagePreview.title = '';
 }
 
-// Builds { byGroup: Map<group, {seen,total}>, byRegion: Map<name, {seen,total}> }
-// from the observer directory (which knows each observer's region/regionGroup)
-// cross-referenced against the current session's expectedObservers (which
-// knows which of those observers actually saw this message). Regions with no
-// expected observers are left out of the maps entirely, which createStatus
-// below treats as 'unknown' — there is nothing to report on yet, not a zero.
+// ---------- Region tree (1.2.0) ----------
+// snapshot.regionTree lists every place holding at least one observer, at any
+// depth: { code, name, parent, depth, count, inferredCount, children }, sorted
+// by depth then name. Codes are the MeshCore scope names, so they are stable
+// across renames. Observers carry placePath (top level first), which is all the
+// filter needs: an observer is in a place when the code is on its path.
+let regionIndexCache = { tree: null, byCode: new Map() };
+
+function regionTreeNodes(snapshot = state.snapshot) {
+  return Array.isArray(snapshot?.regionTree) ? snapshot.regionTree : [];
+}
+
+function regionIndex(snapshot = state.snapshot) {
+  const tree = regionTreeNodes(snapshot);
+  if (regionIndexCache.tree !== tree) {
+    regionIndexCache = { tree, byCode: new Map(tree.map((node) => [node.code, node])) };
+  }
+  return regionIndexCache.byCode;
+}
+
+function regionNode(code, snapshot = state.snapshot) {
+  return code ? regionIndex(snapshot).get(code) || null : null;
+}
+
+// Codes from the top level down to code, inclusive. Empty for All.
+function regionAncestry(code, snapshot = state.snapshot) {
+  const byCode = regionIndex(snapshot);
+  const path = [];
+  let node = code ? byCode.get(code) : null;
+  while (node && path.length < 32) {
+    path.unshift(node.code);
+    node = node.parent ? byCode.get(node.parent) : null;
+  }
+  return path;
+}
+
+function observerPlacePath(observer) {
+  return Array.isArray(observer?.placePath) ? observer.placePath : [];
+}
+
+function nodeTotal(node) {
+  return (Number(node?.count) || 0) + (Number(node?.inferredCount) || 0);
+}
+
+// Builds { byPlace: Map<code, {seen,total}>, allTally } from the observer
+// directory (which knows each observer's placePath) cross-referenced against the
+// current session's expectedObservers (which knows which of those observers
+// actually heard this message). An observer counts for every place on its path.
+// Places with no expected observers are left out of the map entirely, which
+// regionStatusFromTally treats as 'unknown': nothing to report yet, not a zero.
 function regionSeenTallies(session) {
-  const byGroup = new Map();
-  const byRegion = new Map();
+  const byPlace = new Map();
   const allTally = { seen: 0, total: 0 };
   // Same gate the Current Health score uses: healthMeasured means a message
   // actually landed for this session. Before that, expectedObservers may
@@ -1313,31 +1354,26 @@ function regionSeenTallies(session) {
     : !isHealthPending(session.healthLabel));
   const expected = Array.isArray(session?.expectedObservers) ? session.expectedObservers : [];
   if (!healthMeasured || expected.length === 0) {
-    return { byGroup, byRegion, allTally };
+    return { byPlace, allTally };
   }
   const seenByKey = new Map(expected.map((observer) => [observer.key, Boolean(observer.seen)]));
-  const directory = observerDirectory();
-  const bump = (map, name, seen) => {
-    if (!name) return;
-    const entry = map.get(name) || { seen: 0, total: 0 };
-    entry.total += 1;
-    if (seen) entry.seen += 1;
-    map.set(name, entry);
-  };
-  for (const observer of directory) {
+  for (const observer of observerDirectory()) {
     if (!seenByKey.has(observer.key)) continue;
-    // Only observers that resolve to a region at all feed the region chips, so
-    // only those count toward the "All regions" tally too — otherwise an
-    // out-of-region observer being seen/not-seen would shift a status the
-    // region chips themselves never reflect.
-    if (!observer.region && !observer.regionGroup) continue;
+    // Only observers placed somewhere feed the chips, so only those count
+    // toward the "All regions" tally too.
+    const path = observerPlacePath(observer);
+    if (path.length === 0) continue;
     const seen = seenByKey.get(observer.key);
     allTally.total += 1;
     if (seen) allTally.seen += 1;
-    bump(byGroup, observer.regionGroup, seen);
-    bump(byRegion, observer.region, seen);
+    for (const code of path) {
+      const entry = byPlace.get(code) || { seen: 0, total: 0 };
+      entry.total += 1;
+      if (seen) entry.seen += 1;
+      byPlace.set(code, entry);
+    }
   }
-  return { byGroup, byRegion, allTally };
+  return { byPlace, allTally };
 }
 
 function regionStatusFromTally(tally) {
@@ -1347,11 +1383,16 @@ function regionStatusFromTally(tally) {
   return 'some';
 }
 
+// One row of top-level places, then one row per level of the selected path
+// that has children, each led by "All <place>". A row is indented under the
+// one above it, so depth reads as nesting rather than as more chips. A chip on
+// the selected path but above the selection is marked within (not active).
 function renderRegionFilter(session = currentSession()) {
   if (!ui.regionFilter) return;
-  const { hasGroups, regions } = regionFilterOptions();
+  const nodes = regionTreeNodes();
+  const topLevel = nodes.filter((node) => !node.parent);
 
-  if (regions.length === 0 || regions.every((entry) => entry.regions.length === 0)) {
+  if (topLevel.length === 0) {
     ui.regionFilter.classList.add('hidden');
     ui.regionFilter.innerHTML = '';
     return;
@@ -1359,190 +1400,69 @@ function renderRegionFilter(session = currentSession()) {
   ui.regionFilter.classList.remove('hidden');
   ui.regionFilter.innerHTML = '';
 
-  const { byGroup, byRegion, allTally } = regionSeenTallies(session);
+  const { byPlace, allTally } = regionSeenTallies(session);
+  const path = regionAncestry(state.selectedPlace);
+  const select = (code) => {
+    state.selectedPlace = code;
+    applyRegionSelection();
+  };
+  const placeButton = (node, className) => createRegionButton({
+    className: `${className}${path.includes(node.code) && node.code !== state.selectedPlace ? ' region-btn--within' : ''}`,
+    active: state.selectedPlace === node.code,
+    label: node.name,
+    count: node.count,
+    inferredCount: node.inferredCount || 0,
+    status: regionStatusFromTally(byPlace.get(node.code)),
+    code: node.code,
+    onClick: () => select(node.code),
+  });
 
-  const groupRow = document.createElement('div');
-  groupRow.className = 'region-filter__row';
-
-  const locatedObserverCount = regions.reduce((sum, entry) => sum + (entry.count || 0), 0);
-  const inferredObserverCount = regions.reduce((sum, entry) => sum + (entry.inferredCount || 0), 0);
-  groupRow.appendChild(createRegionButton({
+  const topRow = document.createElement('div');
+  topRow.className = 'region-filter__row';
+  topRow.dataset.depth = '1';
+  topRow.appendChild(createRegionButton({
     className: 'region-btn--all',
-    active: state.selectedRegionParent === null
-      && state.selectedRegionGroup === null && state.selectedRegion === null,
-    label: hasGroups ? 'All regions' : 'All',
-    count: locatedObserverCount,
-    inferredCount: inferredObserverCount,
+    active: state.selectedPlace === null,
+    label: nodes.some((node) => node.parent) || topLevel.length > 1 ? 'All regions' : 'All',
+    count: topLevel.reduce((sum, node) => sum + (node.count || 0), 0),
+    inferredCount: topLevel.reduce((sum, node) => sum + (node.inferredCount || 0), 0),
     status: regionStatusFromTally(allTally),
-    onClick: () => {
-      state.selectedRegionParent = null;
-      state.selectedRegionGroup = null;
-      state.selectedRegion = null;
-      applyRegionSelection();
-    },
+    onClick: () => select(null),
   }));
+  topLevel.forEach((node) => topRow.appendChild(placeButton(node, 'region-btn--group')));
+  ui.regionFilter.appendChild(topRow);
 
-  const groupButton = (entry) => createRegionButton({
-    className: 'region-btn--group',
-    active: state.selectedRegionGroup === entry.group && state.selectedRegion === null,
-    label: entry.group,
-    count: entry.count,
-    inferredCount: entry.inferredCount || 0,
-    status: regionStatusFromTally(byGroup.get(entry.group)),
-    onClick: () => {
-      state.selectedRegionParent = null;
-      state.selectedRegionGroup = entry.group;
-      state.selectedRegion = null;
-      applyRegionSelection();
-    },
-  });
-
-  if (hasGroups) {
-    for (const item of regionGroupItems(regions)) {
-      if (!item.parent) {
-        groupRow.appendChild(groupButton(item.entry));
-        continue;
-      }
-      // A parent region is a labelled cluster in the same row, not a row of its
-      // own: the label selects every group in it, the chips inside work as
-      // before. Only parents that name at least one group with observers show.
-      const cluster = document.createElement('div');
-      cluster.className = 'region-parent';
-      if (item.groups.some((entry) => entry.group === state.selectedRegionGroup)) {
-        cluster.classList.add('region-parent--within');
-      }
-      cluster.setAttribute('role', 'group');
-      cluster.setAttribute('aria-label', item.parent);
-      cluster.appendChild(createRegionButton({
-        className: 'region-btn--parent',
-        active: state.selectedRegionParent === item.parent,
-        label: item.parent,
-        count: item.groups.reduce((sum, entry) => sum + (entry.count || 0), 0),
-        inferredCount: item.groups.reduce((sum, entry) => sum + (entry.inferredCount || 0), 0),
-        status: regionStatusFromTally(sumRegionTallies(item.groups.map((entry) => byGroup.get(entry.group)))),
-        onClick: () => {
-          state.selectedRegionParent = item.parent;
-          state.selectedRegionGroup = null;
-          state.selectedRegion = null;
-          applyRegionSelection();
-        },
-      }));
-      item.groups.forEach((entry) => cluster.appendChild(groupButton(entry)));
-      groupRow.appendChild(cluster);
-    }
+  for (const code of path) {
+    const node = regionNode(code);
+    const children = (node?.children || []).map((child) => regionNode(child)).filter(Boolean);
+    if (children.length === 0) continue;
+    const row = document.createElement('div');
+    row.className = 'region-filter__row region-filter__row--subregions';
+    row.dataset.depth = String((node.depth || 1) + 1);
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', node.name);
+    row.appendChild(createRegionButton({
+      className: 'region-btn--child region-btn--all-of',
+      active: state.selectedPlace === node.code,
+      label: `All ${node.name}`,
+      count: node.count,
+      inferredCount: node.inferredCount || 0,
+      status: regionStatusFromTally(byPlace.get(node.code)),
+      onClick: () => select(node.code),
+    }));
+    children.forEach((child) => row.appendChild(placeButton(child, 'region-btn--child')));
+    ui.regionFilter.appendChild(row);
   }
-  ui.regionFilter.appendChild(groupRow);
-
-  const selectedGroup = state.selectedRegionGroup
-    ? regions.find((entry) => entry.group === state.selectedRegionGroup)
-    : null;
-  const subregionSource = hasGroups
-    ? selectedGroup?.regions || []
-    : regions.flatMap((entry) => entry.regions);
-
-  if (subregionSource.length > 0) {
-    const subregionRow = document.createElement('div');
-    subregionRow.className = 'region-filter__row region-filter__row--subregions';
-
-    if (selectedGroup) {
-      subregionRow.appendChild(createRegionButton({
-        className: 'region-btn--child',
-        active: state.selectedRegion === null,
-        label: `All ${selectedGroup.group}`,
-        count: selectedGroup.count,
-        inferredCount: selectedGroup.inferredCount || 0,
-        status: regionStatusFromTally(byGroup.get(selectedGroup.group)),
-        onClick: () => {
-          state.selectedRegion = null;
-          applyRegionSelection();
-        },
-      }));
-    }
-
-    for (const region of subregionSource) {
-      subregionRow.appendChild(createRegionButton({
-        className: 'region-btn--child',
-        active: state.selectedRegion === region.name,
-        label: region.name,
-        count: region.count,
-        status: regionStatusFromTally(byRegion.get(region.name)),
-        onClick: () => {
-          state.selectedRegionParent = null;
-          state.selectedRegion = region.name;
-          if (!state.selectedRegionGroup && hasGroups) {
-            const parent = regions.find((entry) => entry.regions.some((item) => item.name === region.name));
-            state.selectedRegionGroup = parent?.group || null;
-          }
-          applyRegionSelection();
-        },
-      }));
-    }
-    ui.regionFilter.appendChild(subregionRow);
-  }
-}
-
-// The group row in display order: standalone groups and parent clusters sorted
-// together by the name shown first, so "Bay Area" sits where B falls and its
-// groups keep the server's order inside it.
-function regionGroupItems(regions) {
-  const items = [];
-  const clusters = new Map();
-  regions.filter((entry) => entry.group).forEach((entry) => {
-    if (!entry.parent) {
-      items.push({ key: entry.group, entry });
-      return;
-    }
-    if (!clusters.has(entry.parent)) {
-      const cluster = { key: entry.parent, parent: entry.parent, groups: [] };
-      clusters.set(entry.parent, cluster);
-      items.push(cluster);
-    }
-    clusters.get(entry.parent).groups.push(entry);
-  });
-  return items.sort((left, right) => left.key.localeCompare(right.key));
-}
-
-function sumRegionTallies(tallies) {
-  const present = tallies.filter(Boolean);
-  if (present.length === 0) return null;
-  return present.reduce((sum, tally) => ({
-    seen: sum.seen + tally.seen,
-    total: sum.total + tally.total,
-  }), { seen: 0, total: 0 });
-}
-
-// Groups under the selected parent region, or null when none is selected.
-function selectedParentGroups(snapshot = state.snapshot) {
-  if (!state.selectedRegionParent) return null;
-  const { regions } = regionFilterOptions(snapshot);
-  return new Set(regions
-    .filter((entry) => entry.group && entry.parent === state.selectedRegionParent)
-    .map((entry) => entry.group));
-}
-
-function regionFilterOptions(snapshot = state.snapshot) {
-  const hierarchy = Array.isArray(snapshot?.regionHierarchy)
-    ? snapshot.regionHierarchy.filter((entry) => (Array.isArray(entry.regions) && entry.regions.length > 0)
-      || (entry.group && (entry.inferredCount || 0) > 0))
-    : [];
-  const flatRegions = Array.isArray(snapshot?.availableRegions)
-    ? snapshot.availableRegions.map((name) => ({ name, count: 0 }))
-    : [];
-  const regions = hierarchy.length > 0
-    ? hierarchy
-    : [{ group: '', count: flatRegions.length, regions: flatRegions }];
-  const namedGroupCount = regions.filter((entry) => entry.group).length;
-  const hasUngroupedRegions = regions.some((entry) => !entry.group && entry.regions.length > 0);
-  const hasGroups = namedGroupCount > 1 || (namedGroupCount > 0 && hasUngroupedRegions);
-  return { hasGroups, regions };
 }
 
 function createRegionButton({
-  className, active, label, count, inferredCount = 0, status = 'unknown', onClick,
+  className, active, label, count, inferredCount = 0, status = 'unknown', code = '', onClick,
 }) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = `region-btn ${className}${active ? ' active' : ''}`;
+  if (code) btn.dataset.place = code;
+  btn.setAttribute('aria-pressed', active ? 'true' : 'false');
 
   const total = (Number.isFinite(count) ? count : 0) + (Number.isFinite(inferredCount) ? inferredCount : 0);
 
@@ -1580,39 +1500,17 @@ function createRegionButton({
   return btn;
 }
 
+// A selection whose place has lost its last observer falls back to the nearest
+// ancestor that still has one, then to All.
 function reconcileRegionSelection(snapshot) {
-  const { hasGroups, regions } = regionFilterOptions(snapshot);
-  if (state.selectedRegionParent !== null
-    && (!hasGroups || !regions.some((entry) => entry.parent === state.selectedRegionParent))) {
-    state.selectedRegionParent = null;
+  if (state.selectedPlace === null) return;
+  if (regionNode(state.selectedPlace, snapshot)) return;
+  const previous = regionNode(state.selectedPlace, state.snapshot);
+  let parent = previous?.parent || '';
+  while (parent && !regionNode(parent, snapshot)) {
+    parent = regionNode(parent, state.snapshot)?.parent || '';
   }
-  if (!hasGroups && state.selectedRegionGroup !== null) {
-    state.selectedRegionGroup = null;
-  }
-  if (state.selectedRegionGroup !== null) {
-    const group = regions.find((entry) => entry.group === state.selectedRegionGroup);
-    if (!group) {
-      state.selectedRegionGroup = null;
-      state.selectedRegion = null;
-      return;
-    }
-    if (state.selectedRegion !== null && !group.regions.some((region) => region.name === state.selectedRegion)) {
-      state.selectedRegion = null;
-    }
-    return;
-  }
-
-  if (state.selectedRegion !== null) {
-    const regionExists = regions.some((entry) => entry.regions.some((region) => region.name === state.selectedRegion));
-    if (!regionExists) {
-      state.selectedRegion = null;
-      return;
-    }
-    if (hasGroups) {
-      const parent = regions.find((entry) => entry.regions.some((region) => region.name === state.selectedRegion));
-      state.selectedRegionGroup = parent?.group || null;
-    }
-  }
+  state.selectedPlace = parent || null;
 }
 
 // The region filter narrows what the observer list shows and which scope the
@@ -1629,10 +1527,10 @@ function applyRegionSelection() {
 }
 
 // ---------- Location opt-in (1.1.0) ----------
-// "Use my location" and "Use map center" pick the subregion a point falls in
-// and select its chip, exactly as a click would. Nothing asks for location
-// until the button is pressed, and the point is tested here: the server sends
-// the outlines (/api/region-locator) and never sees the coordinates. The pick
+// "Use my location" and "Use map center" pick the deepest place a point falls
+// in and select its chip, exactly as a click would. Nothing asks for location
+// until the button is pressed, and the point is tested here against the map's
+// own outlines (all levels, /api/region-locator): the server never sees the coordinates. The pick
 // stays in this page: links and the address bar never carry a region.
 const LOCATE_APPROXIMATE_METERS = 1000;
 
@@ -1708,12 +1606,10 @@ function renderRegionLocate() {
         const widen = document.createElement('button');
         widen.type = 'button';
         widen.className = 'region-locate__widen';
-        widen.textContent = `Widen to ${status.widen.group} (${status.widen.count} observers)`;
+        widen.textContent = `Widen to ${status.widen.name} (${status.widen.count} observers)`;
         widen.addEventListener('click', () => {
-          state.selectedRegionParent = null;
-          state.selectedRegionGroup = status.widen.group;
-          state.selectedRegion = null;
-          state.locate.status = { text: `${status.widen.group}, widened from ${status.widen.from}.` };
+          state.selectedPlace = status.widen.code;
+          state.locate.status = { text: `${status.widen.name}, widened from ${status.widen.from}.` };
           render();
         });
         line.append(' ', widen);
@@ -1753,74 +1649,57 @@ function devicePosition() {
   });
 }
 
-async function locatorFeatures() {
-  if (Array.isArray(state.locate.features)) return state.locate.features;
-  const response = await fetch('/api/region-locator', { headers: { accept: 'application/json' } });
-  if (!response.ok) {
-    throw Object.assign(new Error(`HTTP ${response.status}`), {
-      userMessage: 'Region outlines are not available right now.',
-    });
-  }
-  const payload = await response.json();
-  state.locate.features = Array.isArray(payload?.features) ? payload.features : [];
-  return state.locate.features;
-}
-
 // Turns a point into a selection and the sentence that explains it. Pure apart
-// from setting the three selection fields, so a point outside the map leaves
-// the current selection alone.
+// from setting state.selectedPlace, so a point outside the map leaves the
+// current selection alone. The outlines are every place with observers plus its observer-less children (empty: true), so
+// the deepest outline containing the point is the most specific answer.
 function placeFromPoint(point, features, source) {
   const where = source === 'device' ? 'your location' : 'the map center';
-  const { hasGroups, regions } = regionFilterOptions();
-  const hit = features.find((feature) => pointInGeometry(point.lon, point.lat, feature.geometry));
-  let groupName = hit?.properties?.group || '';
-  if (!hit) {
-    // Neighbours are simplified separately, so a point on a shared border can
-    // fall between them. The dissolved group outline is exact enough to say
-    // which group it is in.
-    const outline = state.map.regionFeatures.find((feature) => pointInGeometry(point.lon, point.lat, feature.geometry));
-    groupName = outline?.properties?.group || '';
+  const hits = features
+    .filter((feature) => pointInGeometry(point.lon, point.lat, feature.geometry))
+    .sort((left, right) => (Number(right.properties?.depth) || 0) - (Number(left.properties?.depth) || 0));
+  const deepest = hits[0]?.properties || null;
+  // An empty child names where the point is; the selection goes to the nearest
+  // place above it that has observers. Simplified neighbours can leave a sliver
+  // between them, which the dissolved parent outline still covers.
+  let target = null;
+  for (const hit of hits) {
+    if (!hit.properties?.empty && regionNode(hit.properties?.code)) {
+      target = regionNode(hit.properties.code);
+      break;
+    }
   }
-  const groupEntry = groupName ? regions.find((entry) => entry.group === groupName) : null;
-  if (!groupEntry) {
+  if (!target) {
     return {
       text: source === 'device'
         ? 'Your location is outside the regions on the map.'
         : 'The map center is outside the regions on the map.',
     };
   }
-  const subregion = hit ? groupEntry.regions.find((region) => region.name === hit.properties.name) : null;
-  state.selectedRegionParent = null;
-  state.selectedRegionGroup = hasGroups ? groupEntry.group : null;
-  state.selectedRegion = subregion ? subregion.name : null;
+  state.selectedPlace = target.code;
 
-  let text;
-  if (subregion) {
-    text = `${subregion.name}, from ${where}.`;
-  } else if (hit) {
-    text = `No observers in ${hit.properties.name} yet, so showing ${groupEntry.group}.`;
-  } else {
-    text = `${groupEntry.group}, from ${where}.`;
-  }
+  let text = deepest?.empty
+    ? `No observers in ${deepest.name} yet, so showing ${target.name}.`
+    : `${target.name}, from ${where}.`;
   if (source === 'device' && Number(point.accuracy) > LOCATE_APPROXIMATE_METERS) {
     text += ` Approximate location (about ${Math.round(point.accuracy / 1000)} km).`;
   }
 
   const minimum = Number(currentSession()?.minScoringSet) || 3;
-  const subregionCount = (subregion?.count || 0) + (subregion?.inferredCount || 0);
-  const groupCount = (groupEntry.count || 0) + (groupEntry.inferredCount || 0);
-  const widen = subregion && hasGroups && subregionCount < minimum && groupCount > subregionCount
-    ? { group: groupEntry.group, count: groupCount, from: subregion.name }
+  const parent = regionNode(target.parent);
+  const widen = parent && nodeTotal(target) < minimum && nodeTotal(parent) > nodeTotal(target)
+    ? { code: parent.code, name: parent.name, count: nodeTotal(parent), from: target.name }
     : null;
 
   // The regional channel only helps someone about to send a test, so the
-  // shared result page leaves it out.
+  // shared result page leaves it out. It follows the deepest outline, empty or
+  // not: someone in Lake County still tests on Lake's channel.
   let channel = null;
-  const scope = hit?.properties?.scope;
+  const scope = deepest?.scope;
   const base = state.snapshot?.testChannel?.name || '';
   const names = state.snapshot?.testChannel?.regional?.names || [];
   if (!isSharePage() && scope && base && names.includes(`${scope}-${base}`)) {
-    channel = { place: hit.properties.name, name: `${scope}-${base}` };
+    channel = { place: deepest.name, name: `${scope}-${base}` };
   }
   return { text, widen, channel };
 }
@@ -1843,7 +1722,7 @@ async function locateRegion(source) {
       }
       point = { lat: center.lat, lon: center.lng };
     }
-    const features = await locatorFeatures();
+    const features = await refineNearBorder(point, await allRegionFeatures());
     state.locate.status = placeFromPoint(point, features, source);
   } catch (error) {
     state.locate.status = { text: error?.userMessage || 'Location not available. Try Use map center.' };
@@ -1857,36 +1736,18 @@ async function locateRegion(source) {
 // Used to word the map note and empty state so a narrowed view never reads as
 // missing data, and to say which scope the score is for.
 function activeRegionScopeLabel() {
-  if (state.selectedRegion) {
-    return state.selectedRegion;
-  }
-  if (state.selectedRegionGroup) {
-    return state.selectedRegionGroup;
-  }
-  if (state.selectedRegionParent) {
-    return state.selectedRegionParent;
-  }
-  return null;
+  return regionNode(state.selectedPlace)?.name || null;
 }
 
-// Visibility only. Uplink-inferred observers have a regionGroup but no county, so
-// they show under their group chip and disappear under a county chip - which is
-// exactly right: a group is all their uplink code can tell us.
+// Visibility only. An observer is in a place when the place is on its path, so
+// an uplink-inferred observer (placed at the place its code maps to) shows
+// there and above, and disappears under a narrower chip - which is exactly
+// right: that place is all its uplink code can tell us.
 function observersMatchingRegionFilter(observers) {
-  const parentGroups = selectedParentGroups();
-  if (parentGroups) {
-    return observers.filter((observer) => parentGroups.has(observer.regionGroup));
-  }
-  if (state.selectedRegion === null && state.selectedRegionGroup === null) {
+  if (!state.selectedPlace) {
     return observers;
   }
-  return observers.filter((observer) => {
-    if (state.selectedRegion) {
-      return observer.region === state.selectedRegion
-        && (!state.selectedRegionGroup || observer.regionGroup === state.selectedRegionGroup);
-    }
-    return observer.regionGroup === state.selectedRegionGroup;
-  });
+  return observers.filter((observer) => observerPlacePath(observer).includes(state.selectedPlace));
 }
 
 // Everything that used to be split between the scrollable "Observers" list and
@@ -1896,16 +1757,17 @@ function observersMatchingRegionFilter(observers) {
 // scored against, each stating its own region, position status and receipt state.
 function observerDetailLine(observer) {
   const parts = [];
-  if (observer.regionInferred) {
-    // The group is the metro of the uplink gateway, so name the code that
-    // supplied it rather than implying we know where the node is.
-    parts.push(`${observer.regionGroup} via ${observer.uplinkCode || 'uplink'}`);
-  } else if (observer.region) {
-    parts.push(observer.regionGroup ? `${observer.region}, ${observer.regionGroup}` : observer.region);
-  } else if (observer.regionGroup) {
-    parts.push(observer.regionGroup);
-  } else {
+  const path = observerPlacePath(observer);
+  const name = (code) => regionNode(code)?.name || code;
+  if (path.length === 0) {
     parts.push('no region');
+  } else if (observer.regionInferred) {
+    // The place is the metro of the uplink gateway, so name the code that
+    // supplied it rather than implying we know where the node is.
+    parts.push(`${name(path[path.length - 1])} via ${observer.uplinkCode || 'uplink'}`);
+  } else {
+    // The place and the one above it: "Sonoma County, North Bay".
+    parts.push(path.slice(-2).reverse().map(name).join(', '));
   }
   parts.push(observer.hasLocation ? 'mapped' : 'no coordinates');
   if (observer.isRetained === false) {
@@ -2123,6 +1985,8 @@ function ensureObserverMap() {
     attributionControl: true,
   });
   state.map.instance.setView([20, 0], 2);
+  // moveend follows every zoom too.
+  state.map.instance.on('moveend', () => { ensureRegionDetail(); });
   return state.map.instance;
 }
 
@@ -2186,42 +2050,214 @@ function markerIcon(observer) {
   });
 }
 
-// The set of regions whose outlines belong on the map, as a stable key. Outlines
-// are drawn per region group, so this keys off the groups the chips offer and
-// geometry is refetched exactly when a new region gains its first observer. A
-// directory with no groups at all yields an empty key and no outlines, which is
-// correct: there are no regions to draw.
+// The set of places whose outlines belong on the map, as a stable key: the
+// codes in the region tree. Geometry is refetched exactly when a place gains
+// its first observer or loses its last. A directory with no places yields an
+// empty key and no outlines, which is correct: there are no regions to draw.
 function regionBoundaryKey(snapshot = state.snapshot) {
-  const { regions } = regionFilterOptions(snapshot);
-  return regions.map((entry) => entry.group).filter(Boolean).sort().join('|');
+  return regionTreeNodes(snapshot).map((node) => `${node.code}${node.expand ? '+' : ''}`).sort().join('|');
 }
 
+// The levels the map needs now: the top level, and every level down the
+// selected path, so the selection's own outline (for framing) and its
+// children's (for drawing) are both at hand.
+function regionLevelsWanted() {
+  const parent = regionOutlineParent();
+  const bold = regionBoldParents();
+  // The faint lines are the children of every bold outline. The tree names the
+  // bold places with observers; observer-less ones are counties, which have no
+  // children, so the tree is enough to ask for everything in one request.
+  const drawn = regionTreeNodes()
+    .filter((node) => bold.includes(node.parent || '') && !regionExpandedTop(node) && node.children.length > 0)
+    .map((node) => node.code);
+  return [...new Set(['', ...(parent ? regionAncestry(parent) : []), ...bold, ...drawn])];
+}
+
+// A top-level place the overrides file expands (`expand`, 1.2.0): under All the
+// map shows it subdivided, as if it were selected, and the rest whole.
+function regionExpandedTop(node) {
+  return Boolean(node?.expand) && !node.parent;
+}
+
+// The parents whose children are drawn as the bold, status-coloured outlines:
+// the selection's level, or under All the top level plus each expanded place.
+function regionBoldParents() {
+  const parent = regionOutlineParent();
+  if (parent) return [parent];
+  return ['', ...regionTreeNodes().filter(regionExpandedTop).map((node) => node.code)];
+}
+
+function resetRegionOutlines(key) {
+  state.map.regionKey = key;
+  state.map.regionFeatures = [];
+  state.map.regionLevels = new Set();
+  state.map.regionFull = new Set();
+  state.map.regionComplete = false;
+}
+
+// Coarse outlines never replace full ones: once a place has its full outline
+// (zoomed in, or from the locator) it keeps it.
+function mergeRegionFeatures(features, { full = false } = {}) {
+  const byCode = new Map(state.map.regionFeatures.map((feature) => [feature.properties?.code, feature]));
+  for (const feature of Array.isArray(features) ? features : []) {
+    const code = feature?.properties?.code;
+    if (!code || (!full && state.map.regionFull.has(code))) continue;
+    byCode.set(code, feature);
+    if (full) state.map.regionFull.add(code);
+  }
+  state.map.regionFeatures = [...byCode.values()];
+}
+
+// Levels are fetched coarse (~400 m, ?detail=coarse): opening the page costs
+// the levels it draws, and a drill-down just the level it opens. Full detail
+// is fetched per outline, for the ones in view, once the map is zoomed in
+// (ensureRegionDetail). Both 1.1.0 payloads together were 470 KB; the whole
+// 1.2.0 tree at full detail is about as large, so it is never sent up front.
 async function ensureRegionBoundaries() {
   const key = regionBoundaryKey();
   if (!key) {
     return;
   }
-  if (key === state.map.regionKey || key === state.map.regionPendingKey) {
+  if (key !== state.map.regionKey) {
+    resetRegionOutlines(key);
+  }
+  if (state.map.regionComplete) {
     return;
   }
-  state.map.regionPendingKey = key;
-  try {
-    const response = await fetch('/api/region-boundaries', { headers: { accept: 'application/json' } });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+  const missing = regionLevelsWanted().filter((level) => !state.map.regionLevels.has(level)
+    && !state.map.regionPending.has(`${key}#${level}`));
+  if (missing.length === 0) {
+    return;
+  }
+  // One request for every missing level (a comma list; codes never hold commas).
+  await (async () => {
+    const pendingKeys = missing.map((level) => `${key}#${level}`);
+    pendingKeys.forEach((pendingKey) => state.map.regionPending.add(pendingKey));
+    try {
+      const response = await fetch(`/api/region-boundaries?detail=coarse&parent=${missing.map(encodeURIComponent).join(',')}`, {
+        headers: { accept: 'application/json' },
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = await response.json();
+      // A newer tree arrived while this was in flight: its geometry is stale.
+      if (state.map.regionKey !== key) return;
+      mergeRegionFeatures(payload?.features);
+      missing.forEach((level) => state.map.regionLevels.add(level));
+      // The fetch resolves after the render that asked for it, so draw now. The
+      // re-entered render finds the level loaded and does not fetch again.
+      renderObserverMap(currentSession());
+    } catch {
+      // A missing or broken outline must not take the map with it. Leaving the
+      // level unloaded lets a later poll retry.
+    } finally {
+      pendingKeys.forEach((pendingKey) => state.map.regionPending.delete(pendingKey));
     }
+  })();
+}
+
+// From this zoom the coarse outlines' ~400 m steps start to show (a pixel is
+// about 300 m at zoom 9 here), so the outlines in view are swapped for full detail.
+const REGION_FULL_DETAIL_ZOOM = 9;
+
+// Full detail for the drawn outlines (bold and faint) that touch the view, in
+// one request by code. Runs after every pan and zoom and every redraw; an
+// outline already full or on its way is not asked for again.
+async function ensureRegionDetail() {
+  const mapInstance = state.map.instance;
+  const key = state.map.regionKey;
+  if (!mapInstance || !key || mapInstance.getZoom() < REGION_FULL_DETAIL_ZOOM) return;
+  const view = mapInstance.getBounds().pad(0.25);
+  const codes = [];
+  for (const [code, entry] of [...state.map.regionShapes.entries(), ...state.map.regionFaint.entries()]) {
+    if (state.map.regionFull.has(code) || state.map.regionPending.has(`${key}@${code}`)) continue;
+    const bounds = entry.shape.getBounds();
+    if (bounds.isValid() && view.intersects(bounds)) codes.push(code);
+  }
+  if (codes.length === 0) return;
+  const pendingKeys = codes.map((code) => `${key}@${code}`);
+  pendingKeys.forEach((pendingKey) => state.map.regionPending.add(pendingKey));
+  try {
+    const response = await fetch(`/api/region-boundaries?code=${codes.map(encodeURIComponent).join(',')}`, {
+      headers: { accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
-    state.map.regionFeatures = Array.isArray(payload?.features) ? payload.features : [];
-    state.map.regionKey = key;
-    // The fetch resolves after the render that asked for it, so draw now. The
-    // re-entered render finds key === regionKey and does not fetch again.
+    if (state.map.regionKey !== key) return;
+    mergeRegionFeatures(payload?.features, { full: true });
     renderObserverMap(currentSession());
   } catch {
-    // A missing, broken or unconfigured boundary file must not take the map with
-    // it. Leaving regionKey unset lets a later poll retry.
-    state.map.regionFeatures = [];
+    // Coarse outlines stay on screen; the next pan or zoom asks again.
   } finally {
-    state.map.regionPendingKey = '';
+    pendingKeys.forEach((pendingKey) => state.map.regionPending.delete(pendingKey));
+  }
+}
+
+// The locator needs every level at once, as in 1.1.0 it fetched the locator
+// outlines on the first click. They join the map's own, so nothing is fetched
+// twice. It loads them coarse (~400 m, 99 KB raw / 22 KB gzipped against
+// 432 KB / 113 KB at full detail); refineNearBorder then fetches full detail
+// for just the places whose edge passes near the point.
+async function allRegionFeatures() {
+  const key = regionBoundaryKey();
+  if (key && key === state.map.regionKey && state.map.regionComplete) {
+    return state.map.regionFeatures;
+  }
+  const response = await fetch('/api/region-locator?detail=coarse', { headers: { accept: 'application/json' } });
+  if (!response.ok) {
+    throw Object.assign(new Error(`HTTP ${response.status}`), {
+      userMessage: 'Region outlines are not available right now.',
+    });
+  }
+  const payload = await response.json();
+  if (key !== state.map.regionKey) resetRegionOutlines(key);
+  mergeRegionFeatures(payload?.features);
+  state.map.regionComplete = true;
+  return state.map.regionFeatures;
+}
+
+// A coarse edge lies within the coarse tolerance (0.004 degrees, server.js
+// REGION_OUTLINE_COARSE_TOLERANCE) of the true one, so a point farther than
+// that from every coarse edge gets the same answer at full detail. 0.006 adds
+// a margin. Measured in plain degrees, as the thinning is.
+const LOCATE_REFINE_DEGREES = 0.006;
+
+function segmentDistance(x, y, [ax, ay], [bx, by]) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const length = dx * dx + dy * dy;
+  const t = length ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / length)) : 0;
+  return Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+}
+
+function geometryNear(lon, lat, geometry, limit) {
+  const polygons = geometry?.type === 'Polygon' ? [geometry.coordinates] : geometry?.coordinates || [];
+  return polygons.some((rings) => (rings || []).some((ring) => (ring || []).some((point, index) => (
+    index > 0 && segmentDistance(lon, lat, ring[index - 1], point) <= limit
+  ))));
+}
+
+// Near a border the coarse outlines can put a point on the wrong side, so the
+// places whose edge passes within the margin are fetched at full detail (by
+// code, as the zoomed-in map does) before the point is tested. Elsewhere
+// nothing more is fetched. A failure keeps the coarse answer.
+async function refineNearBorder(point, features) {
+  const codes = features
+    .filter((feature) => !state.map.regionFull.has(feature.properties?.code)
+      && geometryNear(point.lon, point.lat, feature.geometry, LOCATE_REFINE_DEGREES))
+    .map((feature) => feature.properties.code);
+  if (codes.length === 0) return features;
+  const key = state.map.regionKey;
+  try {
+    const response = await fetch(`/api/region-locator?code=${codes.map(encodeURIComponent).join(',')}`, { headers: { accept: 'application/json' } });
+    if (!response.ok) return features;
+    const payload = await response.json();
+    if (key !== state.map.regionKey) return features;
+    mergeRegionFeatures(payload?.features, { full: true });
+    return state.map.regionFeatures;
+  } catch {
+    return features;
   }
 }
 
@@ -2243,103 +2279,244 @@ function ensureRegionPane(mapInstance) {
   return name;
 }
 
-// Geometry follows the region selection only, never the subregion selection:
-// picking a single county still shows the whole region it belongs to, while the
-// observer points inside narrow to that county. Selecting a subregion always
-// sets selectedRegionGroup too (renderRegionFilter fills in the parent), so the
-// outline stays put through a drill-down.
+// The outlines drawn are one level of the tree: the top-level places under All,
+// and under a selected place its children, including observer-less ones in
+// gray, so the place reads as subdivided. A selected place with no children
+// keeps its parent's level on screen (as a county did under its group in
+// 1.1.0), so a drill-down to a leaf does not empty the map.
+function regionOutlineParent() {
+  const node = regionNode(state.selectedPlace);
+  if (!node) return '';
+  return node.children.length > 0 ? node.code : node.parent || '';
+}
+
 function regionBoundaryVisible(properties) {
-  const parentGroups = selectedParentGroups();
-  if (parentGroups) {
-    return parentGroups.has(properties?.group);
+  const parent = regionOutlineParent();
+  if (parent) {
+    return properties?.parent === parent;
   }
-  if (state.selectedRegionGroup) {
-    return properties?.group === state.selectedRegionGroup;
+  // Under All: the top level, except an expanded place, which is drawn as its
+  // children instead (observer-less ones in gray, as when it is selected).
+  if (!properties?.parent) {
+    return !properties?.empty && !regionExpandedTop(regionNode(properties?.code));
   }
-  return true;
+  return regionExpandedTop(regionNode(properties.parent));
 }
 
 // Least to most urgent: later entries draw on top.
 const REGION_STROKE_ORDER = { unknown: 0, all: 1, some: 2, none: 3 };
 
-// Unique ids for the per-outline <mask> elements (see maskToInnerStroke).
+// Unique ids for the <mask> elements (see maskToInnerStroke).
 let regionMaskSequence = 0;
 
-// Width of the stroke that grows each outline's mask past its polygon: half of
-// it, 0.5px, on either side.
+// Width of the stroke that grows each mask past its polygon: half of it,
+// 0.5px, on either side.
 const REGION_MASK_GROW_PX = 1;
 
-// Stroke colour lives in CSS (.region-shape--*) against the same custom
-// properties as the region filter dots, so the palette is defined once. Leaflet's
-// setStyle does not update className, so a status change rebuilds the shape
-// rather than restyling it - there are only a handful of outlines and a status
-// only moves when a session's results change.
-function renderRegionBoundaries(mapInstance, session) {
-  const features = Array.isArray(state.map.regionFeatures) ? state.map.regionFeatures : [];
-  // Coloured by the region's own tally, so an outline always agrees with the
-  // region chip above it rather than with the subregion chips beneath it.
-  const { byGroup } = regionSeenTallies(session);
-  const wanted = new Map();
-  for (const feature of features) {
-    const group = feature?.properties?.group;
-    if (!group || !regionBoundaryVisible(feature.properties)) continue;
-    wanted.set(group, { feature, status: regionStatusFromTally(byGroup.get(group)) });
-  }
+// Leaflet thins every path on its own as it draws (smoothFactor), which would
+// give two outlines different pixels along the border they share. The server
+// already thinned them together, so drawing every vertex keeps a shared border
+// one line.
+const REGION_SMOOTH_FACTOR = 0;
 
-  for (const [group, entry] of state.map.regionShapes.entries()) {
-    const next = wanted.get(group);
-    if (!next || next.status !== entry.status) {
-      entry.shape.remove();
-      entry.masks.forEach(releaseInnerStroke);
-      state.map.regionShapes.delete(group);
+// The second pane, under the bold outlines, for the faint next-level lines.
+// The 0.45 opacity is the pane's, not each line's, so where two children's
+// identical borders overlap they read as one line, not a darker one.
+function ensureRegionFaintPane(mapInstance) {
+  if (state.map.regionFaintPane) return state.map.regionFaintPane;
+  const name = 'observerRegionsFaint';
+  const pane = mapInstance.createPane(name);
+  pane.style.zIndex = '349';
+  pane.style.pointerEvents = 'none';
+  pane.style.opacity = '0.45';
+  state.map.regionFaintPane = name;
+  return name;
+}
+
+function regionEdgeKey(a, b) {
+  const from = `${a[0]},${a[1]}`;
+  const to = `${b[0]},${b[1]}`;
+  return from < to ? `${from}|${to}` : `${to}|${from}`;
+}
+
+function regionFeatureRings(feature) {
+  const geometry = feature?.geometry;
+  if (geometry?.type === 'Polygon') return geometry.coordinates;
+  if (geometry?.type === 'MultiPolygon') return geometry.coordinates.flat();
+  return [];
+}
+
+// The stretches of a drawn outline whose other side is a neighbour with a
+// different status, as Leaflet polylines. Everywhere else a shared border is
+// one 2px line in the colour both sides agree on; here each side gets 1px.
+function regionSplitRuns(code, status, rings, owners) {
+  const runs = [];
+  for (const ring of rings) {
+    const n = ring.length - 1; // closed: the last point repeats the first
+    if (n < 2) continue;
+    const split = [];
+    for (let i = 0; i < n; i += 1) {
+      const others = owners.get(regionEdgeKey(ring[i], ring[i + 1])) || [];
+      split.push(others.some((other) => other.code !== code && other.status !== status));
+    }
+    // Walk from an edge that is not split, so no run wraps past the ring's start.
+    const start = split.indexOf(false);
+    let run = null;
+    for (let step = 0; step < n; step += 1) {
+      const i = (Math.max(start, 0) + step) % n;
+      if (!split[i]) {
+        run = null;
+        continue;
+      }
+      if (!run) {
+        run = [[ring[i][1], ring[i][0]]];
+        runs.push(run);
+      }
+      run.push([ring[i + 1][1], ring[i + 1][0]]);
     }
   }
+  return runs;
+}
 
-  if (wanted.size === 0) {
-    return;
+// Shared borders are drawn once (1.2.0). Each outline is stroked 2px centred
+// on its boundary; neighbours share exact vertices, so where they agree on a
+// status their strokes land on the same pixels and read as one 2px line, at
+// an outer edge too. Where two neighbours' statuses differ, a split overlay on
+// just that stretch is masked to each side (maskToInnerStroke), so the line is
+// 1px of each colour, still 2px in all. In 1.1.0 every outline was an inner
+// stroke, which made every shared border two 2px lines side by side.
+//
+// Stroke colour lives in CSS (.region-shape--*) against the same custom
+// properties as the region filter dots, so the palette is defined once. The
+// set is small and changes only with the selection or a session's results, so
+// any change rebuilds it.
+function renderRegionBoundaries(mapInstance, session) {
+  const features = Array.isArray(state.map.regionFeatures) ? state.map.regionFeatures : [];
+  // Coloured by the place's own tally, so an outline always agrees with its
+  // chip. An observer-less child has no tally and draws as unknown.
+  const { byPlace } = regionSeenTallies(session);
+  const wanted = new Map();
+  for (const feature of features) {
+    const code = feature?.properties?.code;
+    if (!code || !regionBoundaryVisible(feature.properties)) continue;
+    wanted.set(code, { feature, status: regionStatusFromTally(byPlace.get(code)) });
   }
+  renderRegionFaintLines(mapInstance, new Set(wanted.keys()), features);
+
+  const same = wanted.size === state.map.regionShapes.size
+    && [...wanted].every(([code, next]) => {
+      const entry = state.map.regionShapes.get(code);
+      return entry && entry.status === next.status && entry.feature === next.feature;
+    });
+  if (same) return;
+  for (const entry of state.map.regionShapes.values()) {
+    entry.shape.remove();
+    entry.split?.remove();
+    entry.masks.forEach(releaseInnerStroke);
+  }
+  state.map.regionShapes.clear();
+  if (wanted.size === 0) return;
+
   const pane = ensureRegionPane(mapInstance);
-  let added = false;
-  for (const [group, entry] of wanted.entries()) {
-    if (state.map.regionShapes.has(group)) continue;
-    added = true;
-    const shape = window.L.geoJSON(entry.feature, {
+  const owners = new Map();
+  for (const [code, { feature, status }] of wanted) {
+    for (const ring of regionFeatureRings(feature)) {
+      for (let i = 0; i < ring.length - 1; i += 1) {
+        const key = regionEdgeKey(ring[i], ring[i + 1]);
+        if (!owners.has(key)) owners.set(key, []);
+        owners.get(key).push({ code, status });
+      }
+    }
+  }
+  // Least urgent first, so where strokes overlap (a shared border before its
+  // split overlay, or a corner) the more urgent status is on top.
+  const ordered = [...wanted].sort(([, left], [, right]) => (REGION_STROKE_ORDER[left.status] ?? 0) - (REGION_STROKE_ORDER[right.status] ?? 0));
+  const splits = [];
+  for (const [code, { feature, status }] of ordered) {
+    const shape = window.L.geoJSON(feature, {
       pane,
       interactive: false,
+      smoothFactor: REGION_SMOOTH_FACTOR,
       // Fill is off outright rather than transparent, so the interior paints
       // nothing and cannot become a hit target.
-      style: { fill: false, className: `region-shape region-shape--${entry.status}` },
+      style: { fill: false, className: `region-shape region-shape--${status}` },
     }).addTo(mapInstance);
     // Name the drawn path so the outline set is identifiable from the DOM, which
     // is what the smoke test asserts against.
-    const masks = [];
+    let outline = null;
     shape.eachLayer((sub) => {
       const element = sub.getElement();
       if (!element) return;
-      element.setAttribute('data-region-group', group);
-      const mask = maskToInnerStroke(element);
-      if (mask) masks.push(mask);
+      element.setAttribute('data-region-place', code);
+      outline = outline || element;
     });
-    state.map.regionShapes.set(group, { shape, status: entry.status, masks });
+    const entry = { shape, status, feature, masks: [], split: null };
+    const runs = regionSplitRuns(code, status, regionFeatureRings(feature), owners);
+    if (runs.length && outline) splits.push({ code, status, runs, outline, entry });
+    state.map.regionShapes.set(code, entry);
   }
-
-  // Neighbouring regions share borders, and before inner strokes the last-drawn
-  // outline owned the shared pixels. With inner strokes each side paints only
-  // its own half, so order rarely shows - but where it does (a vertex, a sliver
-  // from coordinate rounding) the more urgent status should win. A rebuilt shape
-  // is appended last, so without this the order drifted with every status change.
-  if (added) {
-    [...state.map.regionShapes.values()]
-      .sort((left, right) => (REGION_STROKE_ORDER[left.status] ?? 0) - (REGION_STROKE_ORDER[right.status] ?? 0))
-      .forEach((entry) => entry.shape.bringToFront());
+  // Split overlays above every outline, each masked to its own region.
+  for (const { code, status, runs, outline, entry } of splits) {
+    const split = window.L.polyline(runs, {
+      pane,
+      interactive: false,
+      smoothFactor: REGION_SMOOTH_FACTOR,
+      fill: false,
+      className: `region-split region-shape--${status}`,
+    }).addTo(mapInstance);
+    const element = split.getElement();
+    if (element) {
+      element.setAttribute('data-region-split', code);
+      // No overhang: the centred stroke underneath already fills the seam, and
+      // growing the mask would let the urgent side cover half its neighbour's 1px.
+      const mask = maskToInnerStroke(element, outline, 0);
+      if (mask) entry.masks.push(mask);
+    }
+    entry.split = split;
   }
 }
 
-// Inner stroke: the outline's stroke is centred on the boundary, so two regions
-// sharing a border painted the same pixels and one colour hid the other. Each
-// outline is masked to its own polygon and drawn at double width
-// (.region-shape), leaving only the inside half - neighbours then sit side by
-// side along a shared border, each showing its own colour, at any zoom.
+// Faint next-level lines (1.2.0): inside each bold outline, its children drawn
+// thin and neutral, so a region shows how it divides without being selected.
+// They carry no status (the bold outline and its chip do). They sit in their
+// own pane under the bold outlines: a child's edge on its parent's boundary is
+// the same line, hidden under the 2px stroke, and two children's shared border
+// is one 1px line (see ensureRegionFaintPane).
+function renderRegionFaintLines(mapInstance, boldCodes, features) {
+  const wanted = new Map();
+  for (const feature of features) {
+    const code = feature?.properties?.code;
+    if (code && boldCodes.has(feature.properties.parent) && !boldCodes.has(code)) {
+      wanted.set(code, feature);
+    }
+  }
+  for (const [code, entry] of state.map.regionFaint.entries()) {
+    if (wanted.get(code) !== entry.feature) {
+      entry.shape.remove();
+      state.map.regionFaint.delete(code);
+    }
+  }
+  if (wanted.size === 0) {
+    return;
+  }
+  const pane = ensureRegionFaintPane(mapInstance);
+  for (const [code, feature] of wanted.entries()) {
+    if (state.map.regionFaint.has(code)) continue;
+    const shape = window.L.geoJSON(feature, {
+      pane,
+      interactive: false,
+      smoothFactor: REGION_SMOOTH_FACTOR,
+      style: { fill: false, className: 'region-faint' },
+    }).addTo(mapInstance);
+    shape.eachLayer((sub) => sub.getElement()?.setAttribute('data-region-faint', code));
+    state.map.regionFaint.set(code, { shape, feature });
+  }
+}
+
+// Inner stroke, for the split overlays: where two neighbours' statuses differ,
+// each one's overlay on the shared stretch is masked to its own polygon, so of
+// its 2px stroke only the inside 1px shows and the two colours sit side by side
+// (1.1.0 masked every outline this way, at double width).
 //
 // A mask and not a clip-path, because the edge has to be grown. A clip edge is
 // antialiased on its own: two neighbours whose edges meet exactly each cover
@@ -2354,10 +2531,10 @@ function renderRegionBoundaries(mapInstance, session) {
 // The mask is a separate path, not a <use> of the outline: a clone of the
 // outline would carry the outline's own mask and reference itself. Leaflet
 // rewrites the outline's d on every zoom and pan, so an observer copies it
-// across; maskContentUnits default to the outline's own user space, so the copy
+// across from the region's outline (areaElement); maskContentUnits default to the outline's own user space, so the copy
 // lines up without any transform. The mask region is set in that same space and
 // made far larger than any view, so it never crops the outline.
-function maskToInnerStroke(pathElement) {
+function maskToInnerStroke(pathElement, areaElement = pathElement, growPx = REGION_MASK_GROW_PX) {
   const svg = pathElement.ownerSVGElement;
   if (!svg || typeof MutationObserver === 'undefined') return null;
   const ns = 'http://www.w3.org/2000/svg';
@@ -2381,15 +2558,15 @@ function maskToInnerStroke(pathElement) {
   source.setAttribute('fill', '#fff');
   source.setAttribute('fill-rule', 'evenodd');
   source.setAttribute('stroke', '#fff');
-  source.setAttribute('stroke-width', String(REGION_MASK_GROW_PX));
+  source.setAttribute('stroke-width', String(growPx));
   source.setAttribute('stroke-linejoin', 'round');
-  source.setAttribute('d', pathElement.getAttribute('d') || '');
+  source.setAttribute('d', areaElement.getAttribute('d') || '');
   mask.appendChild(source);
   defs.appendChild(mask);
   const observer = new MutationObserver(() => {
-    source.setAttribute('d', pathElement.getAttribute('d') || '');
+    source.setAttribute('d', areaElement.getAttribute('d') || '');
   });
-  observer.observe(pathElement, { attributes: true, attributeFilter: ['d'] });
+  observer.observe(areaElement, { attributes: true, attributeFilter: ['d'] });
   pathElement.setAttribute('mask', `url(#${id})`);
   return { mask, observer };
 }
@@ -2399,24 +2576,18 @@ function releaseInnerStroke(entry) {
   entry.mask.remove();
 }
 
-// The outline bounds of the selected region, or null when the map should frame
-// the plotted observers instead. Only a region chip qualifies: a subregion
-// (county) has no outline of its own on the client, and "All" has no single
-// region. Mapped observers in a region were placed there by its outline, so the
-// frame always contains them; unmapped ones cannot be drawn either way, and a
-// region with none mapped still gets a view of itself instead of the map staying
-// wherever it was. Null until the geometry arrives - the fetch re-enters
-// renderObserverMap, and the changed boundsKey then refits to the outline.
+// The outline bounds of the selected place, or null when the map should frame
+// the plotted observers instead (All, or before the geometry arrives - the
+// fetch re-enters renderObserverMap and the changed boundsKey then refits).
+// Mapped observers in a place were placed there by its outline, so the frame
+// always contains them; a place with none mapped still gets a view of itself
+// instead of the map staying wherever it was.
 function selectedRegionFrame() {
-  const parentGroups = selectedParentGroups();
-  if ((!state.selectedRegionGroup && !parentGroups) || state.selectedRegion || !window.L) {
+  if (!state.selectedPlace || !window.L) {
     return null;
   }
   const features = Array.isArray(state.map.regionFeatures) ? state.map.regionFeatures : [];
-  // A parent region frames all of its groups' outlines together.
-  const selected = features.filter((item) => (parentGroups
-    ? parentGroups.has(item?.properties?.group)
-    : item?.properties?.group === state.selectedRegionGroup));
+  const selected = features.filter((item) => item?.properties?.code === state.selectedPlace);
   if (selected.length === 0) {
     return null;
   }
@@ -2618,6 +2789,7 @@ function renderObserverMap(session) {
   // fetch is fire-and-forget: it re-enters this function once geometry lands.
   ensureRegionBoundaries();
   renderRegionBoundaries(mapInstance, session);
+  ensureRegionDetail();
 
   const activeKeys = new Set(locatedObservers.map((observer) => observer.key));
   for (const [key, marker] of state.map.markers.entries()) {
@@ -2675,7 +2847,7 @@ function renderObserverMap(session) {
   const boundsKey = pathFrame
     ? `path:${pathData.signature}`
     : regionFrame
-      ? `region:${state.selectedRegionParent ? `parent:${state.selectedRegionParent}` : state.selectedRegionGroup}`
+      ? `region:${state.selectedPlace}`
       : locatedObservers.map((observer) => observer.key).join('|');
   if (frame && boundsKey !== state.map.boundsKey) {
     mapInstance.fitBounds(frame, { padding: [26, 26], maxZoom: 10 });

@@ -116,7 +116,7 @@ test('the fork version is its own SemVer with the upstream base as metadata', ()
 
 test('the version maps to a legal Docker tag', () => {
   const tag = dockerTag(packageJson.version);
-  assert.equal(tag, '1.1.0-upstream.1.3.8');
+  assert.equal(tag, '1.2.0-upstream.1.3.8');
   assert.ok(isLegalDockerTag(tag));
   assert.ok(!tag.includes('+'), 'Docker tags cannot contain +');
   assert.throws(() => dockerTag('1.3.8+bay area'), /legal Docker tag/);

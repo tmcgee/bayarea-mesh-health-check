@@ -2,201 +2,204 @@
   "$comment": [
     "GoMesh publishes on meshcore/<CODE>/<pubkey>/<stream>, where <CODE> is the",
     "airport identifier of the uplink gateway's metro - NOT the node's own position.",
-    "Use it only as a group-level hint for observers that never publish coordinates.",
+    "Use it only as a coarse hint for observers that never publish coordinates.",
     "A code absent from BOTH blocks is currently left unclassified: its observers stay",
     "listed with no region and the code is logged once. Absent does NOT mean excluded.",
     "Only the outOfArea block excludes.",
     "confidence=observed: seen on mqtt.gomesh.dev and cross-checked against the",
-    "  polygon-derived group of at least one located observer publishing under it.",
+    "  polygon-derived place of at least one located observer publishing under it.",
     "confidence=anticipated: an airport identifier inside a county in",
-    "  regions/us-ca-bay-area.geojson, not yet observed on the broker. Listed so a",
-    "  new gateway's coordinate-less observers land in a group instead of no region.",
-    "Groups must match REGION_GROUP_PROPERTY values in the boundary file."
+    "  the 1.1.0 boundary file, not yet observed on the broker. Listed so a",
+    "  new gateway's coordinate-less observers land in a place instead of no region.",
+    "Version 2 (1.2.0): `place` is a place code from the scope tree",
+    "  (regions/us-ca-meshcore-scopes.json), never a county. Version 1 named a",
+    "  `group` by display name; the server still reads that. San Joaquin North and",
+    "  South codes now name the tree's single centralvalley."
   ],
-  "version": 1,
+  "version": 2,
   "codes": {
     "SFO": {
-      "group": "San Francisco",
+      "place": "sf",
       "label": "San Francisco",
       "confidence": "observed"
     },
     "OAK": {
-      "group": "East Bay",
+      "place": "eastbay",
       "label": "Oakland",
       "confidence": "observed"
     },
     "HWD": {
-      "group": "East Bay",
+      "place": "eastbay",
       "label": "Hayward",
       "confidence": "anticipated"
     },
     "LVK": {
-      "group": "East Bay",
+      "place": "eastbay",
       "label": "Livermore",
       "confidence": "anticipated"
     },
     "CCR": {
-      "group": "East Bay",
+      "place": "eastbay",
       "label": "Concord",
       "confidence": "anticipated"
     },
     "SJC": {
-      "group": "South Bay",
+      "place": "southbay",
       "label": "San Jose",
       "confidence": "observed"
     },
     "RHV": {
-      "group": "South Bay",
+      "place": "southbay",
       "label": "Reid-Hillview",
       "confidence": "anticipated"
     },
     "NUQ": {
-      "group": "South Bay",
+      "place": "southbay",
       "label": "Moffett Field",
       "confidence": "anticipated"
     },
     "PAO": {
-      "group": "South Bay",
+      "place": "southbay",
       "label": "Palo Alto",
       "confidence": "anticipated"
     },
     "SQL": {
-      "group": "Peninsula",
+      "place": "peninsula",
       "label": "San Carlos",
       "confidence": "observed"
     },
     "HAF": {
-      "group": "Peninsula",
+      "place": "peninsula",
       "label": "Half Moon Bay",
       "confidence": "anticipated"
     },
     "STS": {
-      "group": "North Bay",
+      "place": "northbay",
       "label": "Santa Rosa",
       "confidence": "observed"
     },
     "APC": {
-      "group": "North Bay",
+      "place": "northbay",
       "label": "Napa",
       "confidence": "observed"
     },
     "DVO": {
-      "group": "North Bay",
+      "place": "northbay",
       "label": "Novato",
       "confidence": "anticipated"
     },
     "SUU": {
-      "group": "North Bay",
+      "place": "northbay",
       "label": "Travis AFB",
       "confidence": "anticipated"
     },
     "MRY": {
-      "group": "Central Coast",
+      "place": "centralcoast",
       "label": "Monterey",
       "confidence": "observed"
     },
     "PRB": {
-      "group": "Central Coast",
+      "place": "centralcoast",
       "label": "Paso Robles",
       "confidence": "observed"
     },
     "SNS": {
-      "group": "Central Coast",
+      "place": "centralcoast",
       "label": "Salinas",
       "confidence": "anticipated"
     },
     "CVH": {
-      "group": "Central Coast",
+      "place": "centralcoast",
       "label": "Hollister",
       "confidence": "anticipated"
     },
     "WVI": {
-      "group": "Central Coast",
+      "place": "centralcoast",
       "label": "Watsonville",
       "confidence": "anticipated"
     },
     "SBP": {
-      "group": "Central Coast",
+      "place": "centralcoast",
       "label": "San Luis Obispo",
       "confidence": "anticipated"
     },
     "MCE": {
-      "group": "San Joaquin North",
+      "place": "centralvalley",
       "label": "Merced",
       "confidence": "observed"
     },
     "MOD": {
-      "group": "San Joaquin North",
+      "place": "centralvalley",
       "label": "Modesto",
       "confidence": "anticipated"
     },
     "SCK": {
-      "group": "San Joaquin North",
+      "place": "centralvalley",
       "label": "Stockton",
       "confidence": "anticipated"
     },
     "SMF": {
-      "group": "Sacramento Foothills",
+      "place": "sacramentofoothills",
       "label": "Sacramento",
       "confidence": "anticipated"
     },
     "MHR": {
-      "group": "Sacramento Foothills",
+      "place": "sacramentofoothills",
       "label": "Mather",
       "confidence": "anticipated"
     },
     "BFL": {
-      "group": "San Joaquin South",
+      "place": "centralvalley",
       "label": "Bakersfield",
       "confidence": "anticipated"
     },
     "FAT": {
-      "group": "San Joaquin South",
+      "place": "centralvalley",
       "label": "Fresno",
       "confidence": "anticipated"
     },
     "MAE": {
-      "group": "San Joaquin South",
+      "place": "centralvalley",
       "label": "Madera",
       "confidence": "anticipated"
     },
     "HJO": {
-      "group": "San Joaquin South",
+      "place": "centralvalley",
       "label": "Hanford",
       "confidence": "anticipated"
     },
     "VIS": {
-      "group": "San Joaquin South",
+      "place": "centralvalley",
       "label": "Visalia",
       "confidence": "anticipated"
     },
     "COA": {
-      "group": "Gold Country",
+      "place": "goldcountry",
       "label": "Columbia",
       "confidence": "observed"
     },
     "AUN": {
-      "group": "Sacramento Foothills",
+      "place": "sacramentofoothills",
       "label": "Auburn",
       "confidence": "anticipated"
     },
     "PVF": {
-      "group": "Gold Country",
+      "place": "goldcountry",
       "label": "Placerville",
       "confidence": "anticipated"
     },
     "JAQ": {
-      "group": "Gold Country",
+      "place": "goldcountry",
       "label": "Jackson",
       "confidence": "anticipated"
     },
     "TVL": {
-      "group": "Gold Country",
+      "place": "goldcountry",
       "label": "South Lake Tahoe",
       "confidence": "anticipated"
     },
     "MPI": {
-      "group": "Gold Country",
+      "place": "goldcountry",
       "label": "Mariposa",
       "confidence": "anticipated"
     }

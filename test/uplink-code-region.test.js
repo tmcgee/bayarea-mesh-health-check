@@ -186,15 +186,16 @@ test('uplink code infers a region group only when coordinates are missing', asyn
     const directory = byKey(payload.observerDirectory);
 
     const located = directory.get(OBSERVER_KEYS.located);
-    assert.equal(located.region, 'Alpha');
-    assert.equal(located.regionGroup, 'North');
+    assert.equal(located.place, 'alpha');
+    assert.deepEqual(located.placePath, ['north', 'alpha']);
     assert.equal(located.regionSource, 'coordinates');
     assert.equal(located.regionInferred, false);
     assert.equal(located.uplinkCode, 'AAA');
 
     const inferred = directory.get(OBSERVER_KEYS.inferred);
-    assert.equal(inferred.region, null, 'inferred observers never get a county');
-    assert.equal(inferred.regionGroup, 'North');
+    // A v1 file names groups; they read as the place codes of those groups.
+    assert.equal(inferred.place, 'north', 'inferred observers never get a county');
+    assert.deepEqual(inferred.placePath, ['north']);
     assert.equal(inferred.regionSource, 'uplink-code');
     assert.equal(inferred.regionInferred, true);
     assert.equal(inferred.hasLocation, false);
@@ -206,8 +207,8 @@ test('coordinates win over a conflicting uplink code', async () => {
   await withServer((payload) => {
     const conflicting = byKey(payload.observerDirectory).get(OBSERVER_KEYS.conflicting);
     assert.equal(conflicting.uplinkCode, 'GGG');
-    assert.equal(conflicting.regionGroup, 'North', 'polygon group, not the GGG code group');
-    assert.equal(conflicting.region, 'Alpha');
+    assert.equal(conflicting.place, 'alpha', 'polygon place, not the GGG code place');
+    assert.deepEqual(conflicting.placePath, ['north', 'alpha']);
     assert.equal(conflicting.regionSource, 'coordinates');
     assert.equal(conflicting.regionInferred, false);
   });
@@ -231,17 +232,20 @@ test('unknown uplink codes leave the region unresolved without excluding the obs
     const unknown = byKey(payload.observerDirectory).get(OBSERVER_KEYS.unknownCode);
     assert.ok(unknown, 'an unrecognised code is not the same as out-of-area');
     assert.equal(unknown.uplinkCode, 'QQQ');
-    assert.equal(unknown.regionGroup, null);
+    assert.equal(unknown.place, null);
+    assert.deepEqual(unknown.placePath, []);
     assert.equal(unknown.regionInferred, false);
   });
 });
 
-test('inferred observers are counted separately in the region hierarchy', async () => {
+test('inferred observers are counted separately in the region tree', async () => {
   await withServer((payload) => {
-    const north = payload.regionHierarchy.find((entry) => entry.group === 'North');
-    assert.equal(north.inferredCount, 1);
+    const node = (code) => payload.regionTree.find((entry) => entry.code === code);
+    assert.equal(node('north').inferredCount, 1);
+    assert.equal(node('north').count, 2);
     // Two located observers sit in Alpha; the inferred one adds no county count.
-    assert.equal(north.regions.find((region) => region.name === 'Alpha').count, 2);
+    assert.equal(node('alpha').count, 2);
+    assert.equal(node('alpha').inferredCount, 0);
     assert.equal(payload.observerStats.inferredRegionCount, 1);
     assert.equal(payload.observerStats.regionFallback, 'uplink-code');
   });
@@ -260,7 +264,7 @@ test('inferred observers are in the default scoring target', async () => {
     assert.equal(inferred.regionInferred, true);
     assert.equal(inferred.hasLocation, false);
     assert.equal(inferred.lat, null);
-    assert.equal(inferred.region, null);
+    assert.deepEqual(inferred.placePath, ['north']);
   });
 });
 
@@ -278,7 +282,7 @@ test('an inferred observer earns no Regions Reached credit', async () => {
     );
 
     const session = await (await fetch(`${ctx.baseUrl}/api/sessions/${created.id}`)).json();
-    // Second half: its group came from an uplink code, so scopeRegionCoverage()
+    // Second half: its place came from an uplink code, so scopeRegionCoverage()
     // ignores it and the denominator is zero rather than one. We do not claim
     // reach into a region we never confirmed a position in.
     assert.equal(session.regionCoverage.total, 0);
@@ -295,7 +299,7 @@ test('out-of-area exclusion applies even when REGION_FALLBACK is off', async () 
 
     // With the fallback disabled the coordinate-less observer keeps no region.
     const inferred = directory.get(OBSERVER_KEYS.inferred);
-    assert.equal(inferred.regionGroup, null);
+    assert.equal(inferred.place, null);
     assert.equal(inferred.regionInferred, false);
     assert.equal(payload.observerStats.inferredRegionCount, 0);
     // ...and it is still a target: a missing position never disqualified it.

@@ -1,14 +1,14 @@
 // Consistency guards over the shipped region data files.
 //
-// These assert properties of `regions/us-ca-uplink-codes.json` and
-// `regions/us-ca-bay-area.geojson` themselves, with no server booted. Every
-// check here corresponds to a mistake that is easy to make by hand and that
-// the running app either tolerates silently or reports only through a log
-// line nobody reads:
+// These assert properties of the shipped region files themselves - the uplink
+// codes, the shape library (regions/shapes/), the overrides and the scope tree
+// (1.2.0) - with no server booted. Every check here corresponds to a mistake
+// that is easy to make by hand and that the running app either tolerates
+// silently or reports only through a log line nobody reads:
 //
-//   - a code mapping to a group the boundary file does not define is dropped
-//     at load with a warning (server.js loadUplinkCodes), so the observers it
-//     was meant to place quietly lose their region
+//   - a code mapping to a place the tree does not define is dropped at load
+//     with a warning (server.js loadUplinkCodes), so the observers it was
+//     meant to place quietly lose their region
 //   - a code listed in both blocks is contradictory; the loader resolves it by
 //     skipping the `codes` entry, which is the opposite of what someone adding
 //     an in-area code would expect
@@ -16,17 +16,27 @@
 //     entirely, in-area or not
 //
 // Kern County and the BFL/MCI reshuffle on 2026-09-10 were all hand edits to
-// these two files, which is exactly the situation these guards exist for.
+// these files, which is exactly the situation these guards exist for.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadMeshcoreScopes } from '../lib/meshcore-scopes.js';
+import { loadOverrides, loadShapeLibrary, resolvePlaces } from '../lib/region-places.js';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = path.resolve(TEST_DIR, '..');
 const CODES_PATH = path.join(REPO_DIR, 'regions/us-ca-uplink-codes.json');
-const BOUNDARY_PATH = path.join(REPO_DIR, 'regions/us-ca-bay-area.geojson');
+const SCOPES_PATH = path.join(REPO_DIR, 'regions/us-ca-meshcore-scopes.json');
+const SHAPES_DIR = path.join(REPO_DIR, 'regions/shapes');
+const OVERRIDES_PATH = path.join(REPO_DIR, 'regions/region-overrides.json');
+
+function resolvedRegions() {
+  const library = loadShapeLibrary(SHAPES_DIR);
+  const { overrides } = loadOverrides(OVERRIDES_PATH);
+  return { library, resolved: resolvePlaces(loadMeshcoreScopes(SCOPES_PATH).tree, library, overrides) };
+}
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -72,19 +82,14 @@ test('no uplink code is both in-area and out-of-area', () => {
   );
 });
 
-test('every in-area code maps to a group the boundary file defines', () => {
+test('every in-area code maps to a place the scope tree defines', () => {
   const codes = readJson(CODES_PATH);
-  const boundary = readJson(BOUNDARY_PATH);
-  const groups = new Set(
-    boundary.features.map((feature) => feature.properties.group).filter(Boolean),
-  );
-  assert.ok(groups.size > 0, 'the boundary file must define at least one group');
-
+  assert.equal(codes.version, 2, 'v2 codes name a place code; v1 group names are only read for old files');
+  const { resolved } = resolvedRegions();
   for (const [code, value] of codeEntries(codes.codes)) {
-    const group = typeof value === 'string' ? value : value?.group;
     assert.ok(
-      groups.has(group),
-      `code ${code} maps to group "${group}", which no feature in the boundary file carries`,
+      resolved.byCode.has(value?.place),
+      `code ${code} maps to place "${value?.place}", which the scope tree does not define`,
     );
   }
 });
@@ -95,7 +100,7 @@ test('every in-area code carries a label and a known confidence', () => {
   // straight through into the observer record, so a typo becomes data.
   const allowed = new Set(['observed', 'anticipated']);
   for (const [code, value] of codeEntries(codes.codes)) {
-    assert.equal(typeof value, 'object', `code ${code} should be an object with group/label/confidence`);
+    assert.equal(typeof value, 'object', `code ${code} should be an object with place/label/confidence`);
     assert.ok(String(value.label || '').trim(), `code ${code} has no label`);
     assert.ok(
       allowed.has(String(value.confidence || '').trim().toLowerCase()),
@@ -117,55 +122,26 @@ test('every out-of-area code records why it was excluded', () => {
   }
 });
 
-test('boundary features carry the properties the server reads', () => {
-  const boundary = readJson(BOUNDARY_PATH);
-  assert.equal(boundary.type, 'FeatureCollection');
-  assert.ok(Array.isArray(boundary.features) && boundary.features.length > 0);
-
-  const names = new Set();
-  const fipsCodes = new Set();
-  for (const feature of boundary.features) {
-    const { name, group, fips } = feature.properties || {};
-    // REGION_NAME_PROPERTY=name and REGION_GROUP_PROPERTY=group in the Bay Area
-    // env, so a feature missing either is unreachable from the region filter.
-    assert.ok(String(name || '').trim(), 'a feature has no name');
-    assert.ok(String(group || '').trim(), `feature ${name} has no group`);
-    assert.match(String(fips || ''), /^\d{5}$/, `feature ${name} has no five-digit FIPS code`);
-    assert.equal(name, name.trim(), `feature name "${name}" has surrounding whitespace`);
-    assert.equal(group, group.trim(), `group "${group}" on ${name} has surrounding whitespace`);
-    assert.ok(!names.has(name), `duplicate feature name ${name}`);
-    assert.ok(!fipsCodes.has(fips), `duplicate FIPS code ${fips} on ${name}`);
-    names.add(name);
-    fipsCodes.add(fips);
-  }
-});
-
-test('boundary geometry is closed and lands in Northern California', () => {
-  const boundary = readJson(BOUNDARY_PATH);
-  // A ring whose last point is not its first breaks ray casting at the seam,
-  // and a coordinate pair written lat-first would silently move a county to
-  // the far side of the planet. Both have to be caught here, because
-  // deriveRegionInfo just returns no match and the observer loses its region
-  // with no error anywhere.
-  const bounds = { minLon: -125, maxLon: -117, minLat: 32, maxLat: 42 };
-
-  for (const feature of boundary.features) {
-    const { type, coordinates } = feature.geometry;
-    assert.ok(type === 'Polygon' || type === 'MultiPolygon', `${feature.properties.name} is a ${type}`);
-    const polygons = type === 'Polygon' ? [coordinates] : coordinates;
-
-    for (const polygon of polygons) {
+test('the shape library matches its manifest and is well formed', () => {
+  // loadShapeLibrary throws on a SHA-256 mismatch, so a hand edit to a shape
+  // file fails here rather than at boot.
+  const { library } = resolvedRegions();
+  const bounds = { minLon: -125, maxLon: -114, minLat: 32, maxLat: 42.1 };
+  assert.equal(library.shapes.size, 58, 'all 58 California counties');
+  for (const [id, shape] of library.shapes) {
+    assert.match(id, /^us-06\d{3}$/, `shape id ${id} is not us-<state FIPS><county FIPS>`);
+    assert.ok(String(shape.name || '').trim(), `${id} has no name`);
+    for (const polygon of shape.polygons) {
       for (const ring of polygon) {
-        assert.ok(ring.length >= 4, `${feature.properties.name} has a ring with ${ring.length} points`);
-        assert.deepEqual(
-          ring[0],
-          ring[ring.length - 1],
-          `${feature.properties.name} has an unclosed ring`,
-        );
+        // An unclosed ring breaks ray casting at the seam, and a lat-first pair
+        // moves a county to the far side of the planet; either way the point
+        // test just returns no match and the observer loses its region.
+        assert.ok(ring.length >= 4, `${id} has a ring with ${ring.length} points`);
+        assert.deepEqual(ring[0], ring[ring.length - 1], `${id} has an unclosed ring`);
         for (const [lon, lat] of ring) {
           assert.ok(
             lon >= bounds.minLon && lon <= bounds.maxLon && lat >= bounds.minLat && lat <= bounds.maxLat,
-            `${feature.properties.name} has a vertex outside California at ${lon}, ${lat}`,
+            `${id} has a vertex outside California at ${lon}, ${lat}`,
           );
         }
       }
@@ -173,56 +149,54 @@ test('boundary geometry is closed and lands in Northern California', () => {
   }
 });
 
+test('the regions resolve with no problems', () => {
+  const { resolved } = resolvedRegions();
+  assert.deepEqual(resolved.problems, []);
+});
+
+test('coverage is exactly the 1.1.0 boundary', () => {
+  // The 33 counties of regions/us-ca-bay-area.geojson (Yuba-Sutter counted as
+  // its two counties), which 1.2.0 replaced. Widening coverage is a decision
+  // to show and score observers in more counties, so it must change this list
+  // on purpose.
+  const { resolved } = resolvedRegions();
+  const covered = [...new Set(resolved.candidates.flatMap((entry) => entry.shapeIds))].sort();
+  assert.deepEqual(covered, [
+    '001', '003', '005', '007', '009', '013', '017', '019', '029', '031', '039',
+    '041', '043', '047', '053', '055', '061', '067', '069', '075', '077', '079',
+    '081', '085', '087', '095', '097', '099', '101', '107', '109', '113', '115',
+  ].map((county) => `us-06${county}`));
+});
+
+test('the Bay Area reads short, sorts first and opens subdivided', () => {
+  const { resolved } = resolvedRegions();
+  const bayArea = resolved.byCode.get('bayarea');
+  assert.equal(bayArea.name, 'Bay Area');
+  // Shapes still come from the tree: the nine counties, matched by their own names.
+  assert.equal(bayArea.shapeIds.length, 9);
+  assert.equal(resolved.order.get('bayarea'), 0);
+  assert.deepEqual([...resolved.expand], ['bayarea']);
+});
+
+test('Yuba and Sutter are one place, as in the scope tree', () => {
+  // matkam/meshcore-settings has one place for the two counties, `yubasutter`,
+  // under `sacramentofoothills`, so there is one chip where that tree, and the
+  // repeaters following it, have one.
+  const { resolved } = resolvedRegions();
+  const entry = resolved.byCode.get('yubasutter');
+  assert.deepEqual([...entry.shapeIds].sort(), ['us-06101', 'us-06115']);
+  assert.deepEqual(entry.path, ['sacramentofoothills', 'yubasutter']);
+});
+
 test('the Bay Area env example points at files that exist', () => {
   // A rename that updates one side only fails at boot with a warning and no
   // regions at all, which looks like a code bug rather than a missing file.
   const env = fs.readFileSync(path.join(REPO_DIR, '.env.bayarea.example'), 'utf8');
-  for (const key of ['REGIONS_FILE', 'UPLINK_CODES_FILE']) {
+  for (const key of ['MESHCORE_REGION_SCOPES_FILE', 'REGION_SHAPES_DIR', 'REGION_OVERRIDES_FILE', 'UPLINK_CODES_FILE']) {
     const match = env.match(new RegExp(`^${key}=(.+)$`, 'm'));
     assert.ok(match, `${key} is not set in .env.bayarea.example`);
     const target = path.join(REPO_DIR, match[1].trim());
     assert.ok(fs.existsSync(target), `${key} points at ${match[1].trim()}, which does not exist`);
   }
-});
-
-test('Yuba and Sutter are one Yuba-Sutter subregion, as in the scope tree', () => {
-  // matkam/meshcore-settings has one place for the two counties, `yubasutter`,
-  // under `sacramentofoothills`. Separate features would show two subregion
-  // chips where that tree, and the repeaters following it, have one.
-  const boundary = readJson(BOUNDARY_PATH);
-  const names = boundary.features.map((feature) => feature.properties.name);
-  assert.ok(!names.includes('Yuba') && !names.includes('Sutter'), 'Yuba or Sutter is still a feature of its own');
-  const merged = boundary.features.filter((feature) => feature.properties.name === 'Yuba-Sutter');
-  assert.equal(merged.length, 1);
-  assert.equal(merged[0].properties.group, 'Sacramento Foothills');
-  assert.deepEqual(merged[0].properties.fipsAll, ['06101', '06115']);
-  assert.equal(merged[0].geometry.type, 'Polygon');
-  assert.equal(merged[0].geometry.coordinates.length, 1, 'the shared border did not dissolve into one ring');
-});
-
-test('parent regions group the Bay Area, Sierra Nevada and San Joaquin Valley regions', () => {
-  // `parentRegion` (bayarea.21) is a property of the group, repeated on each of
-  // its features, so every feature of a group must name the same parent.
-  const boundary = readJson(BOUNDARY_PATH);
-  const parents = new Map();
-  for (const feature of boundary.features) {
-    const { group, parentRegion = null } = feature.properties;
-    if (parents.has(group)) {
-      assert.equal(parentRegion, parents.get(group), `${feature.properties.name} disagrees with the rest of ${group}`);
-    }
-    parents.set(group, parentRegion);
-  }
-  const byParent = {};
-  for (const [group, parent] of parents) {
-    if (parent) (byParent[parent] ||= []).push(group);
-  }
-  for (const groups of Object.values(byParent)) groups.sort();
-  assert.deepEqual(byParent, {
-    'Bay Area': ['East Bay', 'North Bay', 'Peninsula', 'San Francisco', 'South Bay'],
-    'San Joaquin Valley': ['San Joaquin North', 'San Joaquin South'],
-    'Sierra Nevada': ['Eastern Sierra', 'Gold Country'],
-  });
-  assert.equal(parents.get('Central Coast'), null);
-  assert.equal(parents.get('Sacramento Foothills'), null);
-  assert.equal(parents.get('North California'), null);
+  assert.doesNotMatch(env, /^REGIONS_FILE=/m, 'REGIONS_FILE would be ignored next to REGION_SHAPES_DIR');
 });

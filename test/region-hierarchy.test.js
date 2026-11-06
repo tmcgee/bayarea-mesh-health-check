@@ -26,7 +26,7 @@ function squareFeature(label, macro, west, south, east, north) {
   };
 }
 
-test('bootstrap exposes grouped region hierarchy for observer filters', async () => {
+test('bootstrap exposes a flat regions file as a place tree for observer filters', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-health-regions-test-'));
   const observerFile = path.join(tempDir, 'observer.json');
   const observerActivityFile = path.join(tempDir, 'observer-activity.json');
@@ -131,68 +131,87 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
     assert.equal(response.status, 200);
     const payload = await response.json();
 
-    assert.deepEqual(payload.availableRegions, ['Alpha', 'Beta', 'Gamma', 'Outside Census places']);
-    assert.deepEqual(payload.availableRegionGroups, ['North', 'South']);
-    assert.deepEqual(payload.regionHierarchy, [
-      {
-        group: 'North',
-        count: 3,
-        inferredCount: 0,
-        regions: [
-          { name: 'Alpha', count: 1, packetCount: 1 },
-          { name: 'Beta', count: 1, packetCount: 1 },
-          { name: 'Outside Census places', count: 1, packetCount: 1 },
-        ],
-      },
-      {
-        group: 'South',
-        count: 1,
-        inferredCount: 0,
-        regions: [
-          { name: 'Gamma', count: 1, packetCount: 1 },
-        ],
-        parent: 'Hemisphere',
-      },
+    // A flat REGIONS_FILE becomes a tree through the adapter (1.2.0): parent
+    // region, group and subregion are depths 1-3, codes are slugs of the names,
+    // and only places holding observers (with their ancestors) are listed.
+    assert.equal(payload.availableRegions, undefined);
+    assert.equal(payload.regionHierarchy, undefined);
+    assert.deepEqual(payload.regionTree.map((node) => [node.code, node.parent, node.depth, node.count]), [
+      ['hemisphere', '', 1, 1],
+      ['north', '', 1, 3],
+      ['alpha', 'north', 2, 1],
+      ['beta', 'north', 2, 1],
+      ['outside-census-places', 'north', 2, 1],
+      ['south', 'hemisphere', 2, 1],
+      ['gamma', 'south', 3, 1],
     ]);
+    assert.deepEqual(payload.regionTree.find((node) => node.code === 'north').children,
+      ['alpha', 'beta', 'outside-census-places']);
+    assert.equal(payload.regionTree.find((node) => node.code === 'gamma').name, 'Gamma');
 
     const alphaObserver = payload.observerDirectory.find((entry) => entry.key === observerKeys[0]);
-    assert.equal(alphaObserver?.region, 'Alpha');
-    assert.equal(alphaObserver?.regionGroup, 'North');
+    assert.equal(alphaObserver?.place, 'alpha');
+    assert.deepEqual(alphaObserver?.placePath, ['north', 'alpha']);
 
+    // The deepest, then smallest, containing place wins: Alpha sits inside the
+    // larger 'Outside Census places' too, and the Fallback observer only there.
     const fallbackObserver = payload.observerDirectory.find((entry) => entry.key === observerKeys[3]);
-    assert.equal(fallbackObserver?.region, 'Outside Census places');
-    assert.equal(fallbackObserver?.regionGroup, 'North');
+    assert.equal(fallbackObserver?.place, 'outside-census-places');
 
     const boundaryResponse = await fetch(`${baseUrl}/api/region-boundaries`);
     assert.equal(boundaryResponse.status, 200);
     const boundaries = await boundaryResponse.json();
     assert.equal(boundaries.type, 'FeatureCollection');
 
-    // One outline per region group, not per subregion. Only groups that hold
-    // observers are served, so West - a real group in the file with nobody
-    // inside it - is absent. This is what keeps a 32,656-feature regions file
-    // from being shipped to the browser.
+    // One outline per place holding observers, at every depth, plus the
+    // observer-less children of those places (empty: true). West and Epsilon -
+    // a real group in the file with nobody inside it - are absent, which is
+    // what keeps a 32,656-feature regions file from being shipped.
     assert.deepEqual(
-      boundaries.features.map((feature) => feature.properties.group),
-      ['North', 'South'],
+      boundaries.features.map((feature) => feature.properties.code).sort(),
+      ['alpha', 'beta', 'delta', 'gamma', 'hemisphere', 'north', 'outside-census-places', 'south'],
     );
-    // Properties carry the group only; nothing else from the source file reaches
-    // the client, and the subregion names are deliberately not exposed here
-    // because the outlines no longer represent subregions.
     for (const feature of boundaries.features) {
       assert.equal(feature.type, 'Feature');
-      assert.deepEqual(Object.keys(feature.properties), ['group']);
+      assert.deepEqual(Object.keys(feature.properties).filter((key) => key !== 'empty'),
+        ['code', 'name', 'parent', 'depth']);
       assert.equal(feature.geometry.type, 'MultiPolygon');
     }
+    assert.deepEqual(boundaries.features.filter((feature) => feature.properties.empty)
+      .map((feature) => [feature.properties.code, feature.properties.parent]), [['delta', 'south']]);
 
-    const ringsOf = (group) => boundaries.features
-      .find((feature) => feature.properties.group === group)
+    // ?parent= serves one level: the map draws one at a time.
+    const topLevel = await (await fetch(`${baseUrl}/api/region-boundaries?parent=`)).json();
+    assert.deepEqual(topLevel.features.map((feature) => feature.properties.code).sort(), ['hemisphere', 'north']);
+    const underSouth = await (await fetch(`${baseUrl}/api/region-boundaries?parent=south`)).json();
+    assert.deepEqual(underSouth.features.map((feature) => feature.properties.code).sort(), ['delta', 'gamma']);
+    // A comma list serves several levels in one request; '' in it is the top.
+    const several = await (await fetch(`${baseUrl}/api/region-boundaries?parent=,south`)).json();
+    assert.deepEqual(several.features.map((feature) => feature.properties.code).sort(), ['delta', 'gamma', 'hemisphere', 'north']);
+    // ?code= picks outlines by code (the zoomed-in map's full-detail fetch), and
+    // ?detail=coarse serves the same places at the coarse tolerance.
+    const byCode = await (await fetch(`${baseUrl}/api/region-boundaries?code=gamma,north`)).json();
+    assert.deepEqual(byCode.features.map((feature) => feature.properties.code).sort(), ['gamma', 'north']);
+    const coarse = await (await fetch(`${baseUrl}/api/region-boundaries?parent=,south&detail=coarse`)).json();
+    assert.deepEqual(coarse.features.map((feature) => feature.properties.code).sort(), ['delta', 'gamma', 'hemisphere', 'north']);
+    const unknown = await (await fetch(`${baseUrl}/api/region-boundaries?parent=nowhere`)).json();
+    assert.deepEqual(unknown.features, []);
+    // The locator gets every level at once.
+    const locator = await (await fetch(`${baseUrl}/api/region-locator`)).json();
+    assert.equal(locator.features.length, boundaries.features.length);
+
+    const ringsOf = (code) => boundaries.features
+      .find((feature) => feature.properties.code === code)
       .geometry.coordinates.flat();
 
     // Alpha (0,0)-(1,1) and Beta (1,0)-(2,1) are neighbours in North, so the
     // border they share is dissolved away and they draw as one 0..2 rectangle.
-    const north = ringsOf('North');
-    const merged = north.find((ring) => ring.length === 7);
+    // Simplification keeps the collinear midpoints (1,0) and (1,1): Alpha and
+    // Beta are outlined too, and those are where their border meets North's,
+    // so all three keep the same vertices there (lib/outline-simplify.js).
+    const north = ringsOf('north');
+    const merged = north.find((ring) => ring.some(([longitude]) => longitude === 2)
+      && ring.every(([longitude]) => longitude <= 2));
     assert.ok(merged, 'the two adjacent North subregions merge into a single ring');
     assert.deepEqual(
       [...new Set(merged.map((point) => point.join(',')))].sort(),
@@ -208,9 +227,9 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
     // has no border to cancel and stays a ring of its own.
     assert.equal(north.length, 2);
 
-    // Delta holds no observers, but its group does, so the South outline covers
-    // it: an outline describes the region, not the coverage inside it.
-    const south = ringsOf('South');
+    // Delta holds no observers, but its parent does, so the South outline covers
+    // it: an outline describes the place, not the coverage inside it.
+    const south = ringsOf('south');
     assert.equal(south.length, 2);
     assert.ok(
       south.some((ring) => ring.every(([longitude]) => longitude >= 5)),
@@ -219,13 +238,14 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
 
     const gammaRing = south.find((ring) => ring.some(([longitude]) => longitude < 5));
     const gammaLongitudes = gammaRing.map(([longitude]) => longitude);
-    assert.ok(gammaLongitudes.includes(0.12346), 'drawing geometry is rounded to five decimals');
+    assert.ok(gammaLongitudes.includes(0.1235), 'drawing geometry is rounded to four decimals');
     assert.ok(!gammaLongitudes.includes(0.1234567891), 'full precision is not shipped to the client');
 
     // Region detection still uses the unrounded boundary: the Gamma observer at
     // longitude 0.5 stays inside Gamma.
     const gammaObserver = payload.observerDirectory.find((entry) => entry.key === observerKeys[2]);
-    assert.equal(gammaObserver?.region, 'Gamma');
+    assert.equal(gammaObserver?.place, 'gamma');
+    assert.deepEqual(gammaObserver?.placePath, ['hemisphere', 'south', 'gamma']);
   } finally {
     flushScheduledWrites();
     await new Promise((resolve, reject) => {
@@ -249,7 +269,7 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
   }
 });
 
-test('bootstrap falls back to flat region filters when boundaries have no group property', async () => {
+test('a regions file with no group property gives top-level places only', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-health-regions-flat-test-'));
   const observerFile = path.join(tempDir, 'observer.json');
   const observerActivityFile = path.join(tempDir, 'observer-activity.json');
@@ -342,19 +362,13 @@ test('bootstrap falls back to flat region filters when boundaries have no group 
     assert.equal(response.status, 200);
     const payload = await response.json();
 
-    assert.deepEqual(payload.availableRegions, ['Alpha', 'Beta']);
-    assert.deepEqual(payload.availableRegionGroups, []);
-    assert.deepEqual(payload.regionHierarchy, [
-      {
-        group: '',
-        count: 2,
-        inferredCount: 0,
-        regions: [
-          { name: 'Alpha', count: 1, packetCount: 1 },
-          { name: 'Beta', count: 1, packetCount: 1 },
-        ],
-      },
+    // No group property: every feature is a top-level place.
+    assert.deepEqual(payload.regionTree.map((node) => [node.code, node.parent, node.depth, node.count]), [
+      ['alpha', '', 1, 1],
+      ['beta', '', 1, 1],
     ]);
+    const alpha = payload.observerDirectory.find((entry) => entry.key === observerKeys[0].toUpperCase());
+    assert.deepEqual(alpha?.placePath, ['alpha']);
   } finally {
     flushScheduledWrites();
     await new Promise((resolve, reject) => {

@@ -1,5 +1,27 @@
 # Region Boundary Files
 
+## Tree mode (1.2.0)
+
+The Bay Area deployment builds its regions from three files instead of one:
+
+- `us-ca-meshcore-scopes.json`: the MeshCore scope tree (the places and their
+  nesting), pinned to matkam/meshcore-settings.
+- `shapes/`: the shape library, one GeoJSON file per state of Census county
+  outlines keyed `us-<state FIPS><county FIPS>`, with `manifest.json`. Built by
+  `node scripts/build-shapes.js`; never edited by hand.
+- `region-overrides.json`: ours. `coverage` lists the places shown and scored,
+  `shapes` gives a place its outline when its name does not match a county, and
+  `exclude` removes places (and their counties from every other place).
+  Display only: `names` gives a place a shorter name, `order` lists codes
+  that sort first among their siblings, and `expand` lists top-level places
+  the map shows subdivided under All.
+
+Set `REGION_SHAPES_DIR=regions/shapes` and
+`REGION_OVERRIDES_FILE=regions/region-overrides.json`. See
+`docs/design-scalable-regions.md`.
+
+## Flat-file mode
+
 GeoJSON FeatureCollections used for observer region detection. Set the `REGIONS_FILE` environment variable to the path of one of these files.
 
 Each bundled feature has a `name` and `group` property. The server assigns

@@ -7,6 +7,73 @@ patch fixes. Releases before 1.0.0 were `1.3.8+bayarea.1` to `1.3.8+bayarea.22`:
 upstream `v1.3.8` plus a Bay Area build counter. Sections named `vX.Y.Z` alone are
 upstream's own releases.
 
+## v1.2.0+upstream.1.3.8
+
+- regions from the scope tree (docs/design-scalable-regions.md, phases 1 and
+  2). With `REGION_SHAPES_DIR` and `REGION_OVERRIDES_FILE` set, places, names
+  and nesting come from `MESHCORE_REGION_SCOPES_FILE`, outlines from a county
+  shape library (`regions/shapes/`, US Census 1:500k 2024, built by
+  `scripts/build-shapes.js`), and reach from the overrides file's `coverage`
+  list. `REGIONS_FILE` is ignored in this mode and still works without it.
+- coverage is unchanged: the shipped overrides reproduce the 1.1.0 boundary's
+  33 counties exactly. Widening it is a separate decision.
+- any-depth chips: a top row of places, then a row per level of the selected
+  path, each led by "All <place>" and indented by depth. A chip above the
+  selection on its path is marked within. Buttons carry `data-place` (the
+  place code) and `aria-pressed`.
+- the map draws one level in bold: the top-level places under All, and under
+  a selected place its children, with counties that have no observers yet in
+  gray. Selecting a county frames its own outline rather than its observers.
+- faint next-level lines: inside every bold outline, its children are drawn
+  as thin neutral lines (1px centred, 45% opacity on their own pane, no
+  status colour), so a region shows how it divides without being selected.
+- shared borders are drawn once. Outlines are 2px centred strokes; neighbours
+  share exact vertices, so a border both sides agree on is a single 2px line,
+  not the two 2px inner strokes side by side of 1.1.0. Where neighbours'
+  statuses differ, a masked overlay splits that stretch 1px per side (green
+  beside red), still 2px in all. Leaflet's own per-path thinning is off
+  (smoothFactor 0), since it would give neighbours different pixels.
+- overrides `names`, `order` and `expand`. `names` gives a place a display
+  name (the Bay Area now reads "Bay Area"; shapes still match the tree's own
+  names). `order` lists codes that sort first among their siblings; the rest
+  follow by name. `expand` lists top-level places the map shows subdivided
+  under All: the Bay Area opens as East Bay, North Bay, Peninsula, San
+  Francisco and South Bay, as 1.1.0 did. Unknown codes in any of them are
+  reported, not fatal.
+- outlines load by level (`/api/region-boundaries?parent=A,B`, one request for
+  every level a view needs) at two detail levels. The map loads them coarse
+  (`&detail=coarse`, ~400 m): 86 KB uncompressed (19 KB gzipped) for every
+  bold and faint line at startup, against 370 KB (98 KB) at full detail and
+  211 KB in 1.1.0. From zoom 9 it fetches full detail (~50 m) for just the
+  outlines in view (`?code=A,B`): selecting Sonoma fetches Sonoma, Marin, Napa
+  and Solano, 38 KB. The location buttons fetch every level once, coarse
+  (`/api/region-locator?detail=coarse`, 99 KB, 22 KB gzipped; full detail
+  would be 432 KB, and 1.1.0's was 261 KB). Within 0.006 degrees (~650 m) of a
+  coarse edge, where coarse outlines could put the point on the wrong side,
+  the places on that edge are fetched at full detail by code before the point
+  is tested; elsewhere nothing more is fetched.
+- outlines are thinned together rather than one at a time
+  (lib/outline-simplify.js): a border two outlines share, neighbours or a
+  parent and its child, is the same line in both at either level, so the faint
+  lines meet the bold ones exactly. test/region-outline.test.js checks every
+  parent's outline is made of its children's edges.
+- the payload's `regionHierarchy` is replaced by `regionTree`; observers carry
+  `place` and `placePath`; `scopeScores` is keyed by place code;
+  `regionCoverage` lists `places`. Regions Reached for All counts top-level
+  places. Sessions store `activeObserverPlaces`.
+- uplink codes file version 2: `place` is a place code. Version 1 `group`
+  names are still read.
+- the location opt-in picks the deepest place; a point in a county with no
+  observers reads "No observers in X yet, so showing Y".
+- `exclude` in the overrides now also removes an excluded place's counties
+  from every other place.
+- `seed-observers.py` decides the boundary with the server's resolver
+  (`scripts/region-candidates.js`) in tree mode, so the two cannot disagree.
+  The reseed fingerprint in tree mode covers the scope tree, shape manifest,
+  overrides and uplink codes; changing modes fires one boot pass when
+  reseeding is enabled.
+- service worker cache `mesh-health-check-pwa-v12-bayarea`.
+
 ## v1.1.0+upstream.1.3.8
 
 - regional scoring: the region chips now pick which scope the score is for.

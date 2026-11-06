@@ -1,6 +1,6 @@
 # Design: regions built from a shared scope tree
 
-Status: draft for review, 2026-10-30 (revised the same day: place-code IDs, Central Valley decision; revised 2026-11-01: no region in links). Not scheduled. Targets 1.2.0 (revised 2026-11-03: a setup break, released as a minor version by decision, as 1.1.0's scope-file change was). Nothing here is built.
+Status: draft for review, 2026-10-30 (revised the same day: place-code IDs, Central Valley decision; revised 2026-11-01: no region in links). Targets 1.2.0 (revised 2026-11-03: a setup break, released as a minor version by decision, as 1.1.0's scope-file change was). Built in v1.2.0+upstream.1.3.8 (2026-11-06): phases 1 and 2, outline detail levels and the coarse-first locator; see CHANGES.md. Open questions 1 to 4 remain open.
 
 ## 1. Problem
 
@@ -179,6 +179,61 @@ Unchanged in spirit: a missing or invalid input disables region detection with a
 
 Phases 1 and 2 do not depend on the new repo, so they can proceed while its schema settles.
 
+### 9.1 As built: phases 1 and 2 (2026-11-05, uncommitted)
+
+- No observer migration. `observer.json` stores no region fields; places are
+  assigned at load from coordinates or uplink codes. Only 1.1.0 sessions'
+  name-keyed `activeObserverRegions` used names, and 1.1.0 was never deployed,
+  so they are not read.
+- The library is not simplified. Simplifying counties one by one would move
+  shared vertices, which the outline dissolve needs to match. The served
+  outlines are dissolved per place, then simplified, at 4 decimals.
+- Coverage (question 6) reproduces 1.1.0: `butte`, `sacramento`, `yolo`,
+  `placer`, `yubasutter`, `sierranevada`, `bayarea`, `centralcoast`,
+  `centralvalley`, with `eastsierra` narrowed to Alpine. The covered county
+  set equals the 1.1.0 file's 33. Adding `norcal` would add 14 counties
+  (Colusa, Del Norte, Glenn, Humboldt, Lake, Lassen, Mendocino, Modoc, Plumas,
+  Shasta, Sierra, Siskiyou, Tehama, Trinity); with `sacramentofoothills` also,
+  Nevada (15); and the whole of `eastsierra` too, Inyo and Mono (17). Left as a
+  decision.
+- A partly covered parent is drawn as its covered part.
+- `exclude` removes the place and strips its shapes from every other place
+  before coverage is decided.
+- Outlines are fetched one level at a time (`?parent=`); the locator fetches
+  every level once, coarse (99 KB raw, 22 KB gzipped). A coarse edge lies
+  within the coarse tolerance (0.004 degrees) of the true one, so a point
+  farther than 0.006 degrees from every coarse edge gets the full-detail answer
+  already; nearer, the places on that edge are fetched at full detail by code
+  (`/api/region-locator?code=A,B`) before the point is tested.
+- The seed calls `scripts/region-candidates.js` with the server's Node rather
+  than porting the resolver to Python, so there is one implementation.
+- Overrides gained three display-only keys: `names` (display name, applied
+  after shape matching), `order` (codes sorted first among siblings, the rest
+  by name; one list for every level) and `expand` (top-level places drawn as
+  their children under All). The shipped file sets the Bay Area to "Bay
+  Area", first, and expanded.
+- Under each bold outline the map draws its children as faint lines, inner
+  stroked like the bold ones so a child's edge on its parent's boundary hides
+  under the parent. At full detail that made page load 369,383 B raw
+  (97 KB gzipped), against 122,901 B without the faint lines.
+- So outlines come at two detail levels. Levels load coarse (0.004 degrees,
+  ~400 m; 85,947 B raw, 18,841 B gzipped at startup); from zoom 9, where a
+  pixel is about 300 m and the steps would show, the drawn outlines that touch
+  the view are fetched again at full detail (0.0005 degrees, ~50 m) by code
+  and swapped in. Full outlines are never swapped back for coarse ones.
+- Thinning is shared-border (TopoJSON-style, lib/outline-simplify.js): rings
+  are cut where the outlines through a vertex stop agreeing, each run is
+  thinned once in a canonical direction, and every owner gets the same run.
+  One-at-a-time Douglas-Peucker would let neighbours part by the tolerance,
+  which at 400 m would show as gaps and crossings between 2px strokes.
+- 1.1.0 drew every outline as a 2px inner stroke, so each shared border was
+  two lines side by side (4px). 1.2.0 draws shared borders once: 2px centred
+  strokes, identical where neighbours agree, plus a split overlay masked to
+  each side (1px of each colour) only where their statuses differ. The split
+  masks have no overhang, so neither colour covers the other's pixel.
+- The flat-file mode stays, and `regions/us-ca-bay-area.geojson` stays until
+  the production `.env` moves to tree mode.
+
 ## 10. Open questions
 
 1. Will MeshCore-Regions-North-America commit generated JSON on main, as matkam does, and keep it CI-checked?
@@ -186,7 +241,7 @@ Phases 1 and 2 do not depend on the new repo, so they can proceed while its sche
 3. Should Nevada be organised by population centre (Reno/Carson, Vegas, Elko) rather than county, as Ben suggests? If so its places need custom shapes, not counties.
 4. Should backbone tags (for example `#pnw-reno`) be shown at all? They are scopes, not places, so this design recognises them but does not draw them.
 5. Decided 2026-10-30: follow the tree's single `centralvalley`; no override.
-6. Coverage width. The matkam tree claims all 58 California counties; today's boundary has 32 features (33 counties). If coverage is every place with shapes (§5.3), phase 2 widens it to the whole state, including Southern California. Options: accept it (places with no observers stay hidden anyway), or add a `coverage` list of place codes to the overrides file (for example `norcal`, `sacramentofoothills`, `sierranevada`, `bayarea`, `centralcoast`, `centralvalley`). That list would be the one deliberate, reviewable statement of reach, which is configuration rather than geometry.
+6. Coverage width (as built: reproduces 1.1.0, §9.1; decided 2026-11-06 to keep it and leave `norcal` out for now: no observers were heard there). The matkam tree claims all 58 California counties; today's boundary has 32 features (33 counties). If coverage is every place with shapes (§5.3), phase 2 widens it to the whole state, including Southern California. Options: accept it (places with no observers stay hidden anyway), or add a `coverage` list of place codes to the overrides file (for example `norcal`, `sacramentofoothills`, `sierranevada`, `bayarea`, `centralcoast`, `centralvalley`). That list would be the one deliberate, reviewable statement of reach, which is configuration rather than geometry.
 
 ## 11. Standing rules this design keeps
 

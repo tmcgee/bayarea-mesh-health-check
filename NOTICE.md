@@ -48,7 +48,12 @@ Released under the MIT License; see [LICENSE](LICENSE).
   > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   > SOFTWARE.
 
-- **County boundaries**: `regions/us-ca-bay-area.geojson` is derived from legal
+- **Shape library**: `regions/shapes/` (1.2.0) is built by
+  `scripts/build-shapes.js` from the US Census Bureau
+  [cartographic boundary file, counties 1:500,000, 2024](https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_county_500k.zip),
+  unsimplified, coordinates rounded to 6 decimals. US federal government data,
+  public domain. `regions/shapes/manifest.json` records the source SHA-256.
+- **County boundaries (1.1.0 file)**: `regions/us-ca-bay-area.geojson` is derived from legal
   county boundaries in the US Census Bureau
   [TIGERweb State_County service](https://tigerweb.geo.census.gov/arcgisrest/),
   simplified and grouped into regions here. US federal government data, public

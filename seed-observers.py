@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import shutil
+import subprocess
 import time
 import urllib.request
 from collections import Counter, defaultdict
@@ -32,7 +33,14 @@ def _app_path(env_name, default_rel):
 
 CORESCOPE = (os.environ.get("CORESCOPE_URL", "").strip().rstrip("/")
              or "https://corescope.bayareameshcore.org") + "/api/nodes?limit=5000"
-GEOJSON = _app_path("REGIONS_FILE", "regions/us-ca-bay-area.geojson")
+# 1.2.0: with REGION_SHAPES_DIR set (the tree mode the app ships with) the
+# boundary is the covered places from scripts/region-candidates.js, which runs
+# the server's own resolver. Without it, a legacy REGIONS_FILE GeoJSON is read
+# directly, as before.
+SHAPES_DIR = os.environ.get("REGION_SHAPES_DIR", "").strip()
+GEOJSON = _app_path("REGIONS_FILE", "") if os.environ.get("REGIONS_FILE", "").strip() else ""
+CANDIDATES_SCRIPT = os.path.join(HERE, "scripts", "region-candidates.js")
+NODE = os.environ.get("SEED_NODE_BINARY", "").strip() or "node"
 STORE = _app_path("OBSERVERS_FILE", "data/observer.json")
 BOOTSTRAP = (os.environ.get("SEED_BOOTSTRAP_URL", "").strip()
              or f"http://localhost:{os.environ.get('PORT', '3090')}/api/bootstrap")
@@ -89,7 +97,36 @@ def bounds_of(geom):
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def load_tree_regions():
+    # Same candidates, same order as the server's assignPlace: the first that
+    # contains a point is where the server places it. "group" is the top-level
+    # place, so the report reads as it did with a flat file.
+    proc = subprocess.run([NODE, CANDIDATES_SCRIPT], cwd=HERE, env=os.environ,
+                          capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0:
+        raise SystemExit(f"region candidates failed: {proc.stderr.strip() or proc.returncode}")
+    data = json.loads(proc.stdout)
+    for problem in data.get("problems", []):
+        print(f"note: {problem}")
+    names = {c["code"]: c["name"] for c in data["candidates"]}
+    out = []
+    for c in data["candidates"]:
+        polygons = [poly for sid in c["shapes"] for poly in data["shapes"][sid]]
+        geom = {"type": "MultiPolygon", "coordinates": polygons}
+        out.append({
+            "name": c["name"],
+            "group": names.get(c["path"][0], c["path"][0]),
+            "geometry": geom,
+            "bounds": bounds_of(geom),
+        })
+    return out
+
+
 def load_regions():
+    if SHAPES_DIR:
+        return load_tree_regions()
+    if not GEOJSON:
+        raise SystemExit("no regions configured: set REGION_SHAPES_DIR (or a legacy REGIONS_FILE)")
     gj = json.load(open(GEOJSON))
     out = []
     for f in gj["features"]:

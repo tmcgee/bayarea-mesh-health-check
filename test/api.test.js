@@ -119,7 +119,7 @@ test('GET /api/bootstrap returns site and channel configuration', async () => {
 
   const payload = await response.json();
   assert.equal(payload.site.title, 'MeshCore Observer Coverage');
-  assert.equal(payload.site.version, '1.1.0+upstream.1.3.8');
+  assert.equal(payload.site.version, '1.2.0+upstream.1.3.8');
   assert.equal(payload.site.repoUrl, 'https://github.com/tmcgee/bayarea-mesh-health-check');
   assert.equal(payload.site.changesUrl, 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md');
   assert.equal(payload.site.upstreamUrl, undefined);
@@ -278,9 +278,9 @@ test('region coverage is reported and stays empty without located observers', as
   assert.ok(session.regionCoverage);
   assert.equal(typeof session.regionCoverage.reached, 'number');
   assert.equal(typeof session.regionCoverage.total, 'number');
-  assert.ok(Array.isArray(session.regionCoverage.groups));
+  assert.ok(Array.isArray(session.regionCoverage.places));
   // No regions file is configured in the test harness, so no observer has a
-  // coordinate-derived group and the metric has nothing to report. The frontend
+  // coordinate-derived place and the metric has nothing to report. The frontend
   // renders a placeholder rather than a misleading 0 / 0.
   assert.equal(session.regionCoverage.total, 0);
   assert.equal(session.regionCoverage.reached, 0);

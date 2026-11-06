@@ -1,0 +1,31 @@
+{
+  "format": 1,
+  "notice": "Ours, reviewed like code (docs/design-scalable-regions.md 5.8). Coverage is the one deliberate statement of reach. This list reproduces the 1.1.0 boundary (regions/us-ca-bay-area.geojson, 32 counties) exactly: of norcal only Butte, of sacramentofoothills all but Nevada County, and eastsierra narrowed to Alpine. Widening it (for example to norcal, sacramentofoothills and an eastsierra without the shapes entry) is a decision to show and score observers in more counties. names, order and expand only change how places read and draw: a short display name, sibling order (listed first, the rest by name), and which top-level places the map shows subdivided under All.",
+  "coverage": [
+    "butte",
+    "sacramento",
+    "yolo",
+    "placer",
+    "yubasutter",
+    "sierranevada",
+    "bayarea",
+    "centralcoast",
+    "centralvalley"
+  ],
+  "shapes": {
+    "eastsierra": [
+      "us-06003"
+    ]
+  },
+  "exclude": [],
+  "renamed": {},
+  "names": {
+    "bayarea": "Bay Area"
+  },
+  "order": [
+    "bayarea"
+  ],
+  "expand": [
+    "bayarea"
+  ]
+}

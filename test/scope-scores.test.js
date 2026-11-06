@@ -1,6 +1,7 @@
-// Regional scoring (1.1.0): the session payload carries one score per parent,
-// group and subregion, each computed over the observers placed there when the
-// code was created, plus any that reported. The top-level score stays All.
+// Regional scoring (1.1.0; keyed by place code since 1.2.0): the session payload
+// carries one score per place at any depth, each computed over the observers
+// placed there or below when the code was created, plus any that reported. The
+// top-level score stays All.
 import './support/isolate-env.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -31,7 +32,7 @@ const BETA = key('4');
 const GAMMA = [key('5'), key('6')];
 const LATE = key('7');
 
-test('session scores every parent, group and subregion as of creation', async () => {
+test('session scores every place at every depth as of creation', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-health-scope-test-'));
   const files = {
     OBSERVERS_FILE: path.join(tempDir, 'observer.json'),
@@ -116,19 +117,18 @@ test('session scores every parent, group and subregion as of creation', async ()
     assert.equal(session.observedCount, 5);
     assert.equal(session.healthPercent, 71);
     assert.equal(session.healthLabel, 'GOOD');
+    // All counts the top-level places (1.2.0): Hemisphere, not its South.
     assert.deepEqual(session.regionCoverage, {
       reached: 2,
       total: 2,
-      groups: [
-        { group: 'North', observerCount: 4, seenCount: 3 },
-        { group: 'South', observerCount: 3, seenCount: 2 },
+      places: [
+        { code: 'hemisphere', name: 'Hemisphere', observerCount: 3, seenCount: 2 },
+        { code: 'north', name: 'North', observerCount: 4, seenCount: 3 },
       ],
     });
 
     const scopes = session.scopeScores;
-    assert.deepEqual(Object.keys(scopes), [
-      'group:North', 'group:South', 'parent:Hemisphere', 'region:Alpha', 'region:Beta', 'region:Gamma',
-    ]);
+    assert.deepEqual(Object.keys(scopes).sort(), ['alpha', 'beta', 'gamma', 'hemisphere', 'north', 'south']);
 
     const pick = (entry) => ({
       expectedCount: entry.expectedCount,
@@ -138,44 +138,46 @@ test('session scores every parent, group and subregion as of creation', async ()
       healthUnratedReason: entry.healthUnratedReason,
       healthLabel: entry.healthLabel,
     });
-    assert.deepEqual(pick(scopes['region:Alpha']), {
+    assert.deepEqual(pick(scopes.alpha), {
       expectedCount: 3, observedCount: 2, healthPercent: 67, healthRated: true, healthUnratedReason: null, healthLabel: 'GOOD',
     });
-    assert.equal(scopes['region:Alpha'].regionCoverage, null);
+    assert.equal(scopes.alpha.regionCoverage, null);
     // One observer: the percentage is real but too small a sample to grade.
-    assert.deepEqual(pick(scopes['region:Beta']), {
+    assert.deepEqual(pick(scopes.beta), {
       expectedCount: 1, observedCount: 1, healthPercent: 100, healthRated: false, healthUnratedReason: 'target-too-small', healthLabel: 'NOT RATED',
     });
-    assert.deepEqual(pick(scopes['region:Gamma']), {
+    assert.deepEqual(pick(scopes.gamma), {
       expectedCount: 3, observedCount: 2, healthPercent: 67, healthRated: true, healthUnratedReason: null, healthLabel: 'GOOD',
     });
-    assert.deepEqual(pick(scopes['group:North']), {
+    assert.deepEqual(pick(scopes.north), {
       expectedCount: 4, observedCount: 3, healthPercent: 75, healthRated: true, healthUnratedReason: null, healthLabel: 'GOOD',
     });
-    // A group's Regions Reached counts its subregions.
-    assert.deepEqual(scopes['group:North'].regionCoverage, {
+    // A place's Regions Reached counts the level below it.
+    assert.deepEqual(scopes.north.regionCoverage, {
       reached: 2,
       total: 2,
-      groups: [
-        { group: 'Alpha', observerCount: 3, seenCount: 2 },
-        { group: 'Beta', observerCount: 1, seenCount: 1 },
+      places: [
+        { code: 'alpha', name: 'Alpha', observerCount: 3, seenCount: 2 },
+        { code: 'beta', name: 'Beta', observerCount: 1, seenCount: 1 },
       ],
     });
-    // A parent's counts its groups. North has no parent, so no parent:North.
-    assert.deepEqual(scopes['parent:Hemisphere'].regionCoverage, {
+    assert.deepEqual(scopes.hemisphere.regionCoverage, {
       reached: 1,
       total: 1,
-      groups: [{ group: 'South', observerCount: 3, seenCount: 2 }],
+      places: [{ code: 'south', name: 'South', observerCount: 3, seenCount: 2 }],
     });
-    assert.equal(scopes['parent:Hemisphere'].expectedCount, 3);
+    assert.equal(scopes.hemisphere.expectedCount, 3);
+    assert.equal(scopes.south.expectedCount, 3);
 
     // The placement snapshot is persisted with the session, keyed by observer.
     flushScheduledWrites();
     const stored = JSON.parse(fs.readFileSync(files.RESULTS_FILE, 'utf8'));
     const record = stored.sessions.find((entry) => entry.id === created.id);
-    assert.deepEqual(record.activeObserverRegions[BETA], { region: 'Beta', group: 'North', coordinates: true });
-    assert.equal(Object.keys(record.activeObserverRegions).length, 6);
-    assert.equal(record.activeObserverRegions[LATE], undefined);
+    // Only the deepest code is stored; the path is derived from today's regions.
+    assert.equal(record.activeObserverRegions, undefined);
+    assert.deepEqual(record.activeObserverPlaces[BETA], { place: 'beta', coordinates: true });
+    assert.equal(Object.keys(record.activeObserverPlaces).length, 6);
+    assert.equal(record.activeObserverPlaces[LATE], undefined);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     for (const [name, value] of Object.entries(previousEnv)) {

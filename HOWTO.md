@@ -182,7 +182,15 @@ other located observer in the result.
 
 ## Region Filters
 
-Set `REGIONS_FILE` to a GeoJSON FeatureCollection to enable region targeting.
+The Bay Area deployment uses tree mode (1.2.0): set `REGION_SHAPES_DIR` and
+`REGION_OVERRIDES_FILE` (see `regions/README.md`). The chips then nest to any
+depth: a top row of places, and under a selected place a row of its children,
+each led by "All <place>". Selecting a place draws its children's outlines, with
+counties that have no observers yet in gray, and faint lines for the level below
+those. The overrides file can shorten a name (`names`), put places first
+(`order`) and open a top-level place subdivided under All (`expand`).
+
+Otherwise, set `REGIONS_FILE` to a GeoJSON FeatureCollection to enable region targeting.
 The bundled files include:
 
 - `regions/us-states.geojson` for grouped US state filtering such as
@@ -229,7 +237,8 @@ defense. Private/internal deployments can disable it.
   for MQTT metadata.
 - Map missing observers: confirm they have valid saved coordinates and are not
   filtered by `OBSERVER_RETENTION_SECONDS`.
-- Region button missing: confirm `REGIONS_FILE` points to a readable GeoJSON
+- Region button missing: in tree mode, check the `[regions]` log lines for
+  shape or overrides problems; otherwise confirm `REGIONS_FILE` points to a readable GeoJSON
   file and observer coordinates fall inside that file.
 - Turnstile never appears: verify `TURNSTILE_ENABLED`, site key, and secret key.
 - Turnstile always fails: verify the hostname is allowed in Cloudflare.

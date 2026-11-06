@@ -306,3 +306,71 @@ test('a pass logged before names were recorded reports null name lists', async (
     assert.equal(body.last.hashWidth.examples, null);
   }, { seedLog });
 });
+
+test('in tree mode the fingerprint covers the tree, the shape manifest, the overrides and the codes', async () => {
+  // 1.2.0: the boundary is the scope tree, the shape library and the overrides
+  // together, so a change to any of them must fire a pass, and REGIONS_FILE,
+  // which tree mode does not read, must not.
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-health-reseed-tree-test-'));
+  const copy = (relative) => {
+    const target = path.join(tempDir, path.basename(relative));
+    fs.cpSync(path.join(REPO_DIR, relative), target, { recursive: true });
+    return target;
+  };
+  const files = {
+    tree: copy('regions/us-ca-meshcore-scopes.json'),
+    shapes: copy('regions/shapes'),
+    overrides: copy('regions/region-overrides.json'),
+    codes: copy('regions/us-ca-uplink-codes.json'),
+    regions: path.join(tempDir, 'unused.geojson'),
+    observers: path.join(tempDir, 'observer.json'),
+    activity: path.join(tempDir, 'observer-activity.json'),
+    results: path.join(tempDir, 'session-results.json'),
+  };
+  fs.writeFileSync(files.regions, `${JSON.stringify(REGIONS)}\n`, 'utf8');
+  fs.writeFileSync(files.observers, '{}\n', 'utf8');
+  fs.writeFileSync(files.activity, '{"version":1,"observers":{}}\n', 'utf8');
+  fs.writeFileSync(files.results, '{"version":1,"sessions":[]}\n', 'utf8');
+  const env = {
+    MESH_HEALTH_DISABLE_RUNTIME: 'true',
+    TURNSTILE_ENABLED: 'false',
+    LOG_LEVEL: 'error',
+    OBSERVERS_FILE: files.observers,
+    OBSERVER_ACTIVITY_FILE: files.activity,
+    RESULTS_FILE: files.results,
+    MESHCORE_REGION_SCOPES_FILE: files.tree,
+    REGION_SHAPES_DIR: files.shapes,
+    REGION_OVERRIDES_FILE: files.overrides,
+    UPLINK_CODES_FILE: files.codes,
+    REGIONS_FILE: files.regions,
+  };
+  const previousEnv = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  try {
+    const module = await import(`${pathToFileURL(path.join(REPO_DIR, 'server.js')).href}?reseed-tree=${Date.now()}`);
+    const first = module.computeRegionFingerprint();
+    assert.match(first, /^[0-9a-f]{16}$/);
+
+    fs.appendFileSync(files.regions, ' ');
+    assert.equal(module.computeRegionFingerprint(), first, 'REGIONS_FILE is not an input in tree mode');
+
+    const overrides = JSON.parse(fs.readFileSync(files.overrides, 'utf8'));
+    overrides.coverage.push('norcal');
+    fs.writeFileSync(files.overrides, JSON.stringify(overrides));
+    const afterOverrides = module.computeRegionFingerprint();
+    assert.notEqual(afterOverrides, first, 'widening coverage must change the fingerprint');
+
+    fs.appendFileSync(path.join(files.shapes, 'manifest.json'), ' ');
+    const afterShapes = module.computeRegionFingerprint();
+    assert.notEqual(afterShapes, afterOverrides, 'a rebuilt shape library must change it');
+
+    fs.appendFileSync(files.tree, ' ');
+    assert.notEqual(module.computeRegionFingerprint(), afterShapes, 'a new scope tree must change it');
+  } finally {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

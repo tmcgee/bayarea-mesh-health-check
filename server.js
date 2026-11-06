@@ -17,6 +17,11 @@ import {
   loadMeshcoreScopes, recognizeMeshcoreScope, recordedMeshcoreScopes, scopeForSubregion,
 } from './lib/meshcore-scopes.js';
 import { createScopeEvidence, advertRoleName } from './lib/scope-evidence.js';
+import { simplifySharedOutlines } from './lib/outline-simplify.js';
+import {
+  assignPlace, comparePlaces, currentCode, loadOverrides, loadShapeLibrary, placeOutlinePolygons, placeTree,
+  resolveFlatBoundaries, resolvePlaces,
+} from './lib/region-places.js';
 import { buildRegionalChannels, compareIntendedScope } from './lib/regional-test-channels.js';
 import express from 'express';
 import qrcode from 'qrcode-generator';
@@ -379,6 +384,11 @@ const OBSERVERS_FILE_PATH = resolveAppPath(OBSERVERS_FILE);
 const OBSERVER_ACTIVITY_FILE = envValue('OBSERVER_ACTIVITY_FILE', path.join('data', 'observer-activity.json'));
 const OBSERVER_ACTIVITY_FILE_PATH = resolveAppPath(OBSERVER_ACTIVITY_FILE);
 const REGIONS_FILE = envValue('REGIONS_FILE', '');
+// 1.2.0: places come from the scope tree (MESHCORE_REGION_SCOPES_FILE) plus the shape
+// library in this directory, narrowed by the overrides file. Set, it replaces
+// REGIONS_FILE; blank keeps the flat boundary file (docs/design-scalable-regions.md).
+const REGION_SHAPES_DIR = envValue('REGION_SHAPES_DIR', '');
+const REGION_OVERRIDES_FILE = envValue('REGION_OVERRIDES_FILE', '');
 // Self-refresh: the CoreScope seeding pass used to be driven from outside the
 // process, which meant stopping the app so the external write was not clobbered
 // by writeObserverNamesFile(). Running it here removes both the outage and the
@@ -906,66 +916,83 @@ function loadRegionBoundaries() {
   return boundaries;
 }
 
-const regionBoundaries = loadRegionBoundaries();
+// One model for both inputs: places with codes, parents, paths and geometry
+// (lib/region-places.js). A tree setup that fails to load disables region detection
+// with a warning, as a bad REGIONS_FILE always has (design §5.9); the check scripts
+// catch it before release.
+function loadRegionModel() {
+  if (REGION_SHAPES_DIR) {
+    if (REGIONS_FILE) {
+      logger.warn('[regions] REGION_SHAPES_DIR is set, so REGIONS_FILE is ignored');
+    }
+    if (!meshcoreScopes.enabled) {
+      logger.warn('[regions] REGION_SHAPES_DIR needs MESHCORE_REGION_SCOPES_FILE - region detection disabled');
+      return null;
+    }
+    try {
+      const library = loadShapeLibrary(resolveAppPath(REGION_SHAPES_DIR));
+      const { overrides, sha256 } = loadOverrides(REGION_OVERRIDES_FILE ? resolveAppPath(REGION_OVERRIDES_FILE) : '');
+      const resolved = resolvePlaces(meshcoreScopes.tree, library, overrides);
+      logger.info(`[regions] shapes ${REGION_SHAPES_DIR} (manifest sha256 ${library.manifestSha256.slice(0, 12)}, ${library.shapes.size} shapes)`);
+      if (REGION_OVERRIDES_FILE) {
+        logger.info(`[regions] overrides ${REGION_OVERRIDES_FILE} (sha256 ${sha256 ? sha256.slice(0, 12) : 'none'})`);
+      }
+      if (overrides.coverage.length) logger.info(`[regions] override coverage: ${overrides.coverage.join(', ')}`);
+      if (overrides.exclude.length) logger.info(`[regions] override exclude: ${overrides.exclude.join(', ')}`);
+      for (const [code, ids] of Object.entries(overrides.shapes)) logger.info(`[regions] override shapes ${code}: ${ids.join(', ')}`);
+      for (const [code, name] of Object.entries(overrides.names)) logger.info(`[regions] override name ${code}: ${name}`);
+      if (overrides.order.length) logger.info(`[regions] override order: ${overrides.order.join(', ')}`);
+      if (overrides.expand.length) logger.info(`[regions] override expand: ${overrides.expand.join(', ')}`);
+      for (const [from, to] of Object.entries(overrides.renamed)) logger.info(`[regions] override renamed ${from} -> ${to}`);
+      for (const problem of resolved.problems) logger.warn(`[regions] ${problem}`);
+      logger.info(`[regions] ${resolved.summary}; ${resolved.candidates.length} covered`);
+      return { ...resolved, mode: 'tree' };
+    } catch (error) {
+      logger.warn(`[regions] ${error.message} - region detection disabled`);
+      return null;
+    }
+  }
+  const boundaries = loadRegionBoundaries();
+  return boundaries.length ? { ...resolveFlatBoundaries(boundaries), mode: 'file' } : null;
+}
 
-// Subregion -> MeshCore routing scope (1.1.0, location opt-in), read from the scope
-// file's own county outlines (scopeForSubregion), so there is no table to keep. Only
-// suggests a regional channel after the browser picks a subregion; without a scope
-// file the locator still works and suggests nothing. Display only.
-function loadSubregionScopes() {
+const regionModel = loadRegionModel();
+const REGIONS_ENABLED = Boolean(regionModel?.candidates.length);
+
+function placeEntry(code) {
+  return regionModel?.byCode.get(code) || null;
+}
+
+function placePathFor(code) {
+  return placeEntry(code)?.path || [];
+}
+
+// Place -> MeshCore routing scope, for the regional channel suggestion after the
+// browser picks a place (1.1.0). From a tree, the code is the scope. From a flat file,
+// the scope file's own county outlines (scopeForSubregion). Display only.
+function loadPlaceScopes() {
   const scopes = new Map();
-  for (const boundary of regionBoundaries) {
-    const scope = scopeForSubregion(meshcoreScopes, boundary.name);
-    if (scope) scopes.set(boundary.name, scope.replace(/^#/, ''));
+  if (!regionModel || !meshcoreScopes.enabled) return scopes;
+  const known = new Set(meshcoreScopes.regions);
+  for (const entry of regionModel.places) {
+    const scope = regionModel.mode === 'tree'
+      ? (known.has(`#${entry.code}`) ? `#${entry.code}` : null)
+      : (entry.children.length ? null : scopeForSubregion(meshcoreScopes, entry.name));
+    if (scope) scopes.set(entry.code, scope.replace(/^#/, ''));
   }
-  if (meshcoreScopes.enabled) {
-    logger.info(`[regions] ${scopes.size} of ${regionBoundaries.length} subregions have a MeshCore scope`);
-  }
+  logger.info(`[regions] ${scopes.size} of ${regionModel.places.length} places have a MeshCore scope`);
   return scopes;
 }
 
-const subregionScopes = loadSubregionScopes();
+const placeScopes = loadPlaceScopes();
 
-// Group -> parent region, from the features. A parent is a property of the
-// group, so the first feature that names one decides it; a feature of the same
-// group naming a different parent is a data error, logged and ignored.
-const regionGroupParents = (() => {
-  const parents = new Map();
-  regionBoundaries.forEach((boundary) => {
-    if (!boundary.group || !boundary.parentRegion) {
-      return;
-    }
-    const existing = parents.get(boundary.group);
-    if (existing && existing !== boundary.parentRegion) {
-      logger.warn(`[regions] ${boundary.name} puts group ${boundary.group} under ${boundary.parentRegion}, but it is already under ${existing}; keeping ${existing}`);
-      return;
-    }
-    parents.set(boundary.group, boundary.parentRegion);
-  });
-  if (parents.size > 0) {
-    logger.info(`[regions] ${parents.size} groups under ${new Set(parents.values()).size} parent regions`);
-  }
-  return parents;
-})();
-
-// `parent` only where the group has one, so a boundary file without parents
-// produces exactly the hierarchy it always did.
-function withRegionParent(entry) {
-  const parent = entry.group ? regionGroupParents.get(entry.group) : null;
-  return parent ? { ...entry, parent } : entry;
-}
-
-// Boundary geometry served to the map layer. One outline per region group, not
-// per subregion: the map is meant to show region shapes, and the subregion
-// chips filter which observers are plotted inside them.
-//
-// REGIONS_FILE is configurable and some bundled files are enormous
-// (regions/us-places.geojson carries 32,656 features, ~15 MB), so the client is
-// never handed the whole file: only the groups that actually have observers.
-// Coordinates are rounded to five decimals (~1 m) because this copy is for
-// drawing, not for point-in-polygon tests - deriveRegionInfo() keeps using the
-// unrounded geometry loaded above.
-const REGION_GEOMETRY_DECIMALS = 5;
+// Outline geometry served to the map and the locator (1.2.0): one outline per
+// place with observers, plus its observer-less children (regionOutlineCollection).
+// Coordinates are rounded to four decimals (~11 m), as the 1.1.0 locator was:
+// finer than the 50 m simplification, so rounding adds nothing visible. This
+// copy is for drawing and the client-side locator only - deriveRegionInfo()
+// keeps using the unrounded library geometry.
+const REGION_GEOMETRY_DECIMALS = 4;
 
 // A dissolved ring smaller than this fraction of its group's total ring area is
 // discarded as an artifact. Adjacent subregions in a group share a border, but
@@ -1083,135 +1110,89 @@ function dissolveRings(rings) {
   return kept.length ? kept : null;
 }
 
-// The map layer never fills these shapes, so a ring that was a hole in the
-// input draws the same whether it is nested or promoted to its own polygon.
-// That lets the dissolved output skip ring classification entirely.
-function groupGeometry(boundaries) {
-  if (boundaries.length === 1) {
-    return boundaries[0].geometry;
+// The map layer never fills these shapes, so a ring that was a hole in the input
+// draws the same whether it is nested or promoted to its own polygon. That lets the
+// dissolved output (placeOutlineGeometry) skip ring classification entirely.
+
+// Outlines for the map and for the browser's location opt-in (1.1.0), one per place
+// that holds observers, at every depth: the client draws the level below the current
+// selection and locates a point in the deepest place it falls in, so the coordinates
+// never reach the server. A place qualifies as soon as anything under it has an
+// observer, and then the whole place is outlined, including parts with none, because
+// the outline describes the place, not the coverage inside it.
+//
+// Each place is dissolved first (dissolveRings needs the exact shared vertices),
+// then every outline is thinned together (lib/outline-simplify.js), so a border
+// two outlines share - two neighbours, or a parent and its child - is the same
+// thinned line in both, at either detail level.
+//
+// Two detail levels (1.2.0). Full, ~50 m as the 1.1.0 locator, is what the
+// locator and zoomed-in map use. Coarse, ~400 m, is what the map loads first:
+// at the zooms that show a whole region a screen pixel is 500 m or more, so it
+// draws the same and is about a quarter of the size.
+const REGION_OUTLINE_TOLERANCE = 0.0005; // degrees, ~50 m
+const REGION_OUTLINE_COARSE_TOLERANCE = 0.004; // degrees, ~350-450 m
+
+let regionOutlineCache = { key: '', payload: null };
+
+function placeOutlineGeometry(code) {
+  const polygons = placeOutlinePolygons(regionModel, code);
+  const rings = polygons.flatMap((rings) => rings);
+  if (polygons.length <= 1 || rings.length <= 1) {
+    return polygons;
   }
-  const rings = boundaries.flatMap((boundary) => boundaryRings(boundary.geometry));
   const dissolved = dissolveRings(rings);
   if (!dissolved) {
-    logger.warn(`[regions] could not dissolve ${boundaries.length} boundaries into one outline; drawing them separately`);
-    return { type: 'MultiPolygon', coordinates: rings.map((ring) => [ring]) };
+    logger.warn(`[regions] could not dissolve ${code} into one outline; drawing its parts separately`);
+    return rings.map((ring) => [ring]);
   }
-  return { type: 'MultiPolygon', coordinates: dissolved.map((ring) => [ring]) };
+  return dissolved.map((ring) => [ring]);
 }
 
-let regionGeometryCache = { key: '', payload: null };
-
-// ---------- Region locator (1.1.0, location opt-in) ----------
-// The browser picks a subregion from "Use my location" or "Use map center" by
-// testing the point itself, so the coordinates never reach the server. It needs
-// the subregion outlines, which /api/region-boundaries deliberately does not
-// carry (it serves dissolved group outlines). This copy is fetched only on the
-// first click, holds only the groups the map shows, and is simplified: the
-// bundled file is ~500 KB of coastline at full detail, ~310 KB (~75 KB gzipped)
-// at REGION_LOCATOR_TOLERANCE. Neighbours are simplified independently, so a
-// point within that tolerance of a shared border can fall in a sliver between
-// them; the browser then falls back to the group outline it already has.
-const REGION_LOCATOR_TOLERANCE = 0.0005; // degrees, ~50 m
-const REGION_LOCATOR_DECIMALS = 4; // ~11 m
-
-// Douglas-Peucker over one ring, iterative so a long coastline cannot overflow
-// the stack. The first and last points are kept, so a closed ring stays closed.
-function simplifyRing(ring, tolerance) {
-  if (!Array.isArray(ring) || ring.length < 5) {
-    return ring;
+function regionOutlineCollection(tree) {
+  const nodes = Array.isArray(tree) ? tree : [];
+  const key = nodes.map((node) => node.code).join('|');
+  if (regionOutlineCache.key === key && regionOutlineCache.payload) {
+    return regionOutlineCache.payload;
   }
-  const keep = new Uint8Array(ring.length);
-  keep[0] = 1;
-  keep[ring.length - 1] = 1;
-  const stack = [[0, ring.length - 1]];
-  while (stack.length) {
-    const [first, last] = stack.pop();
-    const [ax, ay] = ring[first];
-    const [bx, by] = ring[last];
-    const dx = bx - ax;
-    const dy = by - ay;
-    const length = Math.hypot(dx, dy);
-    let farthest = 0;
-    let index = -1;
-    for (let i = first + 1; i < last; i += 1) {
-      const [px, py] = ring[i];
-      const distance = length === 0
-        ? Math.hypot(px - ax, py - ay)
-        : Math.abs(dy * px - dx * py + bx * ay - by * ax) / length;
-      if (distance > farthest) {
-        farthest = distance;
-        index = i;
-      }
-    }
-    if (index !== -1 && farthest > tolerance) {
-      keep[index] = 1;
-      stack.push([first, index], [index, last]);
+  // Children of a place with observers are sent even when they have none
+  // (empty: true): the map outlines them in gray under a selected parent, and
+  // the locator can say "No observers in Lake County yet" instead of only naming
+  // the parent. Nothing deeper and nothing at the top level, as in 1.1.0.
+  const inTree = new Set(nodes.map((node) => node.code));
+  const empties = [];
+  for (const node of nodes) {
+    for (const code of regionModel?.byCode.get(node.code)?.children || []) {
+      const entry = regionModel.byCode.get(code);
+      if (inTree.has(code) || !entry?.covered || !entry.polygons.length) continue;
+      inTree.add(code);
+      empties.push({ code, name: entry.name, parent: node.code, depth: node.depth + 1, empty: true });
     }
   }
-  const simplified = ring.filter((_, i) => keep[i]);
-  return simplified.length >= 4 ? simplified : ring;
-}
-
-function locatorPolygons(geometry) {
-  const polygons = geometry?.type === 'Polygon' ? [geometry.coordinates] : geometry?.coordinates || [];
-  return polygons.map((polygon) => polygon
-    .map((ring) => simplifyRing(ring, REGION_LOCATOR_TOLERANCE)
-      .map(([lon, lat]) => [
-        Number(lon.toFixed(REGION_LOCATOR_DECIMALS)),
-        Number(lat.toFixed(REGION_LOCATOR_DECIMALS)),
-      ])));
-}
-
-let regionLocatorCache = { key: '', payload: null };
-
-function regionLocatorCollection(groups) {
-  const wanted = new Set((Array.isArray(groups) ? groups : []).filter(Boolean));
-  const key = [...wanted].sort().join('|');
-  if (regionLocatorCache.key === key && regionLocatorCache.payload) {
-    return regionLocatorCache.payload;
-  }
-  const features = regionBoundaries
-    .filter((boundary) => boundary.group && wanted.has(boundary.group))
-    .map((boundary) => {
-      const scope = subregionScopes.get(boundary.name);
+  const places = [...nodes, ...empties];
+  const dissolved = places.map((node) => placeOutlineGeometry(node.code));
+  const level = (tolerance) => {
+    const thinned = simplifySharedOutlines(dissolved, tolerance);
+    const features = places.map((node, index) => {
+      const scope = placeScopes.get(node.code);
       return {
         type: 'Feature',
-        properties: { name: boundary.name, group: boundary.group, ...(scope ? { scope } : {}) },
-        geometry: { type: 'MultiPolygon', coordinates: locatorPolygons(boundary.geometry) },
+        properties: {
+          code: node.code,
+          name: node.name,
+          parent: node.parent,
+          depth: node.depth,
+          ...(node.empty ? { empty: true } : {}),
+          ...(scope ? { scope } : {}),
+        },
+        geometry: { type: 'MultiPolygon', coordinates: roundCoordinates(thinned[index]) },
       };
-    });
-  const payload = { type: 'FeatureCollection', features };
-  regionLocatorCache = { key, payload };
-  return payload;
-}
-
-function regionBoundaryCollection(groups) {
-  const wanted = new Set((Array.isArray(groups) ? groups : []).filter(Boolean));
-  const key = [...wanted].sort().join('|');
-  if (regionGeometryCache.key === key && regionGeometryCache.payload) {
-    return regionGeometryCache.payload;
-  }
-  const byGroup = new Map();
-  regionBoundaries.forEach((boundary) => {
-    if (!boundary.group || !wanted.has(boundary.group)) {
-      return;
-    }
-    if (!byGroup.has(boundary.group)) {
-      byGroup.set(boundary.group, []);
-    }
-    byGroup.get(boundary.group).push(boundary);
-  });
-  const features = [...byGroup.entries()].map(([group, boundaries]) => {
-    const geometry = groupGeometry(boundaries);
-    const polygons = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
-    return {
-      type: 'Feature',
-      properties: { group },
-      geometry: { type: 'MultiPolygon', coordinates: roundCoordinates(polygons) },
-    };
-  });
-  const payload = { type: 'FeatureCollection', features };
-  regionGeometryCache = { key, payload };
+    }).filter((feature) => feature.geometry.coordinates.length > 0);
+    return { type: 'FeatureCollection', features };
+  };
+  const payload = level(REGION_OUTLINE_TOLERANCE);
+  Object.defineProperty(payload, 'coarse', { value: level(REGION_OUTLINE_COARSE_TOLERANCE), enumerable: false });
+  regionOutlineCache = { key, payload };
   return payload;
 }
 
@@ -1221,22 +1202,12 @@ function regionBoundaryCollection(groups) {
 // coverage map and its bounds across the continent.
 const REQUIRE_REGION_MATCH = envBool('REQUIRE_REGION_MATCH', false);
 
+// The deepest covered place containing the point (lib/region-places.js assignPlace).
 function deriveRegionInfo(lat, lon) {
-  if (lat == null || lon == null || regionBoundaries.length === 0) {
-    return { region: null, regionGroup: null };
+  if (lat == null || lon == null || !REGIONS_ENABLED) {
+    return { place: null };
   }
-  for (const boundary of regionBoundaries) {
-    if (!pointInBounds(lon, lat, boundary.bounds)) {
-      continue;
-    }
-    if (pointInFeature(lon, lat, boundary.geometry)) {
-      return {
-        region: boundary.name,
-        regionGroup: boundary.group || null,
-      };
-    }
-  }
-  return { region: null, regionGroup: null };
+  return { place: assignPlace(regionModel, lon, lat)?.code || null };
 }
 
 // ---------- Uplink-code region classification ----------
@@ -1289,25 +1260,34 @@ function loadUplinkCodes() {
   if (!table || typeof table !== 'object' || Array.isArray(table)) {
     return { codes, excluded };
   }
-  const knownGroups = new Set(regionBoundaries.map((boundary) => boundary.group).filter(Boolean));
+  // Version 2 names a place by code (`"place": "northbay"`); version 1 named a group
+  // by display name (`"group": "North Bay"`), still read so an older file keeps working.
+  const placeByName = new Map();
+  for (const entry of regionModel?.places || []) {
+    if (!placeByName.has(entry.name)) placeByName.set(entry.name, entry.code);
+  }
   for (const [rawCode, rawValue] of Object.entries(table)) {
     const code = normalizeUplinkCode(rawCode);
     if (!code || excluded.has(code)) {
       continue;
     }
     const isObject = rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue);
+    const named = String((isObject ? rawValue.place : '') || '').trim();
     const group = String((typeof rawValue === 'string' ? rawValue : isObject ? rawValue.group : '') || '').trim();
-    if (!group) {
+    if (!named && !group) {
       continue;
     }
-    // A code pointing at a group the boundary file does not define would create a
-    // phantom chip that no located observer can ever join.
-    if (knownGroups.size > 0 && !knownGroups.has(group)) {
-      logger.warn(`[regions] uplink code ${code} maps to unknown group "${group}", ignored`);
+    // A code pointing at a place the regions do not define would create a phantom
+    // chip that no located observer can ever join.
+    const place = regionModel
+      ? (named ? currentCode(regionModel, named) : placeByName.get(group) || '')
+      : '';
+    if (!place) {
+      logger.warn(`[regions] uplink code ${code} maps to unknown place "${named || group}", ignored`);
       continue;
     }
     codes.set(code, {
-      group,
+      place,
       label: String((isObject && rawValue.label) || code).trim() || code,
       confidence: String((isObject && rawValue.confidence) || 'observed').trim().toLowerCase(),
     });
@@ -1351,21 +1331,21 @@ function observerIsOutOfArea(observer) {
   return uplinkCodeIsOutOfArea(observer?.uplinkCode);
 }
 
-// Coordinates always win. The uplink code is a group-level hint only: it never
-// sets observer.region, so an inferred observer contributes no county to the
-// hierarchy and can never gain a map marker.
+// Coordinates always win. The uplink code is a coarse hint only: it places the
+// observer at the place its code names (a region such as `northbay`, never a
+// county), and the observer can never gain a map marker or Regions Reached credit.
 function resolveObserverRegion(observer) {
   const fromCoordinates = deriveRegionInfo(observer?.lat ?? null, observer?.lon ?? null);
-  if (fromCoordinates.region) {
-    return { ...fromCoordinates, regionSource: 'coordinates' };
+  if (fromCoordinates.place) {
+    return { place: fromCoordinates.place, regionSource: 'coordinates' };
   }
   if (REGION_FALLBACK_UPLINK) {
     const info = uplinkCodes.get(normalizeUplinkCode(observer?.uplinkCode));
     if (info) {
-      return { region: null, regionGroup: info.group, regionSource: 'uplink-code' };
+      return { place: info.place, regionSource: 'uplink-code' };
     }
   }
-  return { region: null, regionGroup: null, regionSource: null };
+  return { place: null, regionSource: null };
 }
 
 function observerRegionIsInferred(observer) {
@@ -1381,8 +1361,8 @@ function observerRegionIsInferred(observer) {
 //
 // The two properties that a missing position DOES govern are handled elsewhere
 // and stay strict: the coverage map plots lat/lon so an unlocated observer never
-// gets a marker, and scopeRegionCoverage() counts coordinate-derived groups only,
-// so an uplink-inferred group cannot inflate Regions Reached.
+// gets a marker, and scopeRegionCoverage() counts coordinate-derived places only,
+// so an uplink-inferred place cannot inflate Regions Reached.
 function observerIsScoringEligible(observerKey) {
   const observer = observerState.get(normalizeKey(observerKey));
   if (!observer) {
@@ -1550,7 +1530,7 @@ function serializeSessionRecord(session) {
     activeObserverKeys: Array.isArray(session.activeObserverKeys)
       ? session.activeObserverKeys.map(normalizeKey).filter(Boolean)
       : [],
-    activeObserverRegions: sanitizeObserverRegions(session.activeObserverRegions),
+    activeObserverPlaces: sanitizeObserverPlaces(session.activeObserverPlaces),
     expectedObserverKeys: Array.isArray(session.expectedObserverKeys)
       ? session.expectedObserverKeys.map(normalizeKey).filter(Boolean)
       : [],
@@ -1645,7 +1625,7 @@ function restoreSessionRecord(rawSession) {
     activeObserverKeys: Array.isArray(rawSession.activeObserverKeys)
       ? rawSession.activeObserverKeys.map(normalizeKey).filter(Boolean)
       : [],
-    activeObserverRegions: sanitizeObserverRegions(rawSession.activeObserverRegions),
+    activeObserverPlaces: sanitizeObserverPlaces(rawSession.activeObserverPlaces),
     expectedObserverKeys,
     expectedObserverSource: String(rawSession.expectedObserverSource || ''),
     receipts,
@@ -1804,12 +1784,20 @@ function appendReseedLog(entry) {
   }
 }
 
-// Both region inputs are hashed, not only the boundary file: moving a code
-// between the "codes" and "outOfArea" blocks changes which observers are in
-// area, and re-running a pass that turns out to change nothing is far cheaper
-// than reasoning about which edits can affect positions.
+// Every region input is hashed, not only the boundary: moving a code between the
+// "codes" and "outOfArea" blocks changes which observers are in area, and re-running
+// a pass that turns out to change nothing is far cheaper than reasoning about which
+// edits can affect positions. With a shape library (1.2.0) that is the tree, the
+// shape manifest (which pins every shape file's SHA-256) and the overrides file.
 function computeRegionFingerprint() {
-  const inputs = [['regions', REGIONS_FILE], ['uplinkCodes', UPLINK_CODES_FILE]];
+  const inputs = REGION_SHAPES_DIR
+    ? [
+      ['tree', MESHCORE_REGION_SCOPES_FILE],
+      ['shapes', REGION_SHAPES_DIR ? path.join(REGION_SHAPES_DIR, 'manifest.json') : ''],
+      ['overrides', REGION_OVERRIDES_FILE],
+      ['uplinkCodes', UPLINK_CODES_FILE],
+    ]
+    : [['regions', REGIONS_FILE], ['uplinkCodes', UPLINK_CODES_FILE]];
   const parts = [];
   for (const [label, configured] of inputs) {
     if (!configured) {
@@ -1872,7 +1860,14 @@ function runSeedScript() {
     execFile(
       OBSERVER_RESEED_PYTHON,
       [OBSERVER_RESEED_SCRIPT, '--write', '--json'],
-      { cwd: APP_DIR, timeout: OBSERVER_RESEED_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, env: process.env },
+      // SEED_NODE_BINARY: the script asks scripts/region-candidates.js, under this
+      // same Node, which places are covered (1.2.0).
+      {
+        cwd: APP_DIR,
+        timeout: OBSERVER_RESEED_TIMEOUT_MS,
+        maxBuffer: 8 * 1024 * 1024,
+        env: { ...process.env, SEED_NODE_BINARY: process.execPath },
+      },
       (error, stdout, stderr) => resolve({ error, stdout: String(stdout || ''), stderr: String(stderr || '') }),
     );
   });
@@ -2052,8 +2047,7 @@ function createObserverRecord(observerKey) {
     lon,
     locationUpdatedAt,
     uplinkCode: uplinkCode || null,
-    region: regionInfo.region,
-    regionGroup: regionInfo.regionGroup,
+    place: regionInfo.place,
     regionSource: regionInfo.regionSource,
     firstSeenAt: lastPacketAt,
     lastPacketAt,
@@ -2864,22 +2858,21 @@ function activeObserverKeys(now = Date.now()) {
 // Regional scoring (1.1.0). A region chip picks which slice of the scoring set
 // the score is computed over; it never changes the code, the receipts or the
 // All score. Each observer is placed where it was when the code was created
-// (activeObserverRegions), so a node that moves or gains a position mid-test
+// (activeObserverPlaces), so a node that moves or gains a position mid-test
 // cannot hop between scopes. Observers that only reported, or sessions from an
 // older build without the snapshot, fall back to the current placement.
 function observerScopePlacement(observerKey) {
   const observer = observerState.get(normalizeKey(observerKey));
-  if (!observer || (!observer.region && !observer.regionGroup)) {
+  if (!observer?.place) {
     return null;
   }
   return {
-    region: observer.region || null,
-    group: observer.regionGroup || null,
+    place: observer.place,
     coordinates: observer.regionSource === 'coordinates',
   };
 }
 
-function snapshotObserverRegions(keys) {
+function snapshotObserverPlaces(keys) {
   const placements = {};
   for (const key of keys) {
     const placement = observerScopePlacement(key);
@@ -2890,80 +2883,70 @@ function snapshotObserverRegions(keys) {
   return placements;
 }
 
-function sanitizeObserverRegions(raw) {
+// Stored codes go through currentCode, so a `renamed` override carries an old code
+// forward and a code the regions no longer define falls back to the live placement.
+// 1.1.0's name-keyed activeObserverRegions is not read: that build was never deployed.
+function sanitizeObserverPlaces(raw) {
   const placements = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return placements;
   }
   for (const [rawKey, value] of Object.entries(raw)) {
     const key = normalizeKey(rawKey);
-    if (!key || !value || typeof value !== 'object') {
+    if (!key || !value || typeof value !== 'object' || typeof value.place !== 'string') {
       continue;
     }
-    const region = typeof value.region === 'string' && value.region ? value.region : null;
-    const group = typeof value.group === 'string' && value.group ? value.group : null;
-    if (!region && !group) {
+    const place = regionModel ? currentCode(regionModel, value.place) : '';
+    if (!place) {
       continue;
     }
-    placements[key] = { region, group, coordinates: Boolean(value.coordinates) };
+    placements[key] = { place, coordinates: Boolean(value.coordinates) };
   }
   return placements;
 }
 
 function sessionPlacementFor(session, key) {
-  const snapshot = session.activeObserverRegions;
+  const snapshot = session.activeObserverPlaces;
   return (snapshot && snapshot[key]) || observerScopePlacement(key);
 }
 
+// Every place on the path, so a Sonoma observer counts for sonoma, northbay and
+// bayarea alike: "observers whose path starts with P" at any depth.
 function scopeKeysForPlacement(placement) {
-  const keys = [];
-  if (!placement) {
-    return keys;
-  }
-  if (placement.region) {
-    keys.push(`region:${placement.region}`);
-  }
-  if (placement.group) {
-    keys.push(`group:${placement.group}`);
-    const parent = regionGroupParents.get(placement.group);
-    if (parent) {
-      keys.push(`parent:${parent}`);
-    }
-  }
-  return keys;
+  return placement ? placePathFor(placement.place) : [];
 }
 
-// Regions Reached one level down from the scope: groups for All and for a
-// parent, subregions for a group, nothing for a single subregion.
-// Denominator = children with at least one located observer in the scoring
-// set; numerator = children where at least one of them reported. A child with
-// no located observer is invisible to the metric rather than counted as a
-// miss: we have no way to hear from it. Coordinate-derived placements only: an
-// uplink-code group says where the broker thinks a node is, not where it is.
-function scopeRegionCoverage(entries, seenSet, level) {
+// Regions Reached one level down from the scope: the top-level places for All, the
+// children of anything else, nothing for a place with no children that have shapes.
+// Denominator = children with at least one located observer in the scoring set;
+// numerator = children where at least one of them reported. A child with no located
+// observer is invisible to the metric rather than counted as a miss: we have no way
+// to hear from it. Coordinate-derived placements only: an uplink-code place says
+// where the broker thinks a node is, not where it is.
+function scopeRegionCoverage(entries, seenSet, depth) {
   const children = new Map();
   for (const { key, placement } of entries) {
     if (!placement?.coordinates) {
       continue;
     }
-    const name = level === 'region' ? placement.region : placement.group;
-    if (!name) {
+    const code = placePathFor(placement.place)[depth];
+    if (!code) {
       continue;
     }
-    if (!children.has(name)) {
-      children.set(name, { group: name, observerCount: 0, seenCount: 0 });
+    if (!children.has(code)) {
+      children.set(code, { code, name: placeEntry(code)?.name || code, observerCount: 0, seenCount: 0 });
     }
-    const child = children.get(name);
+    const child = children.get(code);
     child.observerCount += 1;
     if (seenSet.has(key)) {
       child.seenCount += 1;
     }
   }
-  const list = [...children.values()].sort((left, right) => left.group.localeCompare(right.group));
+  const list = [...children.values()].sort(comparePlaces(regionModel));
   return {
     reached: list.filter((entry) => entry.seenCount > 0).length,
     total: list.length,
-    groups: list,
+    places: list,
   };
 }
 
@@ -2988,32 +2971,31 @@ function scoreFor(expectedCount, observedCount, healthMeasured) {
   };
 }
 
-// One score per parent, group and subregion that has at least one observer in
-// the scoring set. A scope with none is simply absent; the client says "no
-// active observers" for it.
+// One score per place that has at least one observer in the scoring set, keyed by
+// the place's code. A place with none is simply absent; the client says "no active
+// observers" for it.
 function sessionScopeScores(session, scoringKeys, seenKeys, healthMeasured) {
   const seenSet = new Set(seenKeys.map(normalizeKey));
   const scopes = new Map();
   for (const rawKey of scoringKeys) {
     const key = normalizeKey(rawKey);
     const placement = sessionPlacementFor(session, key);
-    for (const scopeKey of scopeKeysForPlacement(placement)) {
-      if (!scopes.has(scopeKey)) {
-        scopes.set(scopeKey, []);
+    for (const code of scopeKeysForPlacement(placement)) {
+      if (!scopes.has(code)) {
+        scopes.set(code, []);
       }
-      scopes.get(scopeKey).push({ key, placement });
+      scopes.get(code).push({ key, placement });
     }
   }
   const out = {};
-  for (const scopeKey of [...scopes.keys()].sort()) {
-    const entries = scopes.get(scopeKey);
-    const [kind] = scopeKey.split(':');
-    const observed = entries.filter((entry) => seenSet.has(entry.key)).length;
-    out[scopeKey] = {
+  for (const code of [...scopes.keys()].sort()) {
+    const entries = scopes.get(code);
+    const entry = placeEntry(code);
+    const hasShapedChildren = Boolean(entry?.children.some((child) => placeEntry(child)?.polygons.length));
+    const observed = entries.filter((item) => seenSet.has(item.key)).length;
+    out[code] = {
       ...scoreFor(entries.length, observed, healthMeasured),
-      regionCoverage: kind === 'region'
-        ? null
-        : scopeRegionCoverage(entries, seenSet, kind === 'group' ? 'region' : 'group'),
+      regionCoverage: hasShapedChildren ? scopeRegionCoverage(entries, seenSet, entry.depth) : null,
     };
   }
   return out;
@@ -3139,8 +3121,10 @@ function serializeObserver(observer) {
     // null when never learned; also null on legacy profiles persisted before
     // this field existed, even though those do have a location.
     locationUpdatedAt: observer.lat != null && observer.lon != null ? (observer.locationUpdatedAt ?? null) : null,
-    region: observer.region ?? null,
-    regionGroup: observer.regionGroup ?? null,
+    // The deepest place's code; the path above it is derived from today's regions
+    // (1.2.0). Names are the client's to look up in regionTree.
+    place: observer.place ?? null,
+    placePath: placePathFor(observer.place),
     regionSource: observer.regionSource ?? null,
     regionInferred: observerRegionIsInferred(observer),
     uplinkCode: observer.uplinkCode ?? null,
@@ -3178,8 +3162,8 @@ function serializeObserverForKey(observerKey) {
       lon: null,
       hasLocation: false,
       locationUpdatedAt: null,
-      region: null,
-      regionGroup: null,
+      place: null,
+      placePath: [],
       regionSource: null,
       regionInferred: false,
       uplinkCode: null,
@@ -3221,86 +3205,16 @@ function observerDirectory() {
     .map(serializeObserver);
 }
 
-function buildRegionHierarchy(directory) {
-  const groups = new Map();
-  const ungrouped = new Map();
-  // Observers whose group came from the uplink code carry no county, so they can
-  // only be counted at group level. They are tallied separately and reported as
-  // inferredCount so the UI can show them without implying a polygon match.
-  const inferred = new Map();
-
-  for (const observer of directory) {
-    if (!observer.region) {
-      if (observer.regionInferred && observer.regionGroup) {
-        inferred.set(observer.regionGroup, (inferred.get(observer.regionGroup) || 0) + 1);
-      }
-      continue;
-    }
-    const count = Number.isInteger(observer.packetCount) ? observer.packetCount : 0;
-    if (observer.regionGroup) {
-      if (!groups.has(observer.regionGroup)) {
-        groups.set(observer.regionGroup, {
-          group: observer.regionGroup,
-          count: 0,
-          regions: new Map(),
-        });
-      }
-      const group = groups.get(observer.regionGroup);
-      group.count += 1;
-      const region = group.regions.get(observer.region) || {
-        name: observer.region,
-        count: 0,
-        packetCount: 0,
-      };
-      region.count += 1;
-      region.packetCount += count;
-      group.regions.set(observer.region, region);
-    } else {
-      const region = ungrouped.get(observer.region) || {
-        name: observer.region,
-        count: 0,
-        packetCount: 0,
-      };
-      region.count += 1;
-      region.packetCount += count;
-      ungrouped.set(observer.region, region);
-    }
+// Places holding observers and every ancestor, for the chip rows and the map
+// (lib/region-places.js placeTree). An observer placed by its uplink code counts
+// toward `inferredCount` at that place and above, never toward a county.
+function buildRegionTree(directory) {
+  if (!regionModel) {
+    return [];
   }
-
-  const byName = (left, right) => String(left.name || left.group).localeCompare(String(right.name || right.group));
-  const out = [...groups.values()]
-    .map((group) => ({
-      group: group.group,
-      count: group.count,
-      inferredCount: inferred.get(group.group) || 0,
-      regions: [...group.regions.values()].sort(byName),
-    }))
-    .sort(byName);
-
-  // A group can exist purely from inferred members - e.g. every observer that
-  // uplinks through SQL is coordinate-less. Emit it so the chip still appears.
-  for (const [groupName, count] of inferred.entries()) {
-    if (!groups.has(groupName)) {
-      out.push({
-        group: groupName,
-        count: 0,
-        inferredCount: count,
-        regions: [],
-      });
-    }
-  }
-  out.sort(byName);
-
-  if (ungrouped.size > 0) {
-    out.push({
-      group: '',
-      count: [...ungrouped.values()].reduce((sum, region) => sum + region.count, 0),
-      inferredCount: 0,
-      regions: [...ungrouped.values()].sort(byName),
-    });
-  }
-
-  return out.map(withRegionParent);
+  return placeTree(regionModel, directory
+    .filter((observer) => observer.place)
+    .map((observer) => ({ place: observer.place, inferred: Boolean(observer.regionInferred) })));
 }
 
 function sharePathForSession(session) {
@@ -3636,7 +3550,7 @@ function serializeSession(session, request = null) {
   const regionCoverage = scopeRegionCoverage(
     scoringKeys.map((key) => ({ key, placement: sessionPlacementFor(session, key) })),
     seenSet,
-    'group',
+    0,
   );
   // Nothing has been heard and no message has matched yet: the score is not zero,
   // it is undefined. matchedAt means the test message did land, so a genuine 0%
@@ -3698,7 +3612,7 @@ function serializeSession(session, request = null) {
       : null,
     expectedCount: denominator,
     regionCoverage,
-    // Keyed `parent:<name>`, `group:<name>`, `region:<name>`; same fields as the
+    // Keyed by place code (`bayarea`, `northbay`, `sonoma`); same fields as the
     // top-level score, which is always the All score.
     scopeScores: sessionScopeScores(session, scoringKeys, seen, healthMeasured),
     healthPercent: percent,
@@ -3731,7 +3645,7 @@ function snapshotPayload() {
   const defaultTarget = defaultObserverTarget();
   const defaultObservers = defaultTarget.keys.map((key) => serializeObserverForKey(key));
   const dashboardBrokerHost = DASH_BROKER_HOST || brokerLabel(MQTT_URL);
-  const regionHierarchy = buildRegionHierarchy(directory);
+  const regionTree = buildRegionTree(directory);
 
   const mapTiles = mapTileConfig();
 
@@ -3790,9 +3704,8 @@ function snapshotPayload() {
     defaultObserverSource: defaultTarget.source,
     observerDirectory: directory,
     activeObservers,
-    regionHierarchy,
-    availableRegions: [...new Set(directory.map((o) => o.region).filter(Boolean))].sort(),
-    availableRegionGroups: regionHierarchy.map((entry) => entry.group).filter(Boolean),
+    // Replaces regionHierarchy (1.2.0): one node per place holding observers, any depth.
+    regionTree,
     testChannel: {
       name: testChannelName,
       hash: testChannelHash || null,
@@ -3897,7 +3810,7 @@ function updateObserverLocation(observerKey, location) {
   if (!normalizedKey || lat == null || lon == null || (lat === 0 && lon === 0)) {
     return false;
   }
-  if (REQUIRE_REGION_MATCH && regionBoundaries.length > 0 && !deriveRegionInfo(lat, lon).region) {
+  if (REQUIRE_REGION_MATCH && REGIONS_ENABLED && !deriveRegionInfo(lat, lon).place) {
     logger.debug(`[observer] location ${normalizedKey} -> ${lat}, ${lon} outside configured regions, ignored`);
     return false;
   }
@@ -3913,8 +3826,7 @@ function updateObserverLocation(observerKey, location) {
   observer.lon = lon;
   observer.locationUpdatedAt = locationUpdatedAt;
   const regionInfo = resolveObserverRegion(observer);
-  observer.region = regionInfo.region;
-  observer.regionGroup = regionInfo.regionGroup;
+  observer.place = regionInfo.place;
   observer.regionSource = regionInfo.regionSource;
   if (changed) {
     logger.debug(`[observer] location ${normalizedKey} -> ${lat}, ${lon}`);
@@ -3942,8 +3854,7 @@ function updateObserverUplinkCode(observerKey, rawCode) {
   record.uplinkCode = code;
   noteUplinkCode(code);
   const regionInfo = resolveObserverRegion(record);
-  record.region = regionInfo.region;
-  record.regionGroup = regionInfo.regionGroup;
+  record.place = regionInfo.place;
   record.regionSource = regionInfo.regionSource;
   const profile = observerProfiles.get(normalizedKey) || { name: '', uplink: '', lat: null, lon: null };
   if (profile.uplink !== code) {
@@ -4610,25 +4521,46 @@ app.get('/api/bootstrap', (request, response) => {
   response.json(serializeBootstrap(request));
 });
 
-// Boundary outlines for the coverage map, one per region group. Deliberately
-// separate from the snapshot poll: the geometry only changes when the set of
-// groups holding observers changes, so repeating tens of KB of coordinates
-// every few seconds inside /api/bootstrap would be pure waste.
-//
-// A group qualifies as soon as any one of its subregions has an observer, and
-// then the whole region is outlined - including subregions with no observers -
-// because the outline describes the region, not the coverage inside it.
-app.get('/api/region-boundaries', (request, response) => {
-  const groups = [...new Set(observerDirectory().map((observer) => observer.regionGroup).filter(Boolean))];
-  response.json(regionBoundaryCollection(groups));
-});
-
-// Subregion outlines for the browser's location opt-in; same group rule as the
-// outlines above. See regionLocatorCollection.
-app.get('/api/region-locator', (request, response) => {
-  const groups = [...new Set(observerDirectory().map((observer) => observer.regionGroup).filter(Boolean))];
-  response.json(regionLocatorCollection(groups));
-});
+// Place outlines for the coverage map and the location opt-in (regionOutlineCollection).
+// Deliberately separate from the snapshot poll: the geometry only changes when the set
+// of places holding observers changes, so repeating it every few seconds inside
+// /api/bootstrap would be pure waste. /api/region-locator is the same collection,
+// kept for clients from 1.1.0.
+// /api/region-boundaries?parent=CODE sends one level of the outline tree (the
+// top level for parent=), which is all the map draws at a time; without the
+// parameter, and from /api/region-locator, it sends every level for the
+// client-side locator. Both are filtered views of one cached collection.
+// ?detail=coarse picks the ~400 m copy the map loads first; ?code=A,B picks
+// outlines by code, which is how the zoomed-in map fetches full detail for just
+// the outlines in view.
+function sendRegionOutlines(request, response) {
+  const full = regionOutlineCollection(buildRegionTree(observerDirectory()));
+  const collection = request.query?.detail === 'coarse' ? full.coarse : full;
+  const parent = typeof request.query?.parent === 'string' ? request.query.parent : null;
+  const code = typeof request.query?.code === 'string' ? request.query.code : null;
+  if (code !== null) {
+    const codes = new Set(code.split(','));
+    response.json({
+      type: 'FeatureCollection',
+      features: collection.features.filter((feature) => codes.has(feature.properties.code)),
+    });
+    return;
+  }
+  if (parent === null) {
+    response.json({ type: 'FeatureCollection', features: collection.features });
+    return;
+  }
+  // A comma list fetches several levels in one request (1.2.0: the map's faint
+  // next-level lines need the children of every outline it draws). Codes never
+  // contain commas, and a lone empty value is the top level.
+  const parents = new Set(parent.split(','));
+  response.json({
+    type: 'FeatureCollection',
+    features: collection.features.filter((feature) => parents.has(feature.properties.parent || '')),
+  });
+}
+app.get('/api/region-boundaries', sendRegionOutlines);
+app.get('/api/region-locator', sendRegionOutlines);
 
 app.post(
   '/api/verify-turnstile',
@@ -4693,7 +4625,7 @@ app.post(
       // Snapshotted so the denominator cannot drift while the session is open.
       activeObserverKeys: activeKeys,
       // And where each was, so a region score cannot drift either.
-      activeObserverRegions: snapshotObserverRegions(activeKeys),
+      activeObserverPlaces: snapshotObserverPlaces(activeKeys),
       expectedObserverKeys: expected.keys.length > 0 ? expected.keys : [],
       expectedObserverSource: expected.source || '',
       receipts: new Map(),
@@ -4966,9 +4898,8 @@ export function ingestMqttMessage(topic, payload) {
 
 export {
   computeRegionFingerprint,
-  regionBoundaryCollection,
-  regionLocatorCollection,
-  simplifyRing,
+  placeOutlineGeometry,
+  regionOutlineCollection,
   loadLastReseedFingerprint,
   runObserverReseed,
   app,

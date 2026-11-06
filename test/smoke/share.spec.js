@@ -24,7 +24,7 @@ function shareBootstrap(cartoBasemapKey = 'test-carto-key') {
       eyebrow: 'MeshCore Observer Coverage',
       headline: 'Check your mesh reach.',
       description: 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
-      version: '1.1.0+upstream.1.3.8',
+      version: '1.2.0+upstream.1.3.8',
       repoUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check',
       changesUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md',
       map,
@@ -48,7 +48,7 @@ function shareBootstrap(cartoBasemapKey = 'test-carto-key') {
       distanceUnit: 'mi',
     },
     availableRegions: [],
-    regionHierarchy: [],
+    regionTree: [],
     results: { retentionSeconds: 604800 },
   };
 }
@@ -148,7 +148,7 @@ async function mockShareRoutes(page, { session, cartoBasemapKey = 'test-carto-ke
     contentType: 'application/json',
     body: JSON.stringify(session),
   }));
-  await page.route('**/api/region-boundaries', (route) => route.fulfill({
+  await page.route(/\/api\/region-boundaries(\?.*)?$/, (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ type: 'FeatureCollection', features: [] }),
   }));
