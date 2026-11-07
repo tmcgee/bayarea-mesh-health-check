@@ -7,6 +7,24 @@ patch fixes. Releases before 1.0.0 were `1.3.8+bayarea.1` to `1.3.8+bayarea.22`:
 upstream `v1.3.8` plus a Bay Area build counter. Sections named `vX.Y.Z` alone are
 upstream's own releases.
 
+## v1.2.1+upstream.1.3.8
+
+- Previous checks: each row's code links to that check's share page, opening
+  in a new tab like the other links, so a running check stays put. The list
+  is still this tab's own sessionStorage, filled only when this browser mints
+  a code, so every row is a check the person at this browser ran. Opening
+  someone else's share link does not add it. There is no lookup by code.
+- The Matched Message links to the same packet page as the Message Packet
+  hash, in a new tab. Placeholder text ("Waiting for...") stays plain.
+- The packet hash, matched message and previous-check codes are styled like
+  the "Testing within a region?" toggle: muted text, always underlined. The
+  packet hash used to show no sign it was a link until hovered.
+- The Matched Message card is now a plain metric card, so its value is bold
+  like every other card's. It was the one card with a muted, smaller value.
+  A long message still scrolls inside the card.
+- Service worker cache `mesh-health-check-pwa-v13-bayarea`, so installed
+  copies fetch the new pages. No `.env` or setup change.
+
 ## v1.2.0+upstream.1.3.8
 
 - regions from the scope tree (docs/design-scalable-regions.md, phases 1 and

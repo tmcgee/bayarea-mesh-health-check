@@ -895,6 +895,26 @@ function packetHashLink(hash) {
   return `${ANALYZER_BASE_URL}${encodeURIComponent(hash)}`;
 }
 
+// The matched message, linked to the same packet page as the Message Packet
+// hash once there is a message. Placeholder text ("Waiting for...", "No
+// message was heard...") stays plain.
+function setMessagePreview(text, hash = '') {
+  const value = String(hash || '').trim();
+  ui.messagePreview.title = '';
+  if (!value) {
+    ui.messagePreview.textContent = text;
+    return;
+  }
+  const link = document.createElement('a');
+  link.className = 'hash-link';
+  link.href = packetHashLink(value);
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = text;
+  ui.messagePreview.replaceChildren(link);
+  ui.messagePreview.title = text;
+}
+
 function setSessionHash(hash) {
   const value = String(hash || '').trim();
   if (!value) {
@@ -1285,10 +1305,9 @@ function renderCodeLife() {
   }
   ui.healthLabel.textContent = 'No result';
   ui.healthLabel.className = '';
-  ui.messagePreview.textContent = life.state === 'used-up'
+  setMessagePreview(life.state === 'used-up'
     ? 'No message was heard on this code.'
-    : 'No message was heard before this code expired.';
-  ui.messagePreview.title = '';
+    : 'No message was heard before this code expired.');
 }
 
 // ---------- Region tree (1.2.0) ----------
@@ -3579,29 +3598,36 @@ function toggleReceiptPath(observerKey) {
   }
 }
 
+// The code in each row links to that check's share page in a new tab, like
+// every other link on the page. The list is this tab's own sessionStorage
+// (upsertTrackedSession runs only when this browser mints a code), so a row
+// is only ever a check the person at this browser ran; nothing here looks a
+// result up by code or lists anyone else's.
+let lastHistoryMarkup = null;
+
 function renderHistory(sessions) {
-  ui.sessionHistory.innerHTML = '';
-  if (sessions.length === 0) {
-    ui.sessionHistory.innerHTML =
-      '<div class="empty-state compact">No previous checks in this browser session.</div>';
-    return;
-  }
-  for (const session of sessions) {
-    const item = document.createElement('article');
-    item.className = 'history-item';
-    item.dataset.sessionId = session.id;
-    item.innerHTML = `
-      <div>
-        <div class="history-code">${escapeHtml(session.code)}</div>
-        <p>${session.observedCount}/${session.expectedCount} observers · ${escapeHtml(historyHealthLabel(session))}</p>
-      </div>
-      <div>
-        <strong class="${healthClass(session.healthLabel)}">${historyHealthScore(session)}</strong>
-        <p>${formatTime(session.createdAt)}</p>
-      </div>
+  const markup = sessions.length === 0
+    ? '<div class="empty-state compact">No previous checks in this browser session.</div>'
+    : sessions.map((session) => {
+      const shareUrl = session.shareUrl || `/share/${encodeURIComponent(session.id)}`;
+      return `
+      <article class="history-item" data-session-id="${escapeHtml(session.id)}">
+        <div>
+          <div class="history-code">${externalLinkMarkup(shareUrl, escapeHtml(session.code), 'hash-link', `Open the result for ${session.code} in a new tab`)}</div>
+          <p>${session.observedCount}/${session.expectedCount} observers · ${escapeHtml(historyHealthLabel(session))}</p>
+        </div>
+        <div>
+          <strong class="${healthClass(session.healthLabel)}">${historyHealthScore(session)}</strong>
+          <p>${formatTime(session.createdAt)}</p>
+        </div>
+      </article>
     `;
-    ui.sessionHistory.appendChild(item);
-  }
+    }).join('');
+  // render() runs on every live update; rebuilding unchanged rows would swap
+  // the link out between press and release and swallow the tap.
+  if (lastHistoryMarkup === markup) return;
+  lastHistoryMarkup = markup;
+  ui.sessionHistory.innerHTML = markup;
 }
 
 function drawerStat(label, value) {
@@ -3939,8 +3965,7 @@ function render() {
     }
     ui.senderName.textContent = '--';
     ui.channelName.textContent = channelLabel;
-    ui.messagePreview.textContent = `Waiting for your ${channelLabel} message.`;
-    ui.messagePreview.title = '';
+    setMessagePreview(`Waiting for your ${channelLabel} message.`);
     renderObserverMap(null);
     renderReceipts(null);
     renderHistory(historySessions);
@@ -4008,8 +4033,11 @@ function render() {
   }
   ui.senderName.textContent = session.sender || '--';
   ui.channelName.textContent = session.channelName ? `#${session.channelName}` : channelLabel;
-  ui.messagePreview.textContent = session.messageBody || `Waiting for your ${channelLabel} message.`;
-  ui.messagePreview.title = session.messageBody || '';
+  if (session.messageBody) {
+    setMessagePreview(session.messageBody, session.messageHash);
+  } else {
+    setMessagePreview(`Waiting for your ${channelLabel} message.`);
+  }
 
   // A small sample fills the ring to its percentage in the neutral colour.
   updateRing(

@@ -1240,18 +1240,13 @@ body[data-page-mode="share"] .status-pill::before {
   line-height: 1.28;
 }
 
-.message-card p {
-  margin: 6px 0 0;
-  color: var(--muted-strong);
-  line-height: 1.6;
-}
 
+/* Bold like every other card value; a long message still scrolls rather
+   than stretching the card. */
 #message-preview {
-  margin: 10px 0 0;
   max-height: 6.1em;
   overflow: auto;
   padding-right: 6px;
-  font-size: 0.94rem;
   white-space: pre-wrap;
 }
 
@@ -2037,17 +2032,25 @@ body[data-page-mode="share"] .status-pill::before {
   padding: 16px;
 }
 
+/* Packet hash, matched message and previous-check codes. Styled like the
+   "Testing within a region?" toggle: always underlined, so a tap target reads
+   as one without hovering (the packet hash used to show nothing until hover). */
 .hash-link {
-  color: var(--accent-strong);
-  text-decoration: none;
-  text-underline-offset: 0.2em;
+  color: var(--muted-strong);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .hash-link:hover,
 .hash-link:focus-visible {
-  color: #fff;
-  text-decoration: underline;
+  color: var(--accent-strong);
   outline: none;
+}
+
+.hash-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .hash-link.pending {
@@ -3102,8 +3105,7 @@ body[data-ui-theme="light"] .action-menu__item {
   color: #33425b;
 }
 
-body[data-ui-theme="light"] .site-footer a,
-body[data-ui-theme="light"] .hash-link {
+body[data-ui-theme="light"] .site-footer a {
   color: #2762d2;
 }
 

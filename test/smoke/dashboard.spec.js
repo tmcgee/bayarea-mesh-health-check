@@ -104,7 +104,7 @@ function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key', { e
       eyebrow: 'MeshCore Observer Coverage',
       headline: 'Check your mesh reach.',
       description: 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
-      version: '1.2.0+upstream.1.3.8',
+      version: '1.2.1+upstream.1.3.8',
       repoUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check',
       changesUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md',
       map: mapTiles(cartoBasemapKey),
@@ -1747,7 +1747,7 @@ test('footer entries break between items, never inside one', async ({ page }) =>
   await expect(page.locator('#site-version-note')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md');
   await expect(page.locator('#repo-note-link')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check');
   await expect(page.locator('#upstream-note-link')).toHaveCount(0);
-  await expect(page.locator('#site-version-note')).toHaveText('Version: v1.2.0+upstream.1.3.8');
+  await expect(page.locator('#site-version-note')).toHaveText('Version: v1.2.1+upstream.1.3.8');
   await expect(page.locator('#site-version-note')).toHaveAttribute('title', 'Based on yellowcooln/meshcore-health-check v1.3.8 (MIT)');
 
   const tops = [];
@@ -2000,6 +2000,118 @@ async function openCodeLifePage(page, buildSession, { preseedId = '' } = {}) {
   });
   await page.goto('/app');
 }
+
+// Previous checks link to their own share page in a new tab. The list is
+// this tab's sessionStorage, so every row is a check this browser ran; a
+// shared result someone else ran never joins it.
+async function openHistoryPage(page, path = '/app') {
+  const live = () => lifeSession({ id: 'life-session', code: 'MHC-LIFE01' });
+  const old = () => lifeSession({
+    id: 'old-session', code: 'MHC-OLD001', status: 'expired',
+    createdAt: Date.now() - 3600000, expiresAt: Date.now() - 3000000, matchedAt: Date.now() - 3500000,
+    useCount: 1, usesRemaining: 2, messageBody: 'MHC-OLD001 from the ridge', sender: 'Old Sender',
+    shareUrl: 'http://127.0.0.1:3091/share/old-session',
+  });
+  const other = () => lifeSession({ id: 'other-session', code: 'MHC-OTHER1', sender: 'Someone Else' });
+  const byId = { 'life-session': live, 'old-session': old, 'other-session': other };
+  let mints = 0;
+  await page.addInitScript(() => {
+    window.WebSocket = class {
+      addEventListener() {}
+      close() {}
+    };
+    if (!sessionStorage.getItem('mesh-health-check-session-history')) {
+      sessionStorage.setItem('mesh-health-check-session-id', 'life-session');
+      sessionStorage.setItem('mesh-health-check-session-history', JSON.stringify(['life-session', 'old-session']));
+    }
+  });
+  await page.route('**/api/bootstrap', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify(mapBootstrap([])),
+  }));
+  await page.route('**/api/sessions', (route) => {
+    mints += 1;
+    return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(live()) });
+  });
+  await page.route('**/api/sessions/*', (route) => {
+    const id = route.request().url().split('/').pop();
+    const build = byId[id];
+    return build
+      ? route.fulfill({ contentType: 'application/json', body: JSON.stringify(build()) })
+      : route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"session_not_found"}' });
+  });
+  await page.goto(path);
+  return { mints: () => mints };
+}
+
+test('a previous check\'s code opens its result in a new tab, and only this browser\'s checks are listed', async ({ page, context }) => {
+  const { mints } = await openHistoryPage(page);
+  await page.locator('#additional-info-toggle').click();
+  const rows = page.locator('#session-history .history-item');
+  await expect(rows).toHaveCount(2);
+  const links = page.locator('#session-history .history-code a.hash-link');
+  await expect(links).toHaveText(['MHC-LIFE01', 'MHC-OLD001']);
+  // shareUrl from the API when there is one, the relative path when not.
+  await expect(links.nth(1)).toHaveAttribute('href', 'http://127.0.0.1:3091/share/old-session');
+  await expect(links.nth(0)).toHaveAttribute('href', '/share/life-session');
+  await expect(links.nth(1)).toHaveAttribute('target', '_blank');
+  await expect(links.nth(1)).toHaveAttribute('rel', 'noopener noreferrer');
+
+  const [opened] = await Promise.all([context.waitForEvent('page'), links.nth(1).click()]);
+  await opened.waitForLoadState('domcontentloaded');
+  expect(new URL(opened.url()).pathname).toBe('/share/old-session');
+  await opened.close();
+  // The dashboard tab is untouched, and nothing was minted.
+  await expect(page.locator('#session-code')).toHaveText('MHC-LIFE01');
+  expect(mints()).toBe(0);
+});
+
+test('the packet hash, matched message and previous-check codes read as links', async ({ page }) => {
+  await openHistoryPage(page);
+  const hash = 'aabbccddeeff0011';
+  await page.route('**/api/sessions/life-session', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify(lifeSession({
+      status: 'matched', matchedAt: Date.now() - 500, useCount: 1, usesRemaining: 2,
+      messageHash: hash, messageBody: 'MHC-LIFE01 test transmission', sender: 'Tester',
+    })),
+  }));
+  await page.reload();
+  const packet = page.locator('#session-hash');
+  await expect(packet).toHaveText(hash);
+  const message = page.locator('#message-preview a.hash-link');
+  await expect(message).toHaveText('MHC-LIFE01 test transmission');
+  // Same packet page, same new-tab behaviour as the Message Packet hash.
+  await expect(message).toHaveAttribute('href', await packet.getAttribute('href'));
+  await expect(message).toHaveAttribute('target', '_blank');
+  await expect(message).toHaveAttribute('rel', 'noopener noreferrer');
+
+  // Underlined at rest like "Testing within a region?", not only on hover.
+  await page.locator('#additional-info-toggle').click();
+  for (const link of [packet, message, page.locator('#session-history .history-code a').first()]) {
+    expect(await link.evaluate((el) => getComputedStyle(el).textDecorationLine)).toBe('underline');
+  }
+  // Both sit in the bold value slot every metric card uses.
+  for (const link of [packet, message]) {
+    expect(await link.evaluate((el) => el.parentElement.tagName)).toBe('STRONG');
+    expect(Number(await link.evaluate((el) => getComputedStyle(el).fontWeight))).toBeGreaterThanOrEqual(600);
+  }
+});
+
+test('a shared result someone else ran never joins previous checks', async ({ page }) => {
+  // The share page hides the list; what matters is that opening someone
+  // else's link leaves this browser's own list as it was.
+  await openHistoryPage(page, '/share/other-session');
+  await expect(page.locator('#session-code')).toHaveText('MHC-OTHER1');
+  await expect(page.locator('#session-history')).toBeHidden();
+  const tracked = await page.evaluate(() => JSON.parse(sessionStorage.getItem('mesh-health-check-session-history')));
+  expect(tracked).toEqual(['life-session', 'old-session']);
+
+  await page.goto('/app');
+  await page.locator('#additional-info-toggle').click();
+  await expect(page.locator('#session-history .history-item')).toHaveCount(2);
+  await expect(page.locator('#session-history')).not.toContainText('MHC-OTHER1');
+});
 
 test('a live code shows a countdown and no dead styling', async ({ page }) => {
   await openCodeLifePage(page, () => lifeSession());
