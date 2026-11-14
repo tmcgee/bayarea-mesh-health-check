@@ -153,6 +153,9 @@ build loading cleanly on Node 18.
 
 MIT; see [LICENSE](LICENSE). Upstream code is Copyright (c) 2026 yellowcooln and
 contributors; the Bay Area changes are Copyright (c) 2026 Tim McGee.
+Upstream moved to GPL-3.0-only on 2026-11-10, after its `v1.4.2` release. This
+fork is based on upstream `v1.3.8`, which predates that change and remains under
+MIT.
 [NOTICE.md](NOTICE.md) lists the bundled data and dependencies and their licenses.
 
 ## Upstream Star History

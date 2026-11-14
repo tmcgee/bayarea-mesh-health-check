@@ -15,6 +15,11 @@ Released under the MIT License; see [LICENSE](LICENSE).
 - Upstream code, logo and documentation: Copyright (c) 2026 yellowcooln and
   contributors, MIT. Upstream added its license on 2026-10-29 (commit `e9017b4`),
   in reply to [issue #77](https://github.com/yellowcooln/meshcore-health-check/issues/77).
+- Upstream moved to GPL-3.0-only on 2026-11-10 (commit `cf47195`), after its
+  `v1.4.2` release; its earlier MIT releases stay under MIT. This fork is
+  based on upstream `v1.3.8`, which predates that change, so all of it remains
+  under MIT. Merging any upstream change made after `cf47195` would make this
+  project GPL-3.0-only.
 - Bay Area changes: Copyright (c) 2026 Tim McGee, MIT. The changes are listed in
   [CHANGES.md](CHANGES.md) (`1.3.8+bayarea.N` before 1.0.0, then
   `X.Y.Z+upstream.A.B.C`) and explained in
