@@ -104,7 +104,7 @@ function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key', { e
       eyebrow: 'MeshCore Observer Coverage',
       headline: 'Check your mesh reach.',
       description: 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
-      version: '1.2.1+upstream.1.3.8',
+      version: '1.3.0+upstream.1.3.8',
       repoUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check',
       changesUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md',
       map: mapTiles(cartoBasemapKey),
@@ -1612,6 +1612,61 @@ test('signal quality separates waiting, unavailable readings and reported readin
   await expect(page.locator('#signal-quality-label')).not.toHaveText(/Awaiting|unavailable/);
 });
 
+// Bridged copies (brief section D): the card says so, the distance block names the
+// bridge leg it left out, and the map draws that leg in long dashes, not as radio.
+test('a bridged receipt is labelled and its bridge leg is marked on card and map', async ({ page }) => {
+  const west = mapObserver(MAP_TEST_KEYS.target, 'West Observer', 0, 2, 'West County', 'West');
+  const east = mapObserver(MAP_TEST_KEYS.outside, 'East Observer', 0.5, 6, 'East County', 'East');
+  const now = Date.now();
+  const direct = pathReceipt(east, [
+    { hash: 'AAAA', label: 'Alpha Rptr', key: 'a'.repeat(64), lat: 0, lon: -2 },
+    { hash: '2222', label: east.label, key: east.key, lat: 0.5, lon: 6 },
+  ], now - 5000);
+  const bridged = {
+    ...pathReceipt(west, [
+      { hash: 'AAAA', label: 'Alpha Rptr', key: 'a'.repeat(64), lat: 0, lon: -2 },
+      { hash: 'BBBB', label: 'Bridge Near', key: 'b'.repeat(64), lat: 0, lon: -1 },
+      { hash: 'CCCC', label: 'Bridge Far', key: 'c'.repeat(64), lat: 0, lon: 1 },
+      { hash: '1111', label: west.label, key: west.key, lat: 0, lon: 2 },
+    ], now - 4000),
+    viaBridge: true,
+    bridgeHopIndex: 1,
+    pathBridgeLeg: {
+      fromHash: 'BBBB', toHash: 'CCCC', fromLabel: 'Bridge Near', toLabel: 'Bridge Far',
+      fromKey: 'b'.repeat(64), toKey: 'c'.repeat(64),
+    },
+    pathDistance: 138,
+    pathDistanceText: '138 mi',
+    pathSpannedHopCount: 2,
+    pathDistanceSegments: [
+      { fromHash: 'AAAA', toHash: 'BBBB', fromLabel: 'Alpha Rptr', toLabel: 'Bridge Near', fromKey: 'a'.repeat(64), toKey: 'b'.repeat(64), skippedHops: [], skippedHopCount: 0, estimated: false, distance: 69, distanceText: '69 mi' },
+      { fromHash: 'CCCC', toHash: '1111', fromLabel: 'Bridge Far', toLabel: west.label, fromKey: 'c'.repeat(64), toKey: west.key, skippedHops: [], skippedHopCount: 0, estimated: false, distance: 69, distanceText: '69 mi' },
+    ],
+  };
+  await openMockMapSession(page, [west, east], [west, east], 'test-carto-key', {
+    seenKeys: [west.key, east.key],
+    receipts: [direct, bridged],
+  });
+  await page.locator('#additional-info-toggle').click();
+
+  const card = (label) => page.locator('#receipts .receipt-card', { hasText: label });
+  await expect(card('West Observer').locator('.receipt-bridge')).toHaveText('Heard via bridge');
+  await expect(card('East Observer').locator('.receipt-bridge')).toHaveCount(0);
+  await expect(card('West Observer').locator('.receipt-distance__bridge'))
+    .toHaveText(/^Bridge leg Bridge Near \(BBBB\)\s+to Bridge Far \(CCCC\)\s+not counted$/);
+
+  await card('West Observer').locator('[data-receipt-path]').click();
+  const legs = page.locator('#observer-map path.receipt-path-leg');
+  await expect(legs).toHaveCount(3);
+  expect(await legs.evaluateAll((paths) => paths.map((path) => path.classList.contains('receipt-path-leg--bridge'))))
+    .toEqual([false, true, false]);
+  await expect(card('West Observer').locator('.receipt-map-note'))
+    .toContainText('The long-dashed leg is the bridge, not a radio hop.');
+  const dashes = await page.locator('#observer-map .receipt-path-leg--bridge')
+    .evaluate((path) => getComputedStyle(path).strokeDasharray);
+  expect(dashes).not.toBe('none');
+});
+
 // MeshCore routing scope (bayarea.17): one summary line for the code and one line per
 // receipt card. Display only, so the score fields are left exactly as the server sent them.
 test('MeshCore scope lines summarise the code and label each heard copy', async ({ page }) => {
@@ -1747,7 +1802,7 @@ test('footer entries break between items, never inside one', async ({ page }) =>
   await expect(page.locator('#site-version-note')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md');
   await expect(page.locator('#repo-note-link')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check');
   await expect(page.locator('#upstream-note-link')).toHaveCount(0);
-  await expect(page.locator('#site-version-note')).toHaveText('Version: v1.2.1+upstream.1.3.8');
+  await expect(page.locator('#site-version-note')).toHaveText('Version: v1.3.0+upstream.1.3.8');
   await expect(page.locator('#site-version-note')).toHaveAttribute('title', 'Based on yellowcooln/meshcore-health-check v1.3.8 (MIT)');
 
   const tops = [];
@@ -2096,6 +2151,28 @@ test('the packet hash, matched message and previous-check codes read as links', 
     expect(await link.evaluate((el) => el.parentElement.tagName)).toBe('STRONG');
     expect(Number(await link.evaluate((el) => getComputedStyle(el).fontWeight))).toBeGreaterThanOrEqual(600);
   }
+});
+
+test('the matched message link is the same element after a server refresh', async ({ page }) => {
+  await openHistoryPage(page);
+  await page.route('**/api/sessions/life-session', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify(lifeSession({
+      status: 'matched', matchedAt: Date.now() - 500, useCount: 1, usesRemaining: 2,
+      messageHash: 'aabbccddeeff0011', messageBody: 'MHC-LIFE01 test transmission', sender: 'Tester',
+    })),
+  }));
+  await page.reload();
+  const message = page.locator('#message-preview a.hash-link');
+  await expect(message).toHaveText('MHC-LIFE01 test transmission');
+  await message.evaluate((el) => { window.__messageLink = el; el.focus(); });
+  // Two five-second polls with unchanged content.
+  for (let poll = 0; poll < 2; poll += 1) {
+    await page.waitForResponse((response) => new URL(response.url()).pathname === '/api/sessions/life-session');
+  }
+  await page.waitForTimeout(200);
+  expect(await message.evaluate((el) => el === window.__messageLink && el.isConnected)).toBe(true);
+  expect(await message.evaluate((el) => document.activeElement === el)).toBe(true);
 });
 
 test('a shared result someone else ran never joins previous checks', async ({ page }) => {

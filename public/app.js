@@ -905,9 +905,21 @@ function setMessagePreview(text, hash = '') {
     ui.messagePreview.textContent = text;
     return;
   }
+  const href = packetHashLink(value);
+  // The five-second poll re-renders this every time. Keep the existing link
+  // when nothing changed, so focus, hover and a click in progress survive.
+  const current = ui.messagePreview.firstElementChild;
+  if (current
+    && ui.messagePreview.childNodes.length === 1
+    && current.matches('a.hash-link')
+    && current.getAttribute('href') === href
+    && current.textContent === text) {
+    ui.messagePreview.title = text;
+    return;
+  }
   const link = document.createElement('a');
   link.className = 'hash-link';
-  link.href = packetHashLink(value);
+  link.href = href;
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
   link.textContent = text;
@@ -2666,13 +2678,18 @@ function receiptPathMapData(receipt) {
   if (points.length < 2) {
     return null;
   }
+  // A bridged copy's bridge leg (known only when the bridge node is configured).
+  const bridgeIndex = receipt?.viaBridge && Number.isInteger(receipt?.bridgeHopIndex)
+    ? receipt.bridgeHopIndex
+    : null;
   const legs = [];
   for (let index = 1; index < points.length; index += 1) {
     const from = points[index - 1];
     const to = points[index];
-    legs.push({ from, to, skipped: to.index - from.lastIndex - 1 });
+    const bridge = bridgeIndex != null && from.lastIndex <= bridgeIndex && to.index > bridgeIndex;
+    legs.push({ from, to, skipped: to.index - from.lastIndex - 1, bridge });
   }
-  return { points, legs, hopCount: hops.length };
+  return { points, legs, hopCount: hops.length, bridgeIndex };
 }
 
 // The selected receipt, only while its card is actually listed: same session,
@@ -2718,7 +2735,7 @@ function renderReceiptPathLayer(mapInstance, session) {
   const receipt = selectedPathReceipt(session);
   const data = receipt ? receiptPathMapData(receipt) : null;
   const signature = data
-    ? `${receipt.observerKey}:${data.points.map((point) => `${point.index}@${point.lat},${point.lon}`).join('|')}`
+    ? `${receipt.observerKey}:${data.bridgeIndex ?? ''}:${data.points.map((point) => `${point.index}@${point.lat},${point.lon}`).join('|')}`
     : '';
   if (signature === state.map.pathSignature) {
     return data ? { ...data, signature } : null;
@@ -2734,12 +2751,17 @@ function renderReceiptPathLayer(mapInstance, session) {
   const pane = ensureReceiptPathPane(mapInstance);
   const group = window.L.layerGroup();
   for (const leg of data.legs) {
+    const legClass = leg.bridge
+      ? ' receipt-path-leg--bridge'
+      : (leg.skipped > 0 ? ' receipt-path-leg--gap' : '');
     const line = window.L.polyline([[leg.from.lat, leg.from.lon], [leg.to.lat, leg.to.lon]], {
       pane,
-      className: `receipt-path-leg${leg.skipped > 0 ? ' receipt-path-leg--gap' : ''}`,
-      interactive: leg.skipped > 0,
+      className: `receipt-path-leg${legClass}`,
+      interactive: leg.bridge || leg.skipped > 0,
     });
-    if (leg.skipped > 0) {
+    if (leg.bridge) {
+      line.bindTooltip('Bridge, not a radio hop', { sticky: true });
+    } else if (leg.skipped > 0) {
       line.bindTooltip(`${leg.skipped} hop${leg.skipped === 1 ? '' : 's'} without a known position`, { sticky: true });
     }
     group.addLayer(line);
@@ -3116,6 +3138,15 @@ function receiptDistanceMarkup(receipt) {
   // Straight-line end to end, stated once above the legs because it describes
   // the whole path rather than any one leg. Older cached or shared payloads
   // predate the field and simply omit the line.
+  // A bridged copy's total leaves the bridge leg out; say which leg that was.
+  const bridgeLeg = receipt?.pathBridgeLeg;
+  const bridgeMarkup = bridgeLeg
+    ? `<span class="receipt-distance__bridge">Bridge leg ${
+      receiptHopLabelMarkup(bridgeLeg.fromLabel, bridgeLeg.fromHash, bridgeLeg.fromKey)
+    } to ${
+      receiptHopLabelMarkup(bridgeLeg.toLabel, bridgeLeg.toHash, bridgeLeg.toKey)
+    } not counted</span>`
+    : '';
   const crowMarkup = crowText
     ? `<span class="receipt-distance__crow" title="${escapeHtml(`Straight-line distance from ${
       receiptHopLabel(crow.fromLabel, crow.fromHash)
@@ -3129,6 +3160,7 @@ function receiptDistanceMarkup(receipt) {
         <div class="receipt-distance">
           <strong>Estimated path over ${countText} \u00b7 at least ${escapeHtml(unbreakableDistance(distanceText))}</strong>
           ${crowMarkup}
+          ${bridgeMarkup}
           ${legs || '<span>Distance estimated from known node positions.</span>'}
         </div>
       `;
@@ -3533,6 +3565,7 @@ function renderReceipts(session) {
         Heard ${receipt.count} time${receipt.count === 1 ? '' : 's'}${metrics ? ` · ${metrics}` : ''}
       </p>
       <p class="receipt-meta receipt-scope">Scope: ${escapeHtml(receiptScopeLabels(receipt).join(' · '))}</p>
+      ${receipt.viaBridge ? '<p class="receipt-meta receipt-bridge">Heard via bridge</p>' : ''}
       ${arrivalMarkup}
       <div class="receipt-meter-grid">
         <div class="receipt-meter">
@@ -3570,7 +3603,9 @@ function receiptPathToggleMarkup(receipt, session) {
     && state.receiptPath.sessionId === (session?.id || '');
   const note = active
     ? `<p class="small-note receipt-map-note">On the map: straight lines between the ${data.points.length} of ${
-      data.hopCount} hops with a known position, not the radio path. Dashed legs pass through hops with no known position. The sender's position is not part of the path.</p>`
+      data.hopCount} hops with a known position, not the radio path. Dashed legs pass through hops with no known position.${
+      data.legs.some((leg) => leg.bridge) ? ' The long-dashed leg is the bridge, not a radio hop.' : ''
+    } The sender's position is not part of the path.</p>`
     : '';
   return `
     <div class="receipt-map">

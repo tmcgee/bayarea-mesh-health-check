@@ -81,7 +81,10 @@ The backend keeps packet handling scoped to the configured test channel.
 | --- | --- | --- |
 | `SESSION_TTL_SECONDS` | `600` | Active code lifetime. |
 | `RESULT_RETENTION_SECONDS` | `604800` | How long retained share results stay available. |
-| `MAX_USES_PER_CODE` | `3` | Maximum matching messages per generated code. |
+| `MAX_USES_PER_CODE` | `3` | Maximum sends per generated code. Copies of one send (same sender timestamp, sender and text) count once. |
+| `SESSION_HASH_ALIAS_WINDOW_SECONDS` | `180` | Fallback only: a copy without a matching sender timestamp still counts as the same send if its sender and text match within this window. |
+| `BRIDGE_SENDER_MARKERS` | `↔` | Comma-separated prefixes a bridge adds to the sender name. Stripped (repeatedly) before senders are compared and from the sender shown. |
+| `BRIDGE_NODE_PREFIXES` | empty | Comma-separated path-hop prefixes of known bridge nodes (2 bytes or more, e.g. `6236`). In a bridged copy's path, the leg from the first such hop to the next is the bridge: it is left out of the receipt's distance and drawn in long dashes on the map. When empty, bridged receipts are still labelled, but their distance is not estimated. |
 | `SESSION_RATE_WINDOW_SECONDS` | `600` | Rate-limit window for creating sessions. |
 | `SESSION_RATE_MAX` | `30` | Max session creations per rate-limit window. |
 

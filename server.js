@@ -597,9 +597,28 @@ const RESULT_RETENTION_MS = Math.max(
 ) * 1000;
 const SESSION_HASH_ALIAS_WINDOW_MS = Math.max(
   5,
-  envNumber('SESSION_HASH_ALIAS_WINDOW_SECONDS', 90),
+  envNumber('SESSION_HASH_ALIAS_WINDOW_SECONDS', 180),
 ) * 1000;
 const MAX_USES_PER_CODE = Math.max(1, envNumber('MAX_USES_PER_CODE', 3));
+// A bridge re-sends a channel message under a marked sender name ("↔ name"),
+// which gives the copy a new packet hash. These markers are stripped before
+// senders are compared, so the copy counts as the same send.
+const BRIDGE_SENDER_MARKERS = (envValue('BRIDGE_SENDER_MARKERS', '') ? envList('BRIDGE_SENDER_MARKERS') : ['↔'])
+  .filter(Boolean);
+// Copies of one send are few; this only bounds a misbehaving bridge loop.
+const MAX_HASHES_PER_SEND = 16;
+// Path hops (hex prefixes) of known bridge nodes. A bridged copy keeps the original
+// path and continues it on the far side, so the leg from the bridge hop to the next
+// hop is the bridge, not a radio hop. Empty: bridged receipts are still labelled,
+// but their distance is not estimated because the bridge leg cannot be found.
+const BRIDGE_NODE_PREFIXES = envList('BRIDGE_NODE_PREFIXES')
+  .map((value) => normalizeHex(value).toUpperCase())
+  .filter((value) => value.length >= 2);
+// Distinct deliveries remembered per receipt, keyed by the raw packet bytes, so an
+// exact repeat (the same packet reported twice, by a relay or by two brokers)
+// changes nothing. A copy over another path or under another scope differs in its
+// bytes and is still a separate hearing.
+const MAX_DELIVERIES_PER_RECEIPT = 32;
 const KNOWN_OBSERVERS = dedupe(envList('KNOWN_OBSERVERS').map(normalizeKey));
 
 const channelsConfig = readStructuredFile(
@@ -1521,6 +1540,7 @@ function serializeSessionRecord(session) {
     messageHashes: Array.isArray(session.messageHashes)
       ? session.messageHashes.map(normalizeMessageHash).filter(Boolean)
       : [],
+    sends: (Array.isArray(session.sends) ? session.sends : []).map(sanitizeSend).filter(Boolean),
     matchedAt: session.matchedAt,
     messageBody: session.messageBody,
     sender: session.sender,
@@ -1554,6 +1574,12 @@ function serializeSessionRecord(session) {
       path: Array.isArray(receipt.path)
         ? receipt.path.map(normalizePathHop).filter(Boolean)
         : [],
+      viaBridge: Boolean(receipt.viaBridge),
+      bridgeHopIndex: sanitizeBridgeHopIndex(receipt.bridgeHopIndex, receipt.path),
+      deliveries: (Array.isArray(receipt.deliveries) ? receipt.deliveries : [])
+        .map((key) => String(key || ''))
+        .filter(Boolean)
+        .slice(0, MAX_DELIVERIES_PER_RECEIPT),
     })).filter((receipt) => receipt.observerKey),
   };
 }
@@ -1578,6 +1604,13 @@ function restoreSessionRecord(rawSession) {
       continue;
     }
     ensureObserverRecord(observerKey);
+    const restoredPath = Array.isArray(rawReceipt?.path)
+      ? rawReceipt.path.map(normalizePathHop).filter(Boolean)
+      : [];
+    const restoredDeliveries = (Array.isArray(rawReceipt?.deliveries) ? rawReceipt.deliveries : [])
+      .map((key) => String(key || ''))
+      .filter(Boolean)
+      .slice(0, MAX_DELIVERIES_PER_RECEIPT);
     receipts.set(observerKey, {
       observerKey,
       observerHash: String(rawReceipt?.observerHash || '').trim().toUpperCase(),
@@ -1594,13 +1627,32 @@ function restoreSessionRecord(rawSession) {
       rssi: Number.isFinite(Number(rawReceipt?.rssi)) ? Number(rawReceipt.rssi) : null,
       snr: Number.isFinite(Number(rawReceipt?.snr)) ? Number(rawReceipt.snr) : null,
       duration: Number.isFinite(Number(rawReceipt?.duration)) ? Number(rawReceipt.duration) : null,
-      path: Array.isArray(rawReceipt?.path)
-        ? rawReceipt.path.map(normalizePathHop).filter(Boolean)
-        : [],
+      path: restoredPath,
+      viaBridge: Boolean(rawReceipt?.viaBridge),
+      bridgeHopIndex: sanitizeBridgeHopIndex(rawReceipt?.bridgeHopIndex, restoredPath),
+      // Receipts written before deliveries were stored have none: their packet bytes
+      // were not kept, so a repeat of the stored reading counts once more.
+      deliveries: restoredDeliveries,
     });
   }
   for (const observerKey of expectedObserverKeys) {
     ensureObserverRecord(observerKey);
+  }
+  const restoredHashes = dedupe(
+    (Array.isArray(rawSession.messageHashes) ? rawSession.messageHashes : [])
+      .map(normalizeMessageHash)
+      .filter(Boolean),
+  );
+  let sends = (Array.isArray(rawSession.sends) ? rawSession.sends : []).map(sanitizeSend).filter(Boolean);
+  if (sends.length === 0 && restoredHashes.length > 0) {
+    // Results written before sends were stored: the linked hashes are the current send,
+    // with no timestamp, so only the sender-and-text window can group later copies.
+    sends = [sanitizeSend({
+      hashes: restoredHashes,
+      sendTimestamp: 0,
+      displaySender: rawSession.sender || '',
+      startedAt: Number(rawSession.matchedAt || 0),
+    })].filter(Boolean);
   }
   return {
     id,
@@ -1611,11 +1663,8 @@ function restoreSessionRecord(rawSession) {
     useCount: Math.max(0, Number(rawSession.useCount || 0)),
     maxUses: Math.max(1, Number(rawSession.maxUses || MAX_USES_PER_CODE)),
     messageHash: normalizeMessageHash(rawSession.messageHash || ''),
-    messageHashes: dedupe(
-      (Array.isArray(rawSession.messageHashes) ? rawSession.messageHashes : [])
-        .map(normalizeMessageHash)
-        .filter(Boolean),
-    ),
+    messageHashes: dedupe([...restoredHashes, ...sends.flatMap((send) => send.hashes)]),
+    sends,
     matchedAt: Number(rawSession.matchedAt || 0),
     messageBody: String(rawSession.messageBody || ''),
     sender: String(rawSession.sender || ''),
@@ -2124,6 +2173,126 @@ function normalizedSender(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+// The sender name with any leading bridge markers removed, original case kept.
+function displaySenderName(value) {
+  let name = String(value || '').trim();
+  let stripped = true;
+  while (stripped && name) {
+    stripped = false;
+    for (const marker of BRIDGE_SENDER_MARKERS) {
+      if (name.startsWith(marker)) {
+        name = name.slice(marker.length).trimStart();
+        stripped = true;
+      }
+    }
+  }
+  return name;
+}
+
+function normalizeSenderForSend(value) {
+  return displaySenderName(value).toLowerCase();
+}
+
+function normalizeSendTimestamp(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.trunc(number) : 0;
+}
+
+function senderHasBridgeMarker(value) {
+  const raw = String(value || '').trim();
+  return Boolean(raw) && displaySenderName(raw) !== raw;
+}
+
+function hopMatchesBridgePrefix(hop) {
+  const value = String(hop || '').toUpperCase();
+  if (!value) {
+    return false;
+  }
+  // A 1-byte hop is shared by too many nodes to name a bridge on its own.
+  return BRIDGE_NODE_PREFIXES.some((prefix) =>
+    value.startsWith(prefix) || (value.length >= 4 && prefix.startsWith(value)));
+}
+
+// Where the bridge leg starts in a bridged copy's path: the index of the first hop
+// that is a known bridge node, if a hop follows it. Only bridged copies (sender
+// marked) are looked at: the original packet also passes through the bridge node
+// on its own side, and there the next leg is ordinary radio.
+function bridgeHopIndexForPath(path) {
+  if (BRIDGE_NODE_PREFIXES.length === 0 || !Array.isArray(path)) {
+    return null;
+  }
+  for (let index = 0; index < path.length - 1; index += 1) {
+    if (hopMatchesBridgePrefix(path[index])) {
+      return index;
+    }
+  }
+  return null;
+}
+
+function receiptDeliveryKey(messageHash, raw) {
+  const digest = createHash('sha256').update(String(raw || '').toLowerCase()).digest('hex').slice(0, 16);
+  return `${normalizeMessageHash(messageHash)}|${digest}`;
+}
+
+function sanitizeBridgeHopIndex(value, path) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const index = Number(value);
+  const length = Array.isArray(path) ? path.length : 0;
+  return Number.isInteger(index) && index >= 0 && index < length - 1 ? index : null;
+}
+
+function sanitizeSend(rawSend) {
+  if (!rawSend || typeof rawSend !== 'object') {
+    return null;
+  }
+  const hashes = dedupe(
+    (Array.isArray(rawSend.hashes) ? rawSend.hashes : [])
+      .map(normalizeMessageHash)
+      .filter(Boolean),
+  ).slice(0, MAX_HASHES_PER_SEND);
+  if (hashes.length === 0) {
+    return null;
+  }
+  return {
+    hashes,
+    sendTimestamp: normalizeSendTimestamp(rawSend.sendTimestamp),
+    sendSender: normalizeSenderForSend(rawSend.sendSender || rawSend.displaySender || ''),
+    displaySender: displaySenderName(rawSend.displaySender || ''),
+    startedAt: Number.isFinite(Number(rawSend.startedAt)) ? Number(rawSend.startedAt) : 0,
+  };
+}
+
+function sessionSends(session) {
+  if (!Array.isArray(session.sends)) {
+    session.sends = [];
+  }
+  return session.sends;
+}
+
+function currentSend(session) {
+  const sends = sessionSends(session);
+  return sends.length > 0 ? sends[sends.length - 1] : null;
+}
+
+// A hash that belongs to an earlier send of this code. Its packets are late copies
+// of a send the session has moved past: they must neither add receipts nor count
+// as a new use.
+function isEarlierSendHash(session, hash) {
+  const normalizedHash = normalizeMessageHash(hash);
+  if (!session || !normalizedHash) {
+    return false;
+  }
+  const sends = sessionSends(session);
+  for (let index = 0; index < sends.length - 1; index += 1) {
+    if (sends[index].hashes.includes(normalizedHash)) {
+      return !sends[sends.length - 1].hashes.includes(normalizedHash);
+    }
+  }
+  return false;
+}
+
 function unlinkSessionHashes(session, clearHashes = true) {
   if (!session) {
     return;
@@ -2152,10 +2321,19 @@ function linkSessionHash(session, hash) {
   if (!session.messageHash) {
     session.messageHash = normalizedHash;
   }
+  const send = currentSend(session);
+  if (send && !send.hashes.includes(normalizedHash) && send.hashes.length < MAX_HASHES_PER_SEND) {
+    send.hashes.push(normalizedHash);
+  }
   messageToSession.set(normalizedHash, session.id);
 }
 
-function isSameActiveMessageAlias(session, packetInfo) {
+// Is this packet another copy of the session's current send? A send is
+// (sender timestamp, sender, text). Copies keep the sender's timestamp even when
+// a bridge renames the sender, so a matching timestamp settles it at any distance
+// in time. Without one (or if a bridge re-stamps it), the same sender and text
+// within SESSION_HASH_ALIAS_WINDOW_SECONDS still count as the same send.
+function isSameActiveSend(session, packetInfo) {
   if (!session?.messageHash || !session?.matchedAt) {
     return false;
   }
@@ -2165,21 +2343,27 @@ function isSameActiveMessageAlias(session, packetInfo) {
   if (packetInfo.messageHash === session.messageHash) {
     return true;
   }
+  if (String(session.messageBody || '').trim() !== String(packetInfo.messageBody || '').trim()) {
+    return false;
+  }
+  if (session.channelHash && packetInfo.channelHash && session.channelHash !== packetInfo.channelHash) {
+    return false;
+  }
+  const send = currentSend(session);
+  const currentSender = send?.sendSender || normalizeSenderForSend(session.sender);
+  const nextSender = normalizeSenderForSend(packetInfo.sender);
+  if (currentSender && nextSender && currentSender !== nextSender) {
+    return false;
+  }
+  const currentTimestamp = normalizeSendTimestamp(send?.sendTimestamp);
+  const nextTimestamp = normalizeSendTimestamp(packetInfo.senderTimestamp);
+  if (currentTimestamp && nextTimestamp && currentTimestamp === nextTimestamp) {
+    return true;
+  }
   if (packetInfo.seenAt - session.matchedAt > SESSION_HASH_ALIAS_WINDOW_MS) {
     return false;
   }
   if (session.receipts?.size <= 0) {
-    return false;
-  }
-  if (String(session.messageBody || '').trim() !== String(packetInfo.messageBody || '').trim()) {
-    return false;
-  }
-  const currentSender = normalizedSender(session.sender);
-  const nextSender = normalizedSender(packetInfo.sender);
-  if (currentSender && nextSender && currentSender !== nextSender) {
-    return false;
-  }
-  if (session.channelHash && packetInfo.channelHash && session.channelHash !== packetInfo.channelHash) {
     return false;
   }
   return true;
@@ -3331,10 +3515,44 @@ function receiptDistanceEstimate(report) {
     }));
   const located = resolved.filter((entry) => entry.hasLocation);
   const segments = [];
+  const viaBridge = Boolean(report?.viaBridge);
+  const bridgeHopIndex = viaBridge ? sanitizeBridgeHopIndex(report?.bridgeHopIndex, path) : null;
+  if (viaBridge && bridgeHopIndex == null) {
+    // A bridged copy whose bridge leg cannot be found: any leg might be the bridge,
+    // so no total would be honest.
+    return {
+      distance: null,
+      distanceText: '',
+      segments: [],
+      crowFlies: null,
+      spannedHopCount: 0,
+      locatedHopCount: located.length,
+      estimatedSegmentCount: 0,
+      bridgeLeg: null,
+    };
+  }
+  let bridgeLeg = null;
+  if (bridgeHopIndex != null) {
+    const from = resolved[bridgeHopIndex];
+    const to = resolved[bridgeHopIndex + 1];
+    bridgeLeg = {
+      fromHash: from.hop,
+      toHash: to.hop,
+      fromLabel: from.observer ? observerDisplayLabel(from.observer, from.observer.key) : '',
+      toLabel: to.observer ? observerDisplayLabel(to.observer, to.observer.key) : '',
+      fromKey: from.observer?.key || '',
+      toKey: to.observer?.key || '',
+    };
+  }
   for (let index = 1; index < located.length; index += 1) {
     const from = located[index - 1];
     const to = located[index];
     if (from.observer.key === to.observer.key) {
+      continue;
+    }
+    // The leg across the bridge is not a radio hop. A leg between located hops
+    // that spans it is left out, so the total covers only the radio parts.
+    if (bridgeHopIndex != null && from.index <= bridgeHopIndex && to.index > bridgeHopIndex) {
       continue;
     }
     const km = distanceKmBetween(from.observer, to.observer);
@@ -3381,11 +3599,14 @@ function receiptDistanceEstimate(report) {
   // hops in between have no position. Measured first-located to last-located on
   // purpose: unresolved hops trailing past the last located one are covered by
   // no leg and contribute no distance, so counting them would overstate it.
-  const spannedHopCount = segments.length > 0 && first && last
-    ? last.index - first.index
-    : 0;
+  const spannedHopCount = segments.length === 0 || !first || !last
+    ? 0
+    : (bridgeLeg
+      ? segments.reduce((sum, segment) => sum + segment.skippedHopCount + 1, 0)
+      : last.index - first.index);
   let crowFlies = null;
-  if (segments.length > 0 && first && last && first.observer.key !== last.observer.key) {
+  // No end-to-end line across a bridge: it would measure the bridge, not radio.
+  if (!bridgeLeg && segments.length > 0 && first && last && first.observer.key !== last.observer.key) {
     const crowValue = convertDistance(distanceKmBetween(first.observer, last.observer));
     if (Number.isFinite(crowValue)) {
       crowFlies = {
@@ -3406,6 +3627,7 @@ function receiptDistanceEstimate(report) {
     spannedHopCount,
     locatedHopCount: located.length,
     estimatedSegmentCount: segments.filter((segment) => segment.estimated).length,
+    bridgeLeg,
   };
 }
 
@@ -3479,6 +3701,9 @@ function serializeSession(session, request = null) {
         pathCrowFlies: distanceEstimate.crowFlies,
         pathSpannedHopCount: distanceEstimate.spannedHopCount,
         pathLocatedHopCount: distanceEstimate.locatedHopCount,
+        viaBridge: Boolean(report.viaBridge),
+        bridgeHopIndex: report.viaBridge ? sanitizeBridgeHopIndex(report.bridgeHopIndex, report.path) : null,
+        pathBridgeLeg: distanceEstimate.bridgeLeg,
       };
     });
 
@@ -3505,7 +3730,11 @@ function serializeSession(session, request = null) {
     report.displayDistanceLabel = '';
     const hops = receiptPathHops(report);
     const unlocated = hops.filter((hop) => !hop.hasLocation).length;
-    if (hops.length === 0) {
+    if (report.viaBridge && report.bridgeHopIndex == null) {
+      report.pathDistanceNote = 'Heard via a bridge, and the bridge leg is not known, so distance is not estimated.';
+    } else if (report.viaBridge) {
+      report.pathDistanceNote = 'Heard via a bridge, and its radio legs could not be measured.';
+    } else if (hops.length === 0) {
       report.pathDistanceNote = 'No path recorded, so distance cannot be estimated.';
     } else if (hops.length === 1) {
       // A one-element path is the receiving observer itself: the packet arrived
@@ -3563,7 +3792,9 @@ function serializeSession(session, request = null) {
   const healthUnratedReason = healthMeasured && scoringSetTooSmall
     ? 'target-too-small'
     : null;
+  // Radio only: a bridged receipt's distance is never the headline figure.
   const longestPacketDistance = reports
+    .filter((report) => !report.viaBridge)
     .map((report) => Number(report.pathDistance))
     .filter((value) => Number.isFinite(value))
     .reduce((max, value) => Math.max(max, value), 0);
@@ -3893,7 +4124,7 @@ function handleObserverMetadata(topic, observerKey, payloadBuffer) {
   return changed;
 }
 
-function matchSessionByCode(messageText) {
+function matchSessionByCode(messageText, { includeExhausted = false } = {}) {
   const body = String(messageText || '').trim();
   if (!body) {
     return null;
@@ -3903,7 +4134,7 @@ function matchSessionByCode(messageText) {
     .filter((session) =>
       session.status !== 'expired' &&
       now < session.expiresAt &&
-      session.useCount < session.maxUses
+      (includeExhausted || session.useCount < session.maxUses)
     )
     .sort((left, right) => right.createdAt - left.createdAt);
   for (const session of availableSessions) {
@@ -3948,25 +4179,36 @@ function maybeMatchSession(packetInfo) {
   if (mappedSessionId) {
     return sessions.get(mappedSessionId) || null;
   }
-  const session = matchSessionByCode(packetInfo.messageBody);
+  // Exhausted sessions are included so a copy of their last send still links;
+  // they cannot start a new use below.
+  const session = matchSessionByCode(packetInfo.messageBody, { includeExhausted: true });
   if (!session) {
     return null;
   }
-  if (isSameActiveMessageAlias(session, packetInfo)) {
+  if (isSameActiveSend(session, packetInfo)) {
     linkSessionHash(session, packetInfo.messageHash);
     return session;
   }
-  const isNewUse = session.messageHash !== packetInfo.messageHash;
-  if (isNewUse) {
-    unlinkSessionHashes(session);
-    session.receipts = new Map();
-    session.useCount += 1;
+  if (session.useCount >= session.maxUses) {
+    return null;
   }
+  // A new send. Earlier sends' hashes stay linked to this session, so their late
+  // copies are recognised and ignored instead of counting as yet another use.
+  session.receipts = new Map();
+  session.useCount += 1;
+  session.messageHash = '';
+  sessionSends(session).push({
+    hashes: [],
+    sendTimestamp: normalizeSendTimestamp(packetInfo.senderTimestamp),
+    sendSender: normalizeSenderForSend(packetInfo.sender),
+    displaySender: displaySenderName(packetInfo.sender),
+    startedAt: packetInfo.seenAt,
+  });
   session.status = session.useCount >= session.maxUses ? 'exhausted' : 'active';
   session.messageHash = packetInfo.messageHash;
   session.matchedAt = packetInfo.seenAt;
   session.messageBody = packetInfo.messageBody;
-  session.sender = packetInfo.sender;
+  session.sender = displaySenderName(packetInfo.sender);
   session.channelHash = packetInfo.channelHash;
   session.channelName = packetInfo.channelName;
   if (!Array.isArray(session.expectedObserverKeys) || session.expectedObserverKeys.length === 0) {
@@ -3981,7 +4223,20 @@ function recordReceipt(session, packetInfo) {
   const existing = session.receipts.get(packetInfo.observerKey);
   const observer = observerState.get(packetInfo.observerKey);
   const label = observer?.name || shortKey(packetInfo.observerKey);
+  const deliveryKey = receiptDeliveryKey(packetInfo.messageHash, packetInfo.raw);
+  const viaBridge = Boolean(packetInfo.viaBridge);
+  const bridgeHopIndex = viaBridge ? sanitizeBridgeHopIndex(packetInfo.bridgeHopIndex, packetInfo.path) : null;
   if (existing) {
+    const deliveries = Array.isArray(existing.deliveries) ? existing.deliveries : [];
+    // An identical repeat: the same packet over the same path, delivered again
+    // (relayed back to us, or reported by two brokers). It is not a new hearing.
+    if (deliveries.includes(deliveryKey)) {
+      return false;
+    }
+    if (deliveries.length < MAX_DELIVERIES_PER_RECEIPT) {
+      deliveries.push(deliveryKey);
+    }
+    existing.deliveries = deliveries;
     // Distinct scopes accumulate: a later copy forwarded under another scope (or none)
     // is added beside the first, never written over it.
     const scopes = recordedMeshcoreScopes(existing.meshcoreScopes);
@@ -3992,18 +4247,30 @@ function recordReceipt(session, packetInfo) {
     existing.meshcoreScopes = scopes;
     existing.lastSeenAt = packetInfo.seenAt;
     existing.count += 1;
-    existing.path = [...packetInfo.path];
-    existing.topic = packetInfo.topic;
-    // Keep the first real reading: an observer's own tx rebroadcast of the same
-    // packet carries no SNR/RSSI and would otherwise blank out good telemetry.
-    if (Number.isFinite(packetInfo.rssi)) {
-      existing.rssi = packetInfo.rssi;
-    }
-    if (Number.isFinite(packetInfo.snr)) {
-      existing.snr = packetInfo.snr;
-    }
-    if (Number.isFinite(packetInfo.duration)) {
-      existing.duration = packetInfo.duration;
+    if (existing.viaBridge && !viaBridge) {
+      // The observer heard the original too. Its own radio reading is the one that
+      // describes this observer, so it replaces the bridged copy's.
+      existing.viaBridge = false;
+      existing.bridgeHopIndex = null;
+      existing.messageHash = packetInfo.messageHash;
+      existing.path = [...packetInfo.path];
+      existing.topic = packetInfo.topic;
+      existing.rssi = Number.isFinite(packetInfo.rssi) ? packetInfo.rssi : null;
+      existing.snr = Number.isFinite(packetInfo.snr) ? packetInfo.snr : null;
+      existing.duration = Number.isFinite(packetInfo.duration) ? packetInfo.duration : null;
+    } else {
+      // Otherwise the first hearing stands: its path, and its first real reading.
+      // A later copy over another route only adds to the count, and an observer's
+      // own tx rebroadcast (no SNR/RSSI) can only fill a gap, never blank one.
+      if (!Number.isFinite(existing.rssi) && Number.isFinite(packetInfo.rssi)) {
+        existing.rssi = packetInfo.rssi;
+      }
+      if (!Number.isFinite(existing.snr) && Number.isFinite(packetInfo.snr)) {
+        existing.snr = packetInfo.snr;
+      }
+      if (!Number.isFinite(existing.duration) && Number.isFinite(packetInfo.duration)) {
+        existing.duration = packetInfo.duration;
+      }
     }
     existing.channelName = packetInfo.channelName;
     return true;
@@ -4026,6 +4293,9 @@ function recordReceipt(session, packetInfo) {
     snr: packetInfo.snr,
     duration: packetInfo.duration,
     path: [...packetInfo.path],
+    viaBridge,
+    bridgeHopIndex,
+    deliveries: [deliveryKey],
   });
   return true;
 }
@@ -4202,6 +4472,10 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
     messageHash,
     messageBody,
     sender,
+    senderTimestamp: normalizeSendTimestamp(decodedGroup?.timestamp),
+    raw,
+    viaBridge: senderHasBridgeMarker(sender),
+    bridgeHopIndex: senderHasBridgeMarker(sender) ? bridgeHopIndexForPath(path) : null,
     channelHash,
     channelName,
     path,
@@ -4236,6 +4510,12 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
   if (!session || session.status === 'expired') {
     return;
   }
+  if (isEarlierSendHash(session, messageHash)) {
+    logger.debug(
+      `[session] late copy of an earlier send of ${session.code} on ${shortKey(observer.key)} (${messageHash})`,
+    );
+    return;
+  }
 
   if (!session.channelName && channelName) {
     session.channelName = channelName;
@@ -4244,7 +4524,7 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
     session.messageBody = messageBody;
   }
   if (!session.sender && sender) {
-    session.sender = sender;
+    session.sender = displaySenderName(sender);
   }
 
   // Scope comparisons are receipt work, not general channel-traffic work, so they run only
@@ -4616,6 +4896,7 @@ app.post(
       maxUses: MAX_USES_PER_CODE,
       messageHash: '',
       messageHashes: [],
+      sends: [],
       matchedAt: 0,
       messageBody: '',
       sender: '',

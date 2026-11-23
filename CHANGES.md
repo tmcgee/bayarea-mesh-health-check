@@ -7,6 +7,46 @@ patch fixes. Releases before 1.0.0 were `1.3.8+bayarea.1` to `1.3.8+bayarea.22`:
 upstream `v1.3.8` plus a Bay Area build counter. Sections named `vX.Y.Z` alone are
 upstream's own releases.
 
+## v1.3.0+upstream.1.3.8
+
+- Send grouping. A bridged copy of a test message (sender `↔ name`, same
+  text and sender timestamp, new packet hash) no longer counts as another use
+  of the code. Since #healthcheck was bridged to Sacramento on 2026-11-23,
+  every send arrived twice, and the copy plus a late original could use up a
+  brand-new code partway through a check (MHC-2FA19A). A send is now the
+  sender's timestamp, sender (bridge markers stripped) and text. A matching
+  timestamp groups copies at any time gap; without one, the existing
+  sender-and-text window (`SESSION_HASH_ALIAS_WINDOW_SECONDS`) still
+  applies. Its default rises from 90 s to 180 s.
+- Earlier sends' packet hashes stay linked to their session. Late copies of
+  an earlier send are ignored instead of clearing receipts and counting as
+  another use. A copy of a used-up code's last send still adds receipts.
+- The sender is shown without bridge markers.
+- New setting `BRIDGE_SENDER_MARKERS` (default `↔`).
+- Results files gain a `sends` list per session. Files written by 1.2.1 load
+  unchanged, and `messageHashes` is still written, now with every linked
+  hash.
+- Bridged receipts. A receipt from a bridged copy (sender carries a bridge
+  marker) counts as heard and its card says "Heard via bridge". With the new
+  `BRIDGE_NODE_PREFIXES` set, the leg from the bridge node to the next hop is
+  left out of the receipt's distance (named on the card as "Bridge leg ... not
+  counted"), there is no crow-flies line across it, and the map draws it in
+  long dashes. Without it, a bridged receipt's distance is not estimated.
+  Longest Packet uses radio-only receipts. If an observer hears both the
+  original and the bridged copy, the original's path and reading are kept.
+- Duplicate deliveries. An exact repeat (the same raw packet bytes) from the
+  same observer changes nothing, so a packet reported twice, by a relay or by
+  two brokers, is not counted twice. The same packet over another route or
+  under another scope still adds to "Heard N times", but the first path and the first real
+  RSSI/SNR/duration are kept (before, the last copy's path and the last
+  finite reading replaced them, despite the comment saying the first was
+  kept). Receipts store the deliveries they have counted.
+- The matched message link is updated in place when the five-second poll
+  re-renders it unchanged, instead of being rebuilt. Keyboard focus on it no
+  longer resets, a click can no longer land on a replaced link, and the
+  links smoke test is no longer flaky.
+- Service worker cache `v14-bayarea`.
+
 ## v1.2.1+upstream.1.3.8
 
 - Previous checks: each row's code links to that check's share page, opening
