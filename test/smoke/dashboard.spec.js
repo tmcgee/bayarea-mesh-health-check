@@ -104,7 +104,7 @@ function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key', { e
       eyebrow: 'MeshCore Observer Coverage',
       headline: 'Check your mesh reach.',
       description: 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
-      version: '1.3.0+upstream.1.3.8',
+      version: '1.3.1+upstream.1.3.8',
       repoUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check',
       changesUrl: 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md',
       map: mapTiles(cartoBasemapKey),
@@ -1625,22 +1625,22 @@ test('a bridged receipt is labelled and its bridge leg is marked on card and map
   const bridged = {
     ...pathReceipt(west, [
       { hash: 'AAAA', label: 'Alpha Rptr', key: 'a'.repeat(64), lat: 0, lon: -2 },
-      { hash: 'BBBB', label: 'Bridge Near', key: 'b'.repeat(64), lat: 0, lon: -1 },
-      { hash: 'CCCC', label: 'Bridge Far', key: 'c'.repeat(64), lat: 0, lon: 1 },
+      { hash: 'BBBB', label: 'Last Near Hop', key: 'b'.repeat(64), lat: 0, lon: -1 },
+      { hash: 'CCCC', label: 'Bridge Node', key: 'c'.repeat(64), lat: 0, lon: 1 },
       { hash: '1111', label: west.label, key: west.key, lat: 0, lon: 2 },
     ], now - 4000),
     viaBridge: true,
     bridgeHopIndex: 1,
     pathBridgeLeg: {
-      fromHash: 'BBBB', toHash: 'CCCC', fromLabel: 'Bridge Near', toLabel: 'Bridge Far',
+      fromHash: 'BBBB', toHash: 'CCCC', fromLabel: 'Last Near Hop', toLabel: 'Bridge Node',
       fromKey: 'b'.repeat(64), toKey: 'c'.repeat(64),
     },
     pathDistance: 138,
     pathDistanceText: '138 mi',
     pathSpannedHopCount: 2,
     pathDistanceSegments: [
-      { fromHash: 'AAAA', toHash: 'BBBB', fromLabel: 'Alpha Rptr', toLabel: 'Bridge Near', fromKey: 'a'.repeat(64), toKey: 'b'.repeat(64), skippedHops: [], skippedHopCount: 0, estimated: false, distance: 69, distanceText: '69 mi' },
-      { fromHash: 'CCCC', toHash: '1111', fromLabel: 'Bridge Far', toLabel: west.label, fromKey: 'c'.repeat(64), toKey: west.key, skippedHops: [], skippedHopCount: 0, estimated: false, distance: 69, distanceText: '69 mi' },
+      { fromHash: 'AAAA', toHash: 'BBBB', fromLabel: 'Alpha Rptr', toLabel: 'Last Near Hop', fromKey: 'a'.repeat(64), toKey: 'b'.repeat(64), skippedHops: [], skippedHopCount: 0, estimated: false, distance: 69, distanceText: '69 mi' },
+      { fromHash: 'CCCC', toHash: '1111', fromLabel: 'Bridge Node', toLabel: west.label, fromKey: 'c'.repeat(64), toKey: west.key, skippedHops: [], skippedHopCount: 0, estimated: false, distance: 69, distanceText: '69 mi' },
     ],
   };
   await openMockMapSession(page, [west, east], [west, east], 'test-carto-key', {
@@ -1653,7 +1653,7 @@ test('a bridged receipt is labelled and its bridge leg is marked on card and map
   await expect(card('West Observer').locator('.receipt-bridge')).toHaveText('Heard via bridge');
   await expect(card('East Observer').locator('.receipt-bridge')).toHaveCount(0);
   await expect(card('West Observer').locator('.receipt-distance__bridge'))
-    .toHaveText(/^Bridge leg Bridge Near \(BBBB\)\s+to Bridge Far \(CCCC\)\s+not counted$/);
+    .toHaveText(/^Bridge leg Last Near Hop \(BBBB\)\s+to Bridge Node \(CCCC\)\s+not counted$/);
 
   await card('West Observer').locator('[data-receipt-path]').click();
   const legs = page.locator('#observer-map path.receipt-path-leg');
@@ -1802,7 +1802,7 @@ test('footer entries break between items, never inside one', async ({ page }) =>
   await expect(page.locator('#site-version-note')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check/blob/main/CHANGES.md');
   await expect(page.locator('#repo-note-link')).toHaveAttribute('href', 'https://github.com/tmcgee/bayarea-mesh-health-check');
   await expect(page.locator('#upstream-note-link')).toHaveCount(0);
-  await expect(page.locator('#site-version-note')).toHaveText('Version: v1.3.0+upstream.1.3.8');
+  await expect(page.locator('#site-version-note')).toHaveText('Version: v1.3.1+upstream.1.3.8');
   await expect(page.locator('#site-version-note')).toHaveAttribute('title', 'Based on yellowcooln/meshcore-health-check v1.3.8 (MIT)');
 
   const tops = [];

@@ -607,10 +607,12 @@ const BRIDGE_SENDER_MARKERS = (envValue('BRIDGE_SENDER_MARKERS', '') ? envList('
   .filter(Boolean);
 // Copies of one send are few; this only bounds a misbehaving bridge loop.
 const MAX_HASHES_PER_SEND = 16;
-// Path hops (hex prefixes) of known bridge nodes. A bridged copy keeps the original
-// path and continues it on the far side, so the leg from the bridge hop to the next
-// hop is the bridge, not a radio hop. Empty: bridged receipts are still labelled,
-// but their distance is not estimated because the bridge leg cannot be found.
+// Path hops (hex prefixes) of known bridge nodes: the far-side node that re-sends
+// the copy (BD6E, 💧Bridge-sacmesh.org, for the Sacramento bridge). A bridged copy
+// keeps the original path and continues it on the far side, so the leg arriving
+// at the bridge node, from whichever repeater the near side heard last, is the
+// bridge, not a radio hop. Empty: bridged receipts are still labelled, but their
+// distance is not estimated because the bridge leg cannot be found.
 const BRIDGE_NODE_PREFIXES = envList('BRIDGE_NODE_PREFIXES')
   .map((value) => normalizeHex(value).toUpperCase())
   .filter((value) => value.length >= 2);
@@ -2213,17 +2215,19 @@ function hopMatchesBridgePrefix(hop) {
     value.startsWith(prefix) || (value.length >= 4 && prefix.startsWith(value)));
 }
 
-// Where the bridge leg starts in a bridged copy's path: the index of the first hop
-// that is a known bridge node, if a hop follows it. Only bridged copies (sender
-// marked) are looked at: the original packet also passes through the bridge node
-// on its own side, and there the next leg is ordinary radio.
+// Where the bridge leg starts in a bridged copy's path. The leg ends at the first
+// hop that is a known bridge node and starts at the hop before it, so the result
+// is that earlier hop's index. A bridge node in first place has no measured hop
+// before it (the leg starts at the sender), so the leg is not known. Only bridged
+// copies (sender marked) are looked at: an original that passes the bridge node
+// reached it by radio.
 function bridgeHopIndexForPath(path) {
   if (BRIDGE_NODE_PREFIXES.length === 0 || !Array.isArray(path)) {
     return null;
   }
-  for (let index = 0; index < path.length - 1; index += 1) {
+  for (let index = 0; index < path.length; index += 1) {
     if (hopMatchesBridgePrefix(path[index])) {
-      return index;
+      return index > 0 ? index - 1 : null;
     }
   }
   return null;

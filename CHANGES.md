@@ -7,6 +7,20 @@ patch fixes. Releases before 1.0.0 were `1.3.8+bayarea.1` to `1.3.8+bayarea.22`:
 upstream `v1.3.8` plus a Bay Area build counter. Sections named `vX.Y.Z` alone are
 upstream's own releases.
 
+## v1.3.1+upstream.1.3.8
+
+- Bridge leg fix. `BRIDGE_NODE_PREFIXES` now names the far-side node that
+  re-sends a bridged copy (`BD6E`, 💧Bridge-sacmesh.org, for the Sacramento
+  bridge), and the bridge leg is the one arriving at it, from whichever
+  repeater the near side heard last (6236, 90FA and 6538 were all seen). In
+  1.3.0 the leg leaving the configured hop was taken as the bridge, so
+  setting `BD6E` would have dropped a real far-side radio hop and counted the
+  bridge. If the bridge node is the first hop, the bridge leg is not known
+  and no distance is estimated. Production ran 1.3.0 with the setting empty,
+  so no stored receipt carries a bridge leg from the old rule.
+- `.env.bayarea.example` sets `BRIDGE_NODE_PREFIXES=BD6E`. ENVIRONMENT.md's
+  example was `6236`, which is not the bridge; it now says `BD6E`.
+
 ## v1.3.0+upstream.1.3.8
 
 - Send grouping. A bridged copy of a test message (sender `↔ name`, same
